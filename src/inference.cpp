@@ -1,0 +1,140 @@
+#include "inference.h"
+#include <zephyr/kernel.h>
+#include <zephyr/sys/printk.h>
+
+#include "tensorflow/lite/micro/micro_interpreter.h"
+#include "tensorflow/lite/micro/micro_mutable_op_resolver.h"
+#include "tensorflow/lite/schema/schema_generated.h"
+
+#include "model_data.h"
+#include "test_images.h"
+
+
+// Placer tout le code dans une section spéciale pour contrôle MPU
+__attribute__((section(".inference_ro"), aligned(32), used))
+
+/* ================= CONFIG ================= */
+#define TENSOR_ARENA_SIZE (70 * 1024)
+#define INPUT_H 32
+#define INPUT_W 32
+#define INPUT_C 3
+#define NUM_CLASSES 10
+
+/* ================= GLOBALS (file-local) ================= */
+alignas(32) static uint8_t tensor_arena[TENSOR_ARENA_SIZE];
+static tflite::MicroInterpreter* interpreter = nullptr;
+static TfLiteTensor* input = nullptr;
+static TfLiteTensor* output = nullptr;
+
+/* ================= PRIVATE FUNCTIONS ================= */
+static void tflm_init(void)
+{
+    printk("[INF] TFLM init\n");
+
+    const tflite::Model* model = tflite::GetModel(cifar_resnet_int8_tflite);
+
+    if (model->version() != TFLITE_SCHEMA_VERSION) {
+        printk("[INF] Schema mismatch\n");
+        interpreter = nullptr;
+        return;
+    }
+
+    static tflite::MicroMutableOpResolver<20> resolver;
+    resolver.AddConv2D();
+    resolver.AddDepthwiseConv2D();
+    resolver.AddFullyConnected();
+    resolver.AddAveragePool2D();
+    resolver.AddMaxPool2D();
+    resolver.AddReshape();
+    resolver.AddSoftmax();
+    resolver.AddAdd();
+    resolver.AddMul();
+
+    static tflite::MicroInterpreter static_interpreter(
+        model,
+        resolver,
+        tensor_arena,
+        TENSOR_ARENA_SIZE
+    );
+
+    interpreter = &static_interpreter;
+
+    if (interpreter->AllocateTensors() != kTfLiteOk) {
+        printk("[INF] AllocateTensors FAILED\n");
+        interpreter = nullptr;
+        return;
+    }
+
+    input  = interpreter->input(0);
+    output = interpreter->output(0);
+
+    printk("[INF] TFLM ready\n");
+}
+
+static void load_cifar_image(const uint8_t* img)
+{
+    int size = INPUT_H * INPUT_W * INPUT_C;
+
+    for (int i = 0; i < size; i++) {
+        input->data.int8[i] = (int8_t)((int)img[i] - 128);
+    }
+}
+
+static int get_prediction(void)
+{
+    int best = 0;
+    int8_t max = output->data.int8[0];
+
+    for (int i = 1; i < NUM_CLASSES; i++) {
+        int8_t v = output->data.int8[i];
+        if (v > max) {
+            max = v;
+            best = i;
+        }
+    }
+    return best;
+}
+
+/* =========================================================
+ *  PUBLIC ENTRY POINT
+ * ========================================================= */
+void run_cifar_inference(void)
+{
+    printk("\n[INF] ===== INFERENCE START =====\n");
+    printk("[INF] user mode = %d\n", k_is_user_context());
+
+    if (!interpreter) {
+        printk("[INF] Interpreter not ready, initializing...\n");
+        tflm_init();
+        if (!interpreter) {
+            printk("[INF] Interpreter init failed\n");
+            return;
+        }
+    } else {
+        printk("[INF] Interpreter already initialized\n");
+    }
+
+    for (int test_id = 0; test_id < 2; test_id++) {
+        const uint8_t* img = (test_id == 0) ? img_0 : img_1;
+        int expected_label = (test_id == 0) ? label_0 : label_1;
+
+        printk("[INF] Test %d | expected = %d\n", test_id, expected_label);
+        load_cifar_image(img);
+        
+        printk("[INF] Image loaded into input tensor\n");
+
+        TfLiteStatus status = interpreter->Invoke();
+        printk("[INF] Invoke returned status = %d\n", status);
+
+        if (status == kTfLiteOk) {
+            int pred = get_prediction();
+            printk("[INF] Prediction = %d\n", pred);
+        } else {
+            printk("[INF] Invoke FAILED\n");
+        }
+
+        k_sleep(K_MSEC(500));
+    }
+
+    printk("[INF] ===== INFERENCE END =====\n\n");
+}

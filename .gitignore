@@ -1,0 +1,24 @@
+# Build output
+build/
+out/
+zephyr/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+
+# Backups
+*.backup
+*.bak
+*~
+*.swp
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Python
+__pycache__/
+.env
