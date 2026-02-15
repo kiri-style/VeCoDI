@@ -20,6 +20,8 @@ target_include_directories(tfm_partitions
 target_sources(tfm_app_rot_partition_dp
     PRIVATE
         dummy_partition.c
+        #create_enclave.c
+        #secure_nsc_interface.c
 )
 
 # The generated sources

@@ -19,4 +19,4 @@
     __inference_start = .;
     KEEP(*(.inference_ro*))
     __inference_end = .;
-} > FLASH_NS
+} > FLASH

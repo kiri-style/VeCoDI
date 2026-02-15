@@ -6,15 +6,15 @@
 #include "tensorflow/lite/micro/micro_mutable_op_resolver.h"
 #include "tensorflow/lite/schema/schema_generated.h"
 
-#include "model_data.h"
+#include "create_enclave.h"
 #include "test_images.h"
 
 
 // Placer tout le code dans une section spéciale pour contrôle MPU
-__attribute__((section(".inference_ro"), aligned(32), used))
+//__attribute__((section(".inference_ro"), aligned(32), used))
 
 /* ================= CONFIG ================= */
-#define TENSOR_ARENA_SIZE (70 * 1024)
+#define TENSOR_ARENA_SIZE (64 * 1024)
 #define INPUT_H 32
 #define INPUT_W 32
 #define INPUT_C 3
@@ -31,7 +31,13 @@ static void tflm_init(void)
 {
     printk("[INF] TFLM init\n");
 
-    const tflite::Model* model = tflite::GetModel(cifar_resnet_int8_tflite);
+    //const tflite::Model* model = tflite::GetModel(cifar_resnet_int8_tflite);
+
+    const uint8_t* model_data = get_enclave_model_ptr();
+    size_t model_size = get_enclave_model_size();
+
+    const tflite::Model* model =
+        tflite::GetModel(model_data);
 
     if (model->version() != TFLITE_SCHEMA_VERSION) {
         printk("[INF] Schema mismatch\n");
@@ -98,7 +104,7 @@ static int get_prediction(void)
 /* =========================================================
  *  PUBLIC ENTRY POINT
  * ========================================================= */
-void run_cifar_inference(void)
+extern "C" void run_cifar_inference(void)
 {
     printk("\n[INF] ===== INFERENCE START =====\n");
     printk("[INF] user mode = %d\n", k_is_user_context());
@@ -135,6 +141,9 @@ void run_cifar_inference(void)
 
         k_sleep(K_MSEC(500));
     }
-
+    /* Zeroize sensitive memory */
+    for (int i = 0; i < TENSOR_ARENA_SIZE; i++) {
+        tensor_arena[i] = 0;
+    }
     printk("[INF] ===== INFERENCE END =====\n\n");
 }

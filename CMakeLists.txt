@@ -31,15 +31,20 @@ zephyr_compile_options($<$<COMPILE_LANGUAGE:CXX>:${NO_THREADSAFE_STATICS}>)
 # ============================================================
 target_sources(app PRIVATE
     src/main.cpp
+    src/create_enclave.cpp
     src/inference.cpp
     src/model_data.cc
     src/test_images.c
-    src/mpu_model.cpp
-    src/ns_irq.c
-    src/mpu_inference.cpp
+    #src/mpu_model.cpp
+    #src/ns_irq.c
+    #src/mpu_inference.cpp
+    src/run_enclave.cpp
     
 
     #src/ns/run_early_layers.cpp
+)
+target_link_options(app PRIVATE
+    -Wl,--undefined=ns_run_enclave
 )
 
 zephyr_linker_sources(SECTIONS ${CMAKE_CURRENT_SOURCE_DIR}/src/model_ro.ld)
