@@ -33,6 +33,7 @@ target_sources(app PRIVATE
     src/main.cpp
     src/create_enclave.cpp
     src/inference.cpp
+    src/split_inference.cpp
     src/cifar_resnet_lite_int8_data.cc  # New lightweight model
     src/test_images.c
     #src/mpu_model.cpp

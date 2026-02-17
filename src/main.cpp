@@ -37,14 +37,14 @@ int main(void)
         printk("[ERROR] Enclave creation failed\n");
         return -1;
     }
-    printk("[STEP 1] \u2713 Complete\n\n");
-    
+    printk("[STEP 1] ✓ Complete\n\n");
+
     print_memory_stats();
-    
+
     /* Étape 2: Exécution inference */
     printk("[STEP 2] Running inference in enclave...\n");
     run_enclave();
-    printk("[STEP 2] \u2713 Complete\n\n");
+    printk("[STEP 2] ✓ Complete\n\n");
 
     print_memory_stats();
 
