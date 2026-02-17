@@ -8,6 +8,7 @@ extern "C" {
 int create_enclave(void);
 int enter_enclave(void);
 int destroy_enclave(void);
+uint8_t* get_enclave_memory(void);  // Get RAM enclave base address
 uint8_t* get_enclave_model_ptr(void);
 size_t get_enclave_model_size(void);
 int decrypt_model_into_tensor_arena(uint8_t* output_buffer);

@@ -6,7 +6,7 @@
 #include "tensorflow/lite/micro/micro_mutable_op_resolver.h"
 #include "tensorflow/lite/schema/schema_generated.h"
 
-#include "model_data.h"
+#include "cifar_resnet_lite_int8_data.h"  // New lightweight model
 #include "create_enclave.h"  // Pour accéder à enclave_memory
 #include "test_images.h"
 
@@ -31,19 +31,18 @@ static TfLiteTensor* output = nullptr;
 static void tflm_init(void)
 {
     printk("\n--- TFLM INITIALIZATION ---\n");
-    printk("[INF] Loading model from ROM...\n");
+    printk("[INF] Loading model from RAM enclave...\n");
 
-    /* Access ROM model directly */
-    extern const unsigned char cifar_resnet_int8_tflite[];
-    extern const unsigned int cifar_resnet_int8_tflite_len;
+    /* Access model from RAM enclave (copied during create_enclave) */
+    extern uint8_t* get_enclave_memory(void);
+    const uint8_t* model_ram = get_enclave_memory();
     
-    printk("[INF] Model address: %p\n", (void*)cifar_resnet_int8_tflite);
-    printk("[INF] Model size: %u bytes\n", cifar_resnet_int8_tflite_len);
-        printk("[INF] Tensor arena: %u bytes at %p\n", (unsigned)TENSOR_ARENA_SIZE,
+    printk("[INF] Model address (RAM): %p\n", (void*)model_ram);
+    printk("[INF] Tensor arena: %u bytes at %p\n", (unsigned)TENSOR_ARENA_SIZE,
             (void*)tensor_arena);
     
-    const tflite::Model* model = tflite::GetModel(cifar_resnet_int8_tflite);
-    printk("[INF] \u2713 Model loaded\n");
+    const tflite::Model* model = tflite::GetModel(model_ram);
+    printk("[INF] ✓ Model loaded from RAM enclave\n");
 
     if (model->version() != TFLITE_SCHEMA_VERSION) {
         printk("[INF] \u2717 Schema mismatch (got %d, expected %d)\n",
@@ -63,6 +62,9 @@ static void tflm_init(void)
     resolver.AddSoftmax();
     resolver.AddAdd();
     resolver.AddMul();
+    resolver.AddMean();  // For GlobalAveragePooling2D in lite model
+    resolver.AddQuantize();
+    resolver.AddDequantize();
 
     static tflite::MicroInterpreter static_interpreter(
         model,
