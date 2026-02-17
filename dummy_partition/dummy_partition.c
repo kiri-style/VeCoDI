@@ -16,6 +16,20 @@
 
 extern int tfm_platform_secure_sram(uint32_t base, uint32_t size);
 
+/* Secure linker symbols for memory stats */
+extern char __bss_start__;
+extern char __bss_end__;
+
+static void print_secure_memory_stats(void)
+{
+    uint32_t bss_size = (uint32_t)(&__bss_end__ - &__bss_start__);
+
+    printf("\n======= SECURE MEMORY STATS =======\n");
+    printf("  BSS size:   %u bytes\n", bss_size);
+    printf("  BSS range:  %p - %p\n", &__bss_start__, &__bss_end__);
+    printf("===================================\n\n");
+}
+
 #define NUM_SECRETS 5
 /* Enclave commands */
 
@@ -80,9 +94,15 @@ static psa_status_t tfm_dp_secret_digest(uint32_t secret_index,
 
 static psa_status_t tfm_dp_enclave_seal(void)
 {
-    printf("[SECURE] tfm_dp_enclave_seal() called\n");
-    printf("[SECURE] Simulating enclave lock...\n");
-
+    printf("\n--- SECURE: SEAL ENCLAVE ---\n");
+    printf("[SECURE] Request from NS to seal enclave\n");
+    print_secure_memory_stats();
+    printf("[SECURE] Simulating hardware protection...\n");
+    
+    /* Ici on pourrait configurer MPU/SAU pour protéger enclave_memory */
+    printf("[SECURE] ✓ Enclave locked (simulated)\n");
+    printf("--- END SEAL ENCLAVE ---\n\n");
+    
     return PSA_SUCCESS;
 }
 
@@ -259,6 +279,9 @@ static void dp_signal_handle(psa_signal_t signal, dp_func_t pfn)
 psa_status_t tfm_dp_req_mngr_init(void)
 {
 	psa_signal_t signals = 0;
+
+    printf("\n[SECURE INIT] Dummy partition init\n");
+    print_secure_memory_stats();
 
 	while (1) {
         signals = psa_wait(PSA_WAIT_ANY, PSA_BLOCK);

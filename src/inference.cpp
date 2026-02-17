@@ -6,7 +6,8 @@
 #include "tensorflow/lite/micro/micro_mutable_op_resolver.h"
 #include "tensorflow/lite/schema/schema_generated.h"
 
-#include "create_enclave.h"
+#include "model_data.h"
+#include "create_enclave.h"  // Pour accéder à enclave_memory
 #include "test_images.h"
 
 
@@ -14,7 +15,7 @@
 //__attribute__((section(".inference_ro"), aligned(32), used))
 
 /* ================= CONFIG ================= */
-#define TENSOR_ARENA_SIZE (64 * 1024)
+#define TENSOR_ARENA_SIZE (56 * 1024)
 #define INPUT_H 32
 #define INPUT_W 32
 #define INPUT_C 3
@@ -29,21 +30,28 @@ static TfLiteTensor* output = nullptr;
 /* ================= PRIVATE FUNCTIONS ================= */
 static void tflm_init(void)
 {
-    printk("[INF] TFLM init\n");
+    printk("\n--- TFLM INITIALIZATION ---\n");
+    printk("[INF] Loading model from ROM...\n");
 
-    //const tflite::Model* model = tflite::GetModel(cifar_resnet_int8_tflite);
-
-    const uint8_t* model_data = get_enclave_model_ptr();
-    size_t model_size = get_enclave_model_size();
-
-    const tflite::Model* model =
-        tflite::GetModel(model_data);
+    /* Access ROM model directly */
+    extern const unsigned char cifar_resnet_int8_tflite[];
+    extern const unsigned int cifar_resnet_int8_tflite_len;
+    
+    printk("[INF] Model address: %p\n", (void*)cifar_resnet_int8_tflite);
+    printk("[INF] Model size: %u bytes\n", cifar_resnet_int8_tflite_len);
+        printk("[INF] Tensor arena: %u bytes at %p\n", (unsigned)TENSOR_ARENA_SIZE,
+            (void*)tensor_arena);
+    
+    const tflite::Model* model = tflite::GetModel(cifar_resnet_int8_tflite);
+    printk("[INF] \u2713 Model loaded\n");
 
     if (model->version() != TFLITE_SCHEMA_VERSION) {
-        printk("[INF] Schema mismatch\n");
+        printk("[INF] \u2717 Schema mismatch (got %d, expected %d)\n",
+               model->version(), TFLITE_SCHEMA_VERSION);
         interpreter = nullptr;
         return;
     }
+    printk("[INF] \u2713 Schema version OK (%d)\n", TFLITE_SCHEMA_VERSION);
 
     static tflite::MicroMutableOpResolver<20> resolver;
     resolver.AddConv2D();

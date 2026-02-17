@@ -5,12 +5,13 @@
 
 #include "create_enclave.h"
 #include "run_enclave.h"
+#include "model_data.h"  // Pour accéder au modèle ROM
 
 /* ============================================================
  *                 CONFIGURATION
  * ============================================================ */
 
-#define ENCLAVE_MEMORY_SIZE   (150 * 1024)
+#define ENCLAVE_MEMORY_SIZE   (1 * 1024)  // Symbolique - on ne copie pas le modèle
 
 #define ENCLAVE_STACK_SIZE    (12 * 1024)
 #define ENCLAVE_THREAD_PRIORITY 5
@@ -128,31 +129,39 @@ int create_enclave(void)
         return -1;
     }
 
-    printk("[NS] Allocating enclave memory...\n");
+    printk("\n--- CREATE ENCLAVE ---\n");
+    printk("[NS] Configuration:\n");
+    printk("      Enclave memory size: %d bytes\n", ENCLAVE_MEMORY_SIZE);
+    printk("      Enclave memory addr: %p\n", (void*)enclave_memory);
+    printk("      Stack size: %d bytes\n", ENCLAVE_STACK_SIZE);
+    
+    printk("[NS] Initializing enclave memory...\n");
     memset(enclave_memory, 0, ENCLAVE_MEMORY_SIZE);
+    printk("[NS] \u2713 Memory cleared\n");
 
-    /* Decrypt model directly into enclave memory */
-    if (decrypt_model_into_enclave(enclave_memory) != 0) {
-        printk("[NS] Model decrypt failed\n");
-        return -1;
-    }
-
-    printk("[NS] Enclave memory prepared with model data\n");
-
-    /* Optional: model attestation */
-    /*if (attest_model() != 0) {
-        printk("[NS] Model integrity failed!\n");
-        return -1;
-    }*/
+    /* Model stays in ROM - we just mark it as "enclave model" */
+    extern const unsigned char cifar_resnet_int8_tflite[];
+    extern const unsigned int cifar_resnet_int8_tflite_len;
+    
+    printk("[NS] ROM Model info:\n");
+    printk("      Address: %p\n", (void*)cifar_resnet_int8_tflite);
+    printk("      Size: %u bytes (%.1f KB)\n", 
+           cifar_resnet_int8_tflite_len, 
+           cifar_resnet_int8_tflite_len / 1024.0f);
+    printk("[NS] Model will be accessed from ROM (zero-copy)\n");
 
     /* Seal enclave */
+    printk("[NS] Calling secure partition to seal enclave...\n");
     if (seal_enclave() != 0) {
+        printk("[NS] \u2717 Seal failed\n");
         return -1;
     }
+    printk("[NS] \u2713 Enclave sealed\n");
 
     enclave_created = true;
 
-    printk("[NS] Enclave successfully created\n");
+    printk("[NS] \u2713 Enclave creation complete\n");
+    printk("--- END CREATE ENCLAVE ---\n\n");
     return 0;
 }
 

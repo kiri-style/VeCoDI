@@ -1,74 +1,56 @@
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
-#include <psa/client.h>
-#include <stdint.h>
+#include "inference.h"
+#include "run_enclave.h"
 #include "create_enclave.h"
 
-/* Must match Secure manifest SID */
-#define ENCLAVE_SID  0xFFFFF002
-#define ENCLAVE_VERSION 1
+/* Linker symbols pour calculs mémoire */
+extern char __bss_start[];
+extern char __bss_end[];
+extern char __data_start[];
+extern char __data_end[];
 
-#define DP_CMD_SECRET_DIGEST   0
+static void print_memory_stats(void)
+{
+    size_t bss_size = (size_t)(__bss_end - __bss_start);
+    size_t data_size = (size_t)(__data_end - __data_start);
+    
+    printk("\n======= NS MEMORY STATS =======\n");
+    printk("  BSS size:   %zu bytes\n", bss_size);
+    printk("  DATA size:  %zu bytes\n", data_size);
+    printk("  Stack ptr:  %p\n", (void*)&bss_size);
+    printk("===============================\n\n");
+}
 
 int main(void)
 {
-    printk("\n=== NS START ===\n");
+    printk("\n\n");
+    printk("========================================\n");
+    printk("=== CIFAR-10 Enclave + ROM Model ===\n");
+    printk("========================================\n\n");
+    
+    print_memory_stats();
 
-    /* Create + seal enclave */
+    /* Étape 1: Création enclave */
+    printk("[STEP 1] Creating enclave environment...\n");
     if (create_enclave() != 0) {
-        printk("Enclave creation failed\n");
-        return 0;
+        printk("[ERROR] Enclave creation failed\n");
+        return -1;
     }
-    /* 👇 AJOUTE ÇA ICI */
-    if (enter_enclave() != 0) {
-        printk("Enter enclave failed\n");
-    }
+    printk("[STEP 1] \u2713 Complete\n\n");
+    
+    print_memory_stats();
+    
+    /* Étape 2: Exécution inference */
+    printk("[STEP 2] Running inference in enclave...\n");
+    run_enclave();
+    printk("[STEP 2] \u2713 Complete\n\n");
 
-    psa_handle_t handle;
-    psa_status_t status;
+    print_memory_stats();
 
-    uint32_t cmd = DP_CMD_SECRET_DIGEST;
-    uint32_t secret_index = 0;
-    uint8_t digest[32];
-
-    psa_invec in_vec[2] = {
-        { .base = &cmd,          .len = sizeof(cmd) },
-        { .base = &secret_index, .len = sizeof(secret_index) }
-    };
-
-    psa_outvec out_vec = {
-        .base = digest,
-        .len  = sizeof(digest)
-    };
-
-    /* Connect to SAME Secure service */
-    handle = psa_connect(ENCLAVE_SID, ENCLAVE_VERSION);
-
-    if (handle <= 0) {
-        printk("psa_connect failed\n");
-        return 0;
-    }
-
-    /* Call secure partition */
-    status = psa_call(handle,
-                      PSA_IPC_CALL,
-                      in_vec, 2,
-                      &out_vec, 1);
-
-    psa_close(handle);
-
-    if (status != PSA_SUCCESS) {
-        printk("psa_call failed: %d\n", status);
-        return 0;
-    }
-
-    printk("Digest received:\n");
-
-    for (int i = 0; i < 32; i++) {
-        printk("%02X ", digest[i]);
-    }
-
-    printk("\n");
+    printk("\n========================================\n");
+    printk("=== All operations completed ===\n");
+    printk("========================================\n\n");
 
     while (1) {
         k_sleep(K_FOREVER);
