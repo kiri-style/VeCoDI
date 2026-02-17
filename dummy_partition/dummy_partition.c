@@ -8,6 +8,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "psa/service.h"
 #include "psa_manifest/tfm_dummy_partition.h"
@@ -92,13 +93,66 @@ static psa_status_t tfm_dp_secret_digest(uint32_t secret_index,
 	return PSA_SUCCESS;
 }
 
-static psa_status_t tfm_dp_enclave_seal(void)
+static psa_status_t tfm_dp_enclave_seal(psa_msg_t *msg)
 {
-    printf("\n--- SECURE: SEAL ENCLAVE ---\n");
+    printf("\n--- SECURE: SEAL ENCLAVE + DECRYPT ---\n");
     printf("[SECURE] Request from NS to seal enclave\n");
+    printf("[SECURE] msg->in_size[0] = %u (cmd)\n", (uint32_t)msg->in_size[0]);
+    printf("[SECURE] msg->in_size[1] = %u (encrypted model)\n", (uint32_t)msg->in_size[1]);
+    printf("[SECURE] msg->out_size[0] = %u (enclave buffer)\n", (uint32_t)msg->out_size[0]);
     print_secure_memory_stats();
-    printf("[SECURE] Simulating hardware protection...\n");
     
+    /* Decrypt model into NS enclave memory */
+    if (msg->in_size[1] > 0 && msg->out_size[0] > 0) {
+        printf("[SECURE] Decrypting model with XOR cipher...\n");
+        printf("[SECURE] XOR Key: 0x42\n");
+        
+        #define XOR_KEY 0x42
+        
+        size_t model_len = msg->in_size[1];
+        size_t enclave_size = msg->out_size[0];
+        size_t processed = 0;
+        uint8_t buffer[256];
+        
+        if (model_len > enclave_size) {
+            printf("[SECURE] ✗ Model too large (%u > %u bytes)\n", 
+                   (uint32_t)model_len, (uint32_t)enclave_size);
+            return PSA_ERROR_INVALID_ARGUMENT;
+        }
+        
+        printf("[SECURE] Starting decryption loop (chunk size: %u bytes)...\n", (uint32_t)sizeof(buffer));
+        
+        /* Decrypt model chunk by chunk and write to NS enclave */
+        while (processed < model_len) {
+            size_t chunk = (model_len - processed > sizeof(buffer)) ?
+                           sizeof(buffer) : (model_len - processed);
+            
+            /* Read encrypted chunk from ROM */
+            psa_read(msg->handle, 1, buffer, chunk);
+            
+            /* XOR decrypt */
+            for (size_t i = 0; i < chunk; i++) {
+                buffer[i] ^= XOR_KEY;
+            }
+            
+            /* Write decrypted chunk to NS enclave memory */
+            psa_write(msg->handle, 0, buffer, chunk);
+            
+            processed += chunk;
+            
+            if (processed % 1024 == 0 || processed == model_len) {
+                uint32_t percent = (uint32_t)((processed * 100U) / model_len);
+                printf("[SECURE] Progress: %u / %u bytes (%u%%)\n", 
+                       (uint32_t)processed, (uint32_t)model_len, percent);
+            }
+        }
+        
+        printf("[SECURE] ✓ Model decrypted: %u bytes\n", (uint32_t)model_len);
+    } else {
+        printf("[SECURE] No model to decrypt (skipping)\n");
+    }
+    
+    printf("[SECURE] Simulating hardware protection...\n");
     /* Ici on pourrait configurer MPU/SAU pour protéger enclave_memory */
     printf("[SECURE] ✓ Enclave locked (simulated)\n");
     printf("--- END SEAL ENCLAVE ---\n\n");
@@ -180,68 +234,38 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
         }
 
         case DP_CMD_SEAL_ENCLAVE:
-            return tfm_dp_enclave_seal();
+            return tfm_dp_enclave_seal(msg);
 
     case DP_CMD_DECRYPT_MODEL:
     {
-        psa_status_t status;
-        psa_cipher_operation_t operation = PSA_CIPHER_OPERATION_INIT;
-
-        uint8_t iv[16] = {0};  // même IV que chiffrement offline
-        uint8_t buffer[512];
-        uint8_t output[512];
-
-        size_t in_len_total = msg->in_size[1];
+        printf("[SECURE] Decrypting model with XOR cipher...\n");
+        
+        /* Simple XOR decryption (matches encrypt_model.py) */
+        #define XOR_KEY 0x42
+        
+        size_t in_len = msg->in_size[1];
         size_t processed = 0;
-        size_t out_len;
-
-        psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
-        psa_set_key_type(&attr, PSA_KEY_TYPE_AES);
-        psa_set_key_bits(&attr, 128);
-        psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_DECRYPT);
-        psa_set_key_algorithm(&attr, PSA_ALG_CTR);
-
-        psa_key_id_t key_id;
-        status = psa_import_key(&attr,
-                                aes_key,
-                                sizeof(aes_key),
-                                &key_id);
-        if (status != PSA_SUCCESS) return status;
-
-        status = psa_cipher_decrypt_setup(&operation,
-                                        key_id,
-                                        PSA_ALG_CTR);
-        if (status != PSA_SUCCESS) return status;
-
-        status = psa_cipher_set_iv(&operation,
-                                iv,
-                                sizeof(iv));
-        if (status != PSA_SUCCESS) return status;
-
-        while (processed < in_len_total) {
-
-            size_t chunk = (in_len_total - processed > sizeof(buffer)) ?
-                            sizeof(buffer) :
-                            (in_len_total - processed);
-
+        uint8_t buffer[256];  // Process in chunks
+        
+        while (processed < in_len) {
+            size_t chunk = (in_len - processed > sizeof(buffer)) ?
+                           sizeof(buffer) : (in_len - processed);
+            
+            /* Read encrypted chunk from NS */
             psa_read(msg->handle, 1, buffer, chunk);
-
-            status = psa_cipher_update(&operation,
-                                    buffer,
-                                    chunk,
-                                    output,
-                                    sizeof(output),
-                                    &out_len);
-            if (status != PSA_SUCCESS) return status;
-
-            psa_write(msg->handle, 0, output, out_len);
-
+            
+            /* XOR decrypt */
+            for (size_t i = 0; i < chunk; i++) {
+                buffer[i] ^= XOR_KEY;
+            }
+            
+            /* Write decrypted chunk back to NS enclave memory */
+            psa_write(msg->handle, 0, buffer, chunk);
+            
             processed += chunk;
         }
-
-        psa_cipher_abort(&operation);
-        psa_destroy_key(key_id);
-
+        
+        printf("[SECURE] ✓ Model decrypted: %u bytes\n", (uint32_t)in_len);
         return PSA_SUCCESS;
     }
 

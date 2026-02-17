@@ -5,7 +5,7 @@
 
 #include "create_enclave.h"
 #include "run_enclave.h"
-#include "cifar_resnet_lite_int8_data.h"  // New lightweight model
+#include "cifar_resnet_lite_int8_encrypted.h"  // Encrypted lightweight model
 
 /* ============================================================
  *                 CONFIGURATION
@@ -36,7 +36,9 @@ alignas(32) static uint8_t enclave_memory[ENCLAVE_MEMORY_SIZE];
 K_THREAD_STACK_DEFINE(enclave_stack, ENCLAVE_STACK_SIZE);
 static struct k_thread enclave_thread;
 
-/* Model will be copied from ROM to RAM enclave */
+/* Encrypted model (stored in flash) */
+extern const unsigned char cifar_resnet_lite_int8_encrypted[];
+extern const unsigned int cifar_resnet_lite_int8_encrypted_len;
 
 /* ============================================================
  *                 SECURE CALLS
@@ -44,32 +46,53 @@ static struct k_thread enclave_thread;
 
 static int seal_enclave(void)
 {
-    printk("[NS] Requesting enclave seal (Secure call)...\n");
+    printk("[NS] Requesting enclave seal + decrypt (Secure call)...\n");
+    printk("[NS] → Connecting to Secure partition (SID=0x%08x, VER=%u)...\n",
+           ENCLAVE_SID, ENCLAVE_VER);
 
     psa_handle_t handle = psa_connect(ENCLAVE_SID, ENCLAVE_VER);
     if (handle <= 0) {
-        printk("[NS] psa_connect failed\n");
+        printk("[NS] ✗ psa_connect failed (seal), handle=%d\n", (int)handle);
         return -1;
     }
+    printk("[NS] ✓ PSA connected (handle=%d)\n", (int)handle);
 
     uint32_t cmd = DP_CMD_SEAL_ENCLAVE;
 
-    psa_invec in_vec = {
-        .base = &cmd,
-        .len  = sizeof(cmd)
+    psa_invec in_vec[2] = {
+        { &cmd, sizeof(cmd) },
+        { cifar_resnet_lite_int8_encrypted, cifar_resnet_lite_int8_encrypted_len }
     };
+    
+    psa_outvec out_vec = {
+        enclave_memory,  // Secure World will write decrypted model here
+        ENCLAVE_MEMORY_SIZE
+    };
+
+    printk("[NS] → PSA invec[0]: cmd=%u, size=%zu\n", cmd, sizeof(cmd));
+    printk("[NS] → PSA invec[1]: encrypted_model ptr=%p, size=%u\n",
+           (void*)cifar_resnet_lite_int8_encrypted,
+           cifar_resnet_lite_int8_encrypted_len);
+    printk("[NS] → PSA outvec[0]: enclave ptr=%p, size=%d\n",
+           (void*)enclave_memory, ENCLAVE_MEMORY_SIZE);
+    printk("[NS] Calling Secure partition...\n");
 
     psa_status_t status = psa_call(handle,
                                    PSA_IPC_CALL,
-                                   &in_vec, 1,
-                                   NULL, 0);
+                                   in_vec, 2,
+                                   &out_vec, 1);
+
+    if (status != PSA_SUCCESS) {
+        printk("[NS] ✗ psa_call failed (seal), status=%d\n", (int)status);
+        psa_close(handle);
+        return -1;
+    }
+    printk("[NS] ✓ psa_call success (seal), status=%d\n", (int)status);
 
     psa_close(handle);
-
-    if (status == PSA_SUCCESS) {
-        printk("[NS] Enclave sealed successfully\n");
-        return 0;
-    }
+    printk("[NS] ✓ PSA connection closed\n");
+    printk("[NS] ✓ Enclave sealed + model decrypted\n");
+    return 0;
 
     printk("[NS] Enclave seal failed\n");
     return -1;
@@ -77,13 +100,50 @@ static int seal_enclave(void)
 
 /* ============================================================
  *          PSA DECRYPT → WRITE DIRECTLY INTO ENCLAVE
- *          (DEPRECATED - Model now copied directly from ROM)
  * ============================================================ */
 
 int decrypt_model_into_enclave(uint8_t* output_buffer)
 {
-    printk("[NS] decrypt_model_into_enclave: DEPRECATED - model copied from ROM\n");
-    return 0;  // No-op
+    printk("[NS] Requesting model decryption from Secure World...\n");
+    printk("[NS] → Input: encrypted model ptr=%p, len=%u\n",
+           (void*)cifar_resnet_lite_int8_encrypted,
+           cifar_resnet_lite_int8_encrypted_len);
+    printk("[NS] → Output: buffer ptr=%p\n", (void*)output_buffer);
+    
+    psa_handle_t handle = psa_connect(ENCLAVE_SID, ENCLAVE_VER);
+    if (handle <= 0) {
+        printk("[NS] psa_connect failed (decrypt), handle=%d\n", (int)handle);
+        return -1;
+    }
+    printk("[NS] ✓ PSA connected (handle=%d)\n", (int)handle);
+
+    uint32_t cmd = DP_CMD_DECRYPT_MODEL;
+
+    psa_invec in_vec[2] = {
+        { &cmd, sizeof(cmd) },
+        { cifar_resnet_lite_int8_encrypted,
+          cifar_resnet_lite_int8_encrypted_len }
+    };
+
+    psa_outvec out_vec = {
+        output_buffer,
+        cifar_resnet_lite_int8_encrypted_len
+    };
+
+    psa_status_t status = psa_call(handle,
+                                   PSA_IPC_CALL,
+                                   in_vec, 2,
+                                   &out_vec, 1);
+
+    psa_close(handle);
+
+    if (status != PSA_SUCCESS) {
+        printk("[NS] Secure decrypt failed (status=%d)\n", status);
+        return -1;
+    }
+
+    printk("[NS] ✓ Model decrypted into enclave memory\n");
+    return 0;
 }
 
 /* ============================================================
@@ -108,27 +168,27 @@ int create_enclave(void)
     printk("[NS] \u2713 Memory cleared\n");
 
     /* Copy model from ROM to RAM enclave */
-    extern const unsigned char cifar_resnet_lite_int8[];
-    extern const unsigned int cifar_resnet_lite_int8_len;
-    
-    printk("[NS] ROM Model source:\n");
-    printk("      Address: %p\n", (void*)cifar_resnet_lite_int8);
+    printk("[NS] Encrypted Model source:\n");
+    printk("      Address: %p\n", (void*)cifar_resnet_lite_int8_encrypted);
     printk("      Size: %u bytes (%.1f KB)\n", 
-           cifar_resnet_lite_int8_len, 
-           cifar_resnet_lite_int8_len / 1024.0f);
+           cifar_resnet_lite_int8_encrypted_len, 
+           cifar_resnet_lite_int8_encrypted_len / 1024.0f);
     
-    if (cifar_resnet_lite_int8_len > ENCLAVE_MEMORY_SIZE) {
+    if (cifar_resnet_lite_int8_encrypted_len > ENCLAVE_MEMORY_SIZE) {
         printk("[NS] ✗ Model too large for enclave (%u > %d bytes)\n",
-               cifar_resnet_lite_int8_len, ENCLAVE_MEMORY_SIZE);
+               cifar_resnet_lite_int8_encrypted_len, ENCLAVE_MEMORY_SIZE);
         return -1;
     }
     
-    printk("[NS] Copying model to RAM enclave...\n");
-    memcpy(enclave_memory, cifar_resnet_lite_int8, cifar_resnet_lite_int8_len);
-    printk("[NS] ✓ Model copied to RAM enclave at %p\n", (void*)enclave_memory);
+    printk("[NS] Model fits in enclave (%.1f%% usage)\n",
+           (cifar_resnet_lite_int8_encrypted_len * 100.0f) / ENCLAVE_MEMORY_SIZE);
 
-    /* Seal enclave */
-    printk("[NS] Calling secure partition to seal enclave...\n");
+    /* Seal enclave - Secure World will decrypt model into enclave */
+    printk("[NS] Calling secure partition to seal enclave + decrypt model...\n");
+    printk("[NS] → Encrypted model ptr: %p, len: %u\n",
+           (void*)cifar_resnet_lite_int8_encrypted, cifar_resnet_lite_int8_encrypted_len);
+    printk("[NS] → Enclave buffer ptr: %p, size: %d\n",
+           (void*)enclave_memory, ENCLAVE_MEMORY_SIZE);
     if (seal_enclave() != 0) {
         printk("[NS] \u2717 Seal failed\n");
         return -1;
@@ -224,6 +284,5 @@ uint8_t* get_enclave_model_ptr(void)
 
 size_t get_enclave_model_size(void)
 {
-    extern const unsigned int cifar_resnet_lite_int8_len;
-    return cifar_resnet_lite_int8_len;
+    return cifar_resnet_lite_int8_encrypted_len;
 }

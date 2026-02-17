@@ -1,8 +1,173 @@
-# Dummy Partition (TF-M Secure Service)
+# Dummy Partition - TF-M Secure Service
+
+## Overview
+This is a custom **TF-M (Trusted Firmware-M) Secure Partition** that provides a secure model decryption service for the Non-Secure application. It decrypts an encrypted TFLite model stored in ROM and writes the decrypted model into a Non-Secure RAM enclave using PSA IPC.
+
+## Architecture
+
+```
+Non-Secure World (NS)                   Secure World (TF-M)
+┌────────────────────────────┐         ┌────────────────────────────┐
+│ create_enclave.cpp         │         │ dummy_partition.c          │
+│  • PSA connect/call        │  PSA    │  • Read encrypted chunks   │
+│  • Provide ROM model ptr   │  IPC    │  • XOR decrypt             │
+│  • Provide RAM enclave ptr │ <-----> │  • psa_write() to NS RAM   │
+└────────────────────────────┘         └────────────────────────────┘
+```
+
+## PSA Service Interface
+
+### Service Identifiers
+Defined in [dummy_partition.h](dummy_partition.h) and mirrored in NS headers:
+
+```c
+#define ENCLAVE_SID      0x00000310U
+#define ENCLAVE_VER      (1U)
+
+#define DP_CMD_SEAL_ENCLAVE   0x5EA1U  // Seal + decrypt
+#define DP_CMD_DECRYPT_MODEL  0xDEC1U  // Legacy decrypt-only
+```
+
+### Call Flow
+1. **NS** connects using `psa_connect(ENCLAVE_SID, ENCLAVE_VER)`
+2. **NS** sends command + encrypted model via `psa_call()`
+3. **S** reads encrypted chunks via `psa_read()`
+4. **S** decrypts each chunk (XOR key 0x42)
+5. **S** writes decrypted data to NS enclave via `psa_write()`
+
+### Message Layout
+```
+psa_invec[0] : command (DP_CMD_SEAL_ENCLAVE)
+psa_invec[1] : encrypted model bytes
+psa_outvec[0]: NS enclave buffer (decrypted output)
+```
+
+## Implementation Details
+
+### Decryption Algorithm (Demo)
+XOR cipher with key `0x42`:
+
+```c
+#define XOR_KEY 0x42
+for (i = 0; i < chunk_size; i++) {
+    decrypted[i] = encrypted[i] ^ XOR_KEY;
+}
+```
+
+> **Security Note**: XOR is for demonstration only. Use AES-256-GCM in production.
+
+### Chunked Processing
+- Chunk size: **256 bytes**
+- Model size: **39,504 bytes**
+- Progress print every ~1KB
+
+### Debug Output (Secure World)
+```
+[S] tfm_dp_enclave_seal: Processing seal + decrypt request
+[S] Message sizes: in[0]=4, in[1]=39504, out[0]=40960
+[S] XOR decryption key: 0x42
+[S] Chunk size: 256 bytes
+[S] Progress: 1024 / 39504 bytes (2.6%)
+...
+[S] Progress: 39504 / 39504 bytes (100.0%)
+```
+
+## Files
+
+### dummy_partition.c
+Main Secure Partition implementation:
+- `tfm_dp_enclave_seal()` → decrypts model into NS RAM
+- `tfm_dp_decrypt_model()` → legacy handler (deprecated)
+- `print_secure_memory_stats()` → Secure RAM stats
+
+### tfm_dummy_partition.yaml
+Partition manifest for TF-M:
+- Service SID: 0x00000310
+- IPC model
+- Non-secure clients allowed
+
+### tfm_manifest_list.yaml.in
+Manifest list for build integration
+
+### dummy_partition.h
+Service IDs and command codes (shared with NS)
+
+## Memory Usage
+
+### Secure World
+- Secure RAM total: **64KB**
+- Dummy partition BSS: **~3.2KB**
+
+### Non-Secure Enclave
+- Enclave size: **40KB (40960 bytes)**
+- Model size: **39,504 bytes**
+- Utilization: **96.4%**
+
+## Build Integration
+
+The partition is integrated via CMake and TF-M manifest:
+
+```cmake
+target_sources(tfm_app_rot_partition_dummy PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/dummy_partition.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/secure_nsc_interface.c
+)
+
+set(DUMMY_PARTITION_MANIFEST_LIST
+    ${CMAKE_CURRENT_SOURCE_DIR}/tfm_manifest_list.yaml.in
+)
+```
+
+## Troubleshooting
+
+### PSA connect fails
+**Symptoms**:
+```
+[NS] ✗ psa_connect failed (seal)
+```
+
+**Checks**:
+```bash
+grep "dummy_partition" build/zephyr/.config
+grep "ENCLAVE_SID" dummy_partition/dummy_partition.h
+```
+
+### Model decryption fails
+**Checks**:
+- XOR key matches in Python and C
+- Encrypted model length fits enclave
+
+```bash
+grep "XOR_KEY" train/encrypt_model.py
+grep "XOR_KEY" dummy_partition/dummy_partition.c
+```
+
+## Production Hardening (Suggested)
+- Replace XOR with **AES-256-GCM**
+- Store keys in **PSA Protected Storage**
+- Add **integrity checks** (HMAC or AEAD)
+- Enable **rollback protection**
+- Minimize Secure World logging
+
+## References
+- https://tf-m-user-guide.trustedfirmware.org/
+- https://developer.arm.com/documentation/ihi0064/latest
+- https://docs.zephyrproject.org/latest/security/tfm.html
+
+---
+
+**License**: Apache 2.0  
+**Last Updated**: 2024 (TF-M v2.2.0, Zephyr v4.3.0)# Dummy Partition - TF-M Secure Service
 
 ## Overview
 
-This **Dummy Partition** is a custom **Trusted Firmware-M (TF-M) Secure Partition** designed to demonstrate **fine-grained access control** between Secure and Non-Secure worlds on **ARM Cortex-M33 with TrustZone** (STM32L5).
+This is a custom **TF-M (Trusted Firmware-M) secure partition** that provides **cryptographic services** for the Non-Secure (NS) application. It implements **model decryption** and **enclave sealing** operations using the **PSA (Platform Security Architecture) API**.
+
+### Purpose
+- Decrypt encrypted TFLite models in Secure World
+- Write decrypted models to Non-Secure enclave memory
+- Provide memory isolation between NS and S worlds
+- Demonstrate TrustZone security architecture on ARM Cortex-M33
 
 Its primary purpose is to **protect a machine learning model and its inference memory** while still allowing controlled execution from the Non-Secure (Zephyr) application using **PSA IPC**, **SAU reconfiguration**, and **token-based authorization**.
 

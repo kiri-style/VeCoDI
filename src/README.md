@@ -1,53 +1,47 @@
-# hello_cifar – Secure Inference (Non-Secure Side)
+# Source Code - Non-Secure Application
 
-This directory contains the **Non-Secure (NS)** application code for a Zephyr-based
-demonstration of **secure AI inference** on STM32L5 using **Arm TrustZone + TF-M**.
+## Overview
+This directory contains the **Non-Secure (NS) world application** for secure TFLite Micro inference on STM32L552 with TrustZone. The application demonstrates:
+- **Encrypted model storage** in ROM
+- **Secure decryption** via TF-M partition
+- **RAM-based model execution** in protected enclave
+- **TFLite Micro inference** with CIFAR-10 classification
 
-The goal of this project is to:
-- protect the **AI model stored in Flash**,
-- protect the **tensor arena located in SRAM**,
-- allow memory access **only through Secure World authorization**,
-- execute inference **exclusively under Secure control** using PSA IPC.
+## Architecture
 
----
-
-## High-level Execution Flow (`main.cpp`)
-
-The `main.cpp` implements the following secure lifecycle:
-
-1. Initialize Non-Secure IRQs
-2. Configure MPU protection for the **model (Flash, read-only)**
-3. Configure MPU protection for the **inference memory (SRAM – tensor arena)**
-4. Request a **security token** from the Secure World
-5. Temporarily open access to the model region
-6. Temporarily open access to the tensor arena
-7. Trigger inference execution in the Secure World
-8. Close all memory access permissions
-9. Any further access should result in a **memory fault**
-
----
-
-## `src/` Directory Structure
-
-### 📁 CMSIS_NN/
-Optimized neural network kernels from **CMSIS-NN**.
-
-Used by TensorFlow Lite Micro for:
-- convolution
-- fully connected layers
-- quantized int8 operators
-
----
-
-### 📁 test_data/
-Auxiliary test data (images, labels, etc.).
-
----
-
-### 📄 main.cpp
-**Main Non-Secure entry point.**
-
-Responsibilities:
+### System Overview
+```
+┌────────────────────────────────────────────────────────┐
+│                  Non-Secure World                      │
+│                                                        │
+│  ┌──────────────┐      ┌─────────────────────┐       │
+│  │  main.cpp    │──────│ create_enclave.cpp  │       │
+│  │  (app entry) │      │ • Allocate 40KB RAM │       │
+│  └──────┬───────┘      │ • PSA calls to S    │       │
+│         │              │ • Decrypt model     │       │
+│         │              └──────────┬──────────┘       │
+│         │                         │                  │
+│         │              ┌──────────▼──────────┐       │
+│         └──────────────│  inference.cpp      │       │
+│                        │  • TFLite setup     │       │
+│                        │  • Op resolver      │       │
+│                        │  • Run inference    │       │
+│                        └─────────────────────┘       │
+│                                                        │
+│  ROM: cifar_resnet_lite_int8_encrypted[] (39.5KB)    │
+│  RAM: enclave_memory[40KB] ← decrypted model         │
+│       tensor_arena[56KB]                             │
+└────────────────────────────────────────────────────────┘
+                             ↕ PSA IPC
+┌────────────────────────────────────────────────────────┐
+│                   Secure World (TF-M)                  │
+│  ┌──────────────────────────────────────┐             │
+│  │  dummy_partition.c                   │             │
+│  │  • XOR decrypt encrypted model       │             │
+│  │  • Write to NS enclave via psa_write │             │
+│  └──────────────────────────────────────┘             │
+└────────────────────────────────────────────────────────┘
+```
 - orchestrates the full secure inference lifecycle
 - performs PSA IPC calls (`psa_connect`, `psa_call`, `psa_close`)
 - requests Secure-controlled memory access
