@@ -1,6 +1,9 @@
 #ifndef CREATE_ENCLAVE_H
 #define CREATE_ENCLAVE_H
 
+#include <stddef.h>
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -8,10 +11,11 @@ extern "C" {
 int create_enclave(void);
 int enter_enclave(void);
 int destroy_enclave(void);
-uint8_t* get_enclave_memory(void);  // Get RAM enclave base address
-uint8_t* get_enclave_model_ptr(void);
-size_t get_enclave_model_size(void);
-int decrypt_model_into_tensor_arena(uint8_t* output_buffer);
+
+/* Get enclave memory region (for late weights) */
+uint8_t* get_enclave_region(void);
+size_t get_enclave_region_size(void);
+
 #ifdef __cplusplus
 }
 #endif

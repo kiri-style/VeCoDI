@@ -1,8 +1,9 @@
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
-#include "inference.h"
+// #include "inference.h"  // Legacy full-model path (not used)
 #include "run_enclave.h"
 #include "create_enclave.h"
+#include "split_inference.h"
 
 /* Linker symbols pour calculs mémoire */
 extern char __bss_start[];
@@ -38,6 +39,14 @@ int main(void)
         return -1;
     }
     printk("[STEP 1] ✓ Complete\n\n");
+
+    /* Étape 1.5: Configuration split inference avec late weights déchiffrés */
+    printk("[STEP 1.5] Configuring split inference with decrypted weights...\n");
+    uint8_t* late_wt_buf = get_enclave_region();
+    size_t late_wt_size = get_enclave_region_size();
+    set_late_weights_buffer(late_wt_buf, late_wt_size);
+    printk("[STEP 1.5] ✓ Late weights buffer configured: %p (%zu bytes)\n\n", 
+           (void*)late_wt_buf, late_wt_size);
 
     print_memory_stats();
 

@@ -1,159 +1,69 @@
-# Source Code - Non-Secure Application
+# Source Code (Non-Secure Application)
 
 ## Overview
-This directory contains the **Non-Secure (NS) world application** for secure TFLite Micro inference on STM32L552 with TrustZone. The application demonstrates:
-- **Encrypted model storage** in ROM
-- **Secure decryption** via TF-M partition
-- **RAM-based model execution** in protected enclave
-- **TFLite Micro inference** with CIFAR-10 classification
+This folder contains the Non-Secure (NS) application that drives the split inference flow. The NS app:
+- Creates the enclave environment.
+- Requests **secure decryption of late-layer weights** into NS RAM.
+- Runs CMSIS-NN split inference (early + late) using the decrypted weights.
 
-## Architecture
-
-### System Overview
+## Architecture (NS + Secure Interaction)
 ```
-┌────────────────────────────────────────────────────────┐
-│                  Non-Secure World                      │
-│                                                        │
-│  ┌──────────────┐      ┌─────────────────────┐       │
-│  │  main.cpp    │──────│ create_enclave.cpp  │       │
-│  │  (app entry) │      │ • Allocate 40KB RAM │       │
-│  └──────┬───────┘      │ • PSA calls to S    │       │
-│         │              │ • Decrypt model     │       │
-│         │              └──────────┬──────────┘       │
-│         │                         │                  │
-│         │              ┌──────────▼──────────┐       │
-│         └──────────────│  inference.cpp      │       │
-│                        │  • TFLite setup     │       │
-│                        │  • Op resolver      │       │
-│                        │  • Run inference    │       │
-│                        └─────────────────────┘       │
-│                                                        │
-│  ROM: cifar_resnet_lite_int8_encrypted[] (39.5KB)    │
-│  RAM: enclave_memory[40KB] ← decrypted model         │
-│       tensor_arena[56KB]                             │
-└────────────────────────────────────────────────────────┘
-                             ↕ PSA IPC
-┌────────────────────────────────────────────────────────┐
-│                   Secure World (TF-M)                  │
-│  ┌──────────────────────────────────────┐             │
-│  │  dummy_partition.c                   │             │
-│  │  • XOR decrypt encrypted model       │             │
-│  │  • Write to NS enclave via psa_write │             │
-│  └──────────────────────────────────────┘             │
-└────────────────────────────────────────────────────────┘
+		  Non-Secure (Zephyr)                               Secure (TF-M)
+┌──────────────────────────────────┐            ┌───────────────────────────┐
+│ src/main.cpp                      │            │ dummy_partition.c         │
+│  └─ create_enclave()              │            │  └─ AES-CTR decrypt        │
+│     ├─ set_late_weights_buffer()  │   PSA IPC  │     (PSA Crypto)          │
+│     └─ psa_call(DECRYPT_LATE) ────┼──────────► │  └─ write to NS outvec     │
+│  └─ enter_enclave()               │            └───────────────────────────┘
+│     └─ run_enclave()              │
+│        └─ run_split_inference()   │
+│            ├─ early layers (CMSIS-NN)
+│            └─ late layers (CMSIS-NN)
+└──────────────────────────────────┘
 ```
-- orchestrates the full secure inference lifecycle
-- performs PSA IPC calls (`psa_connect`, `psa_call`, `psa_close`)
-- requests Secure-controlled memory access
-- logs security-relevant execution steps
 
-This file is the **reference implementation** for understanding the system design.
+## Key Paths (NS World)
+- `src/main.cpp`: entry point; orchestrates the high-level flow
+- `src/create_enclave.cpp`: allocates NS buffer, calls PSA decrypt, sets late-weights buffer
+- `src/run_enclave.cpp`: runs inference inside the enclave thread
+- `src/split_inference.cpp`: CMSIS-NN early/late inference implementation
+- `src/split_inference.h`: late-weights buffer API (`set/get`)
+- `src/test_images.c`: CIFAR-10 sample inputs
 
----
+## Where the Data Lives
+- **Encrypted late weights in flash**: `split_inference/late/L_nn_wt_encrypted_data.c`
+- **Late weights sizes + IV**: `split_inference/late/L_nn_wt_encrypted.h`
+- **Late biases**: `split_inference/late/L_nn_biases.h`
+- **Early weights/params**: `split_inference/early/E_nn_wt.h`, `split_inference/early/E_nn_params.h`
 
-### 📄 mpu_model.cpp / mpu_model.h
-Handles **MPU protection of the AI model in Flash**.
+## Key Files
 
-Key responsibilities:
-- configures a read-only MPU region for the model
-- exposes linker-defined boundaries
-- used by Secure commands:
-  - `CMD_OPEN_MODEL_ACCESS`
-  - `CMD_CLOSE_MODEL_ACCESS`
+### Application entry
+- **main.cpp**: high-level flow; calls `create_enclave()` then `enter_enclave()`.
+- **create_enclave.cpp**: allocates the NS buffer used for late weights, invokes PSA decrypt, and manages enclave state.
+- **run_enclave.cpp**: executes split inference inside the enclave thread.
 
----
+### Split inference
+- **split_inference.cpp / split_inference.h**: CMSIS-NN early/late execution, buffer reuse, and prediction printing.
+- **test_images.c / test_images.h**: CIFAR-10 sample inputs and labels.
 
-### 📄 mpu_inference.cpp / mpu_inference.h
-Manages **inference memory (tensor arena) protection** on the Non-Secure side.
+### Model + artifacts
+- **cifar_resnet_int8.tflite**: quantized CIFAR-10 model (reference).
+- **cifar_resnet_lite_int8_data.cc/h**: embedded model array (legacy path).
+- **model_encrypted*.h**: legacy encrypted model headers (not used by split flow).
 
-Responsibilities:
-- retrieves start address and size of the tensor arena
-- provides region metadata to the Secure World
-- contains **no inference logic**, only memory control
+### Security/IPC glue
+- **ns_irq.c / ns_irq.h**: NS interrupt setup for TrustZone.
 
----
+## Runtime Flow (Current)
+1. NS allocates `enclave_memory` sized to `LATE_WT_TOTAL_SIZE`.
+2. NS sends `{cmd, encrypted_weights, iv}` to TF-M secure partition.
+3. Secure partition decrypts AES-CTR into NS buffer.
+4. `split_inference` uses the decrypted weights to run late layers.
 
-### 📄 model_ro.ld
-Linker script defining the **protected Flash region** containing the AI model.
+## Traceable Call Chain
+`main.cpp` → `create_enclave.cpp` → PSA IPC → `dummy_partition/dummy_partition.c` → back to `split_inference.cpp`.
 
-Enables:
-- strict separation between code and model
-- fine-grained MPU enforcement
-- exposure of linker symbols:
-  - `__model_ro_start`
-  - `__model_ro_end`
-
----
-
-### 📄 model_data.cc / model_data.h
-Contains the embedded **TensorFlow Lite model** (`.tflite` format).
-
-The model is **never directly executed from the Non-Secure side**.
-
----
-
-### 📄 cifar_resnet_int8.tflite
-Quantized (int8) CIFAR-10 neural network model.
-
-Used only after Secure World validation.
-
----
-
-### 📄 inference.cpp / inference.h
-Inference-related logic scaffolding.
-
-In this implementation:
-- inference execution is **intentionally disabled** on the Non-Secure side
-- actual execution is triggered via Secure commands
-
----
-
-### 📄 ns_irq.c / ns_irq.h
-Non-Secure interrupt initialization.
-
-Executed early in `main()` to:
-- establish a clean NS execution environment
-- prepare Secure ↔ Non-Secure transitions
-
----
-
-### 📄 secure_gate_ns.h
-Shared interface between Non-Secure and Secure worlds.
-
-Defines:
-- command identifiers
-- shared structures
-- PSA ABI contract
-
----
-
-### 📄 test_images.c / test_images.h
-CIFAR-10 test images used during inference validation.
-
----
-
-### 📄 output_handler.cpp / output_handler.hpp
-Handles inference output formatting and logging.
-
----
-
-## Security Properties Demonstrated
-
-✔ Secure / Non-Secure isolation  
-✔ Temporary and revocable memory access  
-✔ MPU protection for Flash and SRAM  
-✔ Token-based Secure authorization  
-✔ Inference execution only in Secure World  
-✔ PSA / TrustZone compliant design  
-
----
-
-## Educational Objective
-
-This project demonstrates:
-- how to secure an embedded AI inference pipeline
-- how to prevent model extraction
-- how to restrict access to weights and activations
-- how to correctly combine **Zephyr, TF-M, MPU, and PSA IPC**
-
----
+## Notes
+- The legacy full-model decryption path exists for reference, but split inference uses **late weights only**.
+- Buffer sizes are tuned for STM32L552 RAM limits.

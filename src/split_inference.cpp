@@ -21,7 +21,8 @@ static constexpr int kEarlyLayersWithCtx = NUM_LAYERS_WITH_CTX;
 #undef NUM_LAYERS_WITH_CTX
 #undef DATASET_SIZE
 
-#include "../split_inference/late/L_nn_wt.h"
+#include "../split_inference/late/L_nn_wt_encrypted.h"
+#include "../split_inference/late/L_nn_biases.h"
 #include "../split_inference/late/L_nn_params.h"
 
 static constexpr int kLateCtxSize = 4096;
@@ -46,6 +47,38 @@ alignas(16) static int8_t late_ctx_buf[kLateCtxSize];
 alignas(16) static int8_t early_output[output_size_conv2d_6];
 alignas(16) static int8_t early_skip[output_size_conv2d_5];
 alignas(16) static int8_t input_buffer[kEarlyInputSize];
+
+static uint8_t *late_wt_ram = nullptr;
+static size_t late_wt_ram_size = 0;
+static const int8_t *wt_conv2d_7 = nullptr;
+static const int8_t *wt_conv2d_8 = nullptr;
+static const int8_t *wt_fc = nullptr;
+
+void set_late_weights_buffer(uint8_t *buf, size_t size)
+{
+    late_wt_ram = buf;
+    late_wt_ram_size = size;
+
+    if (late_wt_ram) {
+        wt_conv2d_7 = reinterpret_cast<const int8_t *>(late_wt_ram + LATE_WT_CONV2D_7_OFFSET);
+        wt_conv2d_8 = reinterpret_cast<const int8_t *>(late_wt_ram + LATE_WT_CONV2D_8_OFFSET);
+        wt_fc = reinterpret_cast<const int8_t *>(late_wt_ram + LATE_WT_FC_OFFSET);
+    } else {
+        wt_conv2d_7 = nullptr;
+        wt_conv2d_8 = nullptr;
+        wt_fc = nullptr;
+    }
+}
+
+uint8_t *get_late_weights_buffer(void)
+{
+    return late_wt_ram;
+}
+
+size_t get_late_weights_size(void)
+{
+    return late_wt_ram_size;
+}
 
 static const uint8_t *const test_images[NUM_TEST_IMAGES] = {img_0, img_1};
 static const uint8_t test_labels[NUM_TEST_IMAGES] = {label_0, label_1};
@@ -249,6 +282,11 @@ void run_split_inference(void)
 {
     printk("\n[SPLIT] ===== CMSIS-NN SPLIT INFERENCE =====\n");
 
+    if (!late_wt_ram || late_wt_ram_size < LATE_WT_TOTAL_SIZE) {
+        printk("[SPLIT] Late weights not ready (buffer missing)\n");
+        return;
+    }
+
     if (!early_check_ctx_size()) {
         printk("[SPLIT] Early ctx buffer too small\n");
         return;
@@ -257,8 +295,6 @@ void run_split_inference(void)
         printk("[SPLIT] Late ctx buffer too small\n");
         return;
     }
-
-    int8_t input_buffer[kEarlyInputSize];
 
     for (int test_id = 0; test_id < NUM_TEST_IMAGES; test_id++) {
         const uint8_t *img = test_images[test_id];

@@ -32,13 +32,9 @@ zephyr_compile_options($<$<COMPILE_LANGUAGE:CXX>:${NO_THREADSAFE_STATICS}>)
 target_sources(app PRIVATE
     src/main.cpp
     src/create_enclave.cpp
-    src/inference.cpp
     src/split_inference.cpp
-    src/cifar_resnet_lite_int8_data.cc  # New lightweight model
     src/test_images.c
-    #src/mpu_model.cpp
-    #src/ns_irq.c
-    #src/mpu_inference.cpp
+    split_inference/late/L_nn_wt_encrypted_data.c
     src/run_enclave.cpp
     
 

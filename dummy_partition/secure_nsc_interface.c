@@ -4,13 +4,20 @@
 #include "cmsis.h"
 #include "flash_layout.h"
 
+/*
+ * Secure → Non-Secure bridge.
+ *
+ * This helper validates a Non-Secure entry address and safely transitions
+ * to it using CMSE sanitization. Intended for debug/bring-up scenarios.
+ */
+
 /* =========================================================
  * Adresse réelle issue du zephyr.map + 1 (Thumb bit)
  * ========================================================= */
 #define NS_ENCLAVE_ADDR   (0x0C042599U)
 
 
-/* Prototype fonction Non-Secure */
+/* Prototype fonction Non-Secure. */
 typedef void (*ns_enclave_func_t)(void)
     __attribute__((cmse_nonsecure_call));
 

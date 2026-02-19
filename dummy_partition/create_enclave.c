@@ -2,6 +2,13 @@
 #include <stdint.h>
 #include "stm32l5xx.h"
 
+/*
+ * Secure enclave lifecycle helpers.
+ *
+ * This file configures SAU regions to temporarily expose a secure SRAM window
+ * to the Non-Secure world for enclave execution, then closes it afterward.
+ */
+
 /* =========================================================
  * CONFIGURATION
  * ========================================================= */

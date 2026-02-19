@@ -23,3 +23,19 @@ cmake_install.cmake
 __pycache__/
 .env
 src/test_data/cifar-10-python.tar.gz
+.venv/
+build/
+
+# Large files and unused resources
+SecureQNN_repo/
+Papers/
+images/
+split_inference/data.h
+serial_*.txt
+*.tflite
+src/model_encrypted*.h
+src/qnn_inference.c
+src/cifar_resnet_lite_int8_encrypted.h
+src/cifar10_reference_data.h
+tools/
+.github/
