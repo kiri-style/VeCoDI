@@ -102,6 +102,17 @@ Inference Phase
    - Weights: Decrypted late weights from enclave RAM
    - Output: Class prediction (0-9)
 
+5. **Integrity Hash Computation** (``compute_integrity_hash()``)
+   
+   - Algorithm: SHA-256 via PSA Crypto API
+   - Hash inputs:
+     - Input data (CIFAR-10 image, 3072 bytes)
+     - Early weight pointers (code integrity proxy)
+     - All 7 early weight arrays (wt_conv2d through wt_conv2d_6)
+     - All 3 late weight arrays (wt_conv2d_7, wt_conv2d_8, wt_fc) in 4KB chunks
+   - Output: 32-byte SHA-256 hash displayed at end of inference
+   - Purpose: Control Flow and Data Integrity (CNT) verification
+
 PSA IPC Protocol
 ================
 
@@ -185,6 +196,7 @@ Configuration
 
 - ``CONFIG_BUILD_WITH_TFM=y``: Enable TF-M integration
 - ``CONFIG_TFM_PARTITION_CRYPTO=y``: Enable crypto partition
+- ``CONFIG_MBEDTLS_PSA_CRYPTO_C=y``: Enable PSA Crypto for NS side (required for hash)
 - ``CONFIG_MAIN_STACK_SIZE=2048``: Sufficient for inference
 
 Build & Flash
@@ -241,15 +253,29 @@ Expected Serial Output
     
     [STEP 1.5] ✓ Late weights buffer configured: 0x20000fc0 (39552 bytes)
     
+    [CNT] PSA crypto init OK
     [SPLIT] Test 0 | expected = 6
-    [SPLIT][EARLY] Start
-    [SPLIT][EARLY] conv2d_6 done
-    [SPLIT][LATE] Start
-    [SPLIT][LATE] fc done
+    [CNT] Starting hash computation...
+    [CNT] Hash setup OK
+    [CNT] Hashing late weights in chunks...
+    [CNT] Late weights hashed successfully
+    [CNT] Hash computed successfully (len=32)
+    [CNT] First 8 bytes: 0bc20736ab268068
+    [CNT] Hash stored for test 0
     [SPLIT] Prediction = 6
     
     [SPLIT] Test 1 | expected = 9
+    [CNT] Starting hash computation...
+    [CNT] Hash setup OK
+    [CNT] Hashing late weights in chunks...
+    [CNT] Late weights hashed successfully
+    [CNT] Hash computed successfully (len=32)
+    [CNT] First 8 bytes: 2acf215c0e5f4659
+    [CNT] Hash stored for test 1
     [SPLIT] Prediction = 9
+    
+    [CNT] Final Hash: 2acf215c0e5f4659d4d2052380ba8c3c82b8a20b0308ae43f429e12134a87686
+    [SPLIT] ===== DONE =====
 
 Performance Metrics
 -------------------
@@ -299,6 +325,18 @@ Build Issues
 
 Runtime Issues
 --------------
+
+**Hash output all zeros**
+
+- Missing PSA Crypto configuration
+- Add ``CONFIG_MBEDTLS_PSA_CRYPTO_C=y`` to ``prj.conf``
+- Rebuild from clean: ``west build -p always``
+
+**Hash fails with PSA_ERROR_INVALID_ARGUMENT (-141)**
+
+- Buffer size exceeds PSA crypto limits
+- Late weights are hashed in 4096-byte chunks (already implemented)
+- Verify chunking logic in ``compute_integrity_hash()``
 
 **Prediction incorrect**
 

@@ -34,6 +34,8 @@ target_sources(app PRIVATE
     src/create_enclave.cpp
     src/split_inference.cpp
     src/test_images.c
+    src/benchmark.cpp
+    src/secure_benchmark_ns.cpp
     split_inference/late/L_nn_wt_encrypted_data.c
     src/run_enclave.cpp
     

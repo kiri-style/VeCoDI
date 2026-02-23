@@ -15,6 +15,8 @@ int destroy_enclave(void);
 /* Get enclave memory region (for late weights) */
 uint8_t* get_enclave_region(void);
 size_t get_enclave_region_size(void);
+uint32_t get_max_inferences_per_enclave(void);
+bool is_enclave_created(void);
 
 #ifdef __cplusplus
 }

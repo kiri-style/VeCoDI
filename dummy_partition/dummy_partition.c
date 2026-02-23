@@ -14,6 +14,7 @@
 #include "psa_manifest/tfm_dummy_partition.h"
 
 #include "stm32l5xx_hal_secure_sram.h"
+#include "secure_benchmark.h"
 
 /*
  * Dummy Partition (Secure) - TF-M IPC service
@@ -50,6 +51,17 @@ static void print_secure_memory_stats(void)
 #define DP_CMD_SECRET_DIGEST        0
 #define DP_CMD_DECRYPT_MODEL        2
 #define DP_CMD_DECRYPT_LATE_WEIGHTS 3
+#define DP_CMD_GET_MAX_INFERENCES   4
+#define DP_CMD_CHECK_INFERENCE_ALLOWED 5
+#define DP_CMD_INCREMENT_COUNTER    6
+#define DP_CMD_RESET_COUNTER        7
+#define DP_CMD_GET_BENCHMARK        8
+
+/* Security policy: maximum inferences per enclave */
+#define MAX_INFERENCES_PER_ENCLAVE  3
+
+/* Secure inference counter (protected) */
+static uint32_t inference_counter_secure = 0;
 
 /* Fixed-size secret container used for digest service. */
 struct dp_secret {
@@ -97,9 +109,12 @@ static psa_status_t tfm_dp_secret_digest(uint32_t secret_index,
 		return PSA_ERROR_INVALID_ARGUMENT;
 	}
 
+	SECURE_BENCHMARK_START(digest_start);
 	status = psa_hash_compute(PSA_ALG_SHA_256, secrets[secret_index].secret,
 				sizeof(secrets[secret_index].secret), digest,
 				digest_size, p_digest_size);
+	SECURE_BENCHMARK_END(digest_start, digest_compute_cycles);
+	g_secure_metrics.digest_count++;
 
 	if (status != PSA_SUCCESS) {
 		return status;
@@ -125,6 +140,8 @@ static psa_status_t tfm_dp_decrypt_late_weights(psa_msg_t *msg)
         return PSA_ERROR_INVALID_ARGUMENT;
     }
 
+    SECURE_BENCHMARK_START(aes_start);
+    
     psa_status_t status = psa_crypto_init();
     if (status != PSA_SUCCESS) {
         return status;
@@ -194,6 +211,10 @@ static psa_status_t tfm_dp_decrypt_late_weights(psa_msg_t *msg)
     }
 
     psa_destroy_key(key_id);
+    
+    SECURE_BENCHMARK_END(aes_start, aes_decrypt_cycles);
+    g_secure_metrics.aes_decrypt_count++;
+    
     return PSA_SUCCESS;
 }
 
@@ -283,6 +304,67 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
         printf("[SECURE] Model decryption is deprecated (AES-only flow).\n");
         return PSA_ERROR_NOT_SUPPORTED;
 
+    case DP_CMD_GET_MAX_INFERENCES:
+        {
+            SECURE_BENCHMARK_START(get_max_start);
+            uint32_t max_inf = MAX_INFERENCES_PER_ENCLAVE;
+            psa_write(msg->handle, 0, &max_inf, sizeof(max_inf));
+            SECURE_BENCHMARK_END(get_max_start, get_max_cycles);
+            g_secure_metrics.counter_operations++;
+            printf("[SECURE] Returned max inferences: %u\n", max_inf);
+            return PSA_SUCCESS;
+        }
+
+    case DP_CMD_CHECK_INFERENCE_ALLOWED:
+        {
+            SECURE_BENCHMARK_START(check_start);
+            uint32_t allowed = (inference_counter_secure + 1 <= MAX_INFERENCES_PER_ENCLAVE) ? 1 : 0;
+            psa_write(msg->handle, 0, &allowed, sizeof(allowed));
+            SECURE_BENCHMARK_END(check_start, check_allowed_cycles);
+            g_secure_metrics.counter_operations++;
+            printf("[SECURE] Check inference allowed: counter=%u, max=%u, allowed=%u\n", 
+                   inference_counter_secure, MAX_INFERENCES_PER_ENCLAVE, allowed);
+            return PSA_SUCCESS;
+        }
+
+    case DP_CMD_INCREMENT_COUNTER:
+        {
+            SECURE_BENCHMARK_START(inc_start);
+            inference_counter_secure++;
+            SECURE_BENCHMARK_END(inc_start, increment_cycles);
+            g_secure_metrics.counter_operations++;
+            printf("[SECURE] Inference counter incremented: %u\n", inference_counter_secure);
+            return PSA_SUCCESS;
+        }
+
+    case DP_CMD_RESET_COUNTER:
+        {
+            SECURE_BENCHMARK_START(reset_start);
+            inference_counter_secure = 0;
+            SECURE_BENCHMARK_END(reset_start, reset_cycles);
+            g_secure_metrics.counter_operations++;
+            printf("[SECURE] Inference counter reset to 0\n");
+            return PSA_SUCCESS;
+        }
+    
+    case DP_CMD_GET_BENCHMARK:
+        {
+            /* Return Secure benchmark metrics to NS */
+            if (msg->out_size[0] != sizeof(g_secure_metrics)) {
+                return PSA_ERROR_INVALID_ARGUMENT;
+            }
+            
+            /* Update memory usage before sending */
+            secure_benchmark_get_memory_usage(&g_secure_metrics.ram_used_bytes,
+                                             &g_secure_metrics.ram_total_bytes,
+                                             &g_secure_metrics.flash_used_bytes,
+                                             &g_secure_metrics.flash_total_bytes);
+            
+            psa_write(msg->handle, 0, &g_secure_metrics, sizeof(g_secure_metrics));
+            printf("[SECURE] Benchmark metrics sent to NS\n");
+            return PSA_SUCCESS;
+        }
+
         default:
             return PSA_ERROR_NOT_SUPPORTED;
     }
@@ -326,6 +408,9 @@ psa_status_t tfm_dp_req_mngr_init(void)
 
     printf("\n[SECURE INIT] Dummy partition init\n");
     print_secure_memory_stats();
+    
+    /* Initialize Secure benchmark system */
+    secure_benchmark_init();
 
 	while (1) {
         signals = psa_wait(PSA_WAIT_ANY, PSA_BLOCK);

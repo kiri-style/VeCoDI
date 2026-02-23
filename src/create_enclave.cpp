@@ -5,6 +5,7 @@
 
 #include "create_enclave.h"
 #include "run_enclave.h"
+#include "benchmark.h"
 #include "../split_inference/late/L_nn_wt_encrypted.h"
 
 /* ============================================================
@@ -28,6 +29,10 @@
  * ============================================================ */
 
 static bool enclave_created = false;
+static uint32_t max_inferences_per_enclave = 0;
+
+/* Forward declaration for reset function */
+extern void reset_inference_counter(void);
 
 /* Enclave isolated memory (late weights live here by default) */
 alignas(32) static uint8_t enclave_memory[ENCLAVE_MEMORY_SIZE];
@@ -43,6 +48,8 @@ static struct k_thread enclave_thread;
 
 static int decrypt_late_weights_into_ns(void)
 {
+    BENCHMARK_START(decrypt);
+    
     uint8_t *out_buf = enclave_region_base;
     size_t out_size = enclave_region_size;
 
@@ -86,7 +93,10 @@ static int decrypt_late_weights_into_ns(void)
         return -1;
     }
 
-    printk("[NS] ✓ Late weights decrypted into NS RAM\n");
+    BENCHMARK_END(decrypt, g_benchmark_metrics.aes_decrypt_cycles);
+    printk("[NS] ✓ Late weights decrypted into NS RAM (%u cycles, %u ms)\n",
+           g_benchmark_metrics.aes_decrypt_cycles,
+           benchmark_cycles_to_ms(g_benchmark_metrics.aes_decrypt_cycles));
     return 0;
 }
 
@@ -96,6 +106,8 @@ static int decrypt_late_weights_into_ns(void)
 
 int create_enclave(void)
 {
+    BENCHMARK_START(create_enc);
+    
     if (enclave_created) {
         printk("[NS] Enclave already created\n");
         return -1;
@@ -119,10 +131,52 @@ int create_enclave(void)
         printk("[NS] \u2717 Late weights decrypt failed\n");
         return -1;
     }
+    /* Get max inferences policy from secure side */
+    printk("[NS] Requesting max inferences policy from secure...\n");
+    psa_handle_t handle = psa_connect(ENCLAVE_SID, ENCLAVE_VER);
+    if (handle <= 0) {
+        printk("[NS] psa_connect failed (max inferences), handle=%d\n", (int)handle);
+        return -1;
+    }
+
+    uint32_t cmd = 4; /* DP_CMD_GET_MAX_INFERENCES */
+    psa_invec in_vec = { &cmd, sizeof(cmd) };
+    psa_outvec out_vec = { &max_inferences_per_enclave, sizeof(max_inferences_per_enclave) };
+
+    psa_status_t status = psa_call(handle, PSA_IPC_CALL, &in_vec, 1, &out_vec, 1);
+    psa_close(handle);
+
+    if (status != PSA_SUCCESS) {
+        printk("[NS] Failed to get max inferences, status=%d\n", status);
+        return -1;
+    }
+    printk("[NS] ✓ Max inferences per enclave: %u\n", max_inferences_per_enclave);
+
+    /* Reset inference counter in Secure side */
+    printk("[NS] Resetting Secure inference counter...\n");
+    handle = psa_connect(ENCLAVE_SID, ENCLAVE_VER);
+    if (handle <= 0) {
+        printk("[NS] psa_connect failed (reset counter), handle=%d\n", (int)handle);
+        return -1;
+    }
+
+    cmd = 7; /* DP_CMD_RESET_COUNTER */
+    psa_invec reset_vec = { &cmd, sizeof(cmd) };
+    status = psa_call(handle, PSA_IPC_CALL, &reset_vec, 1, NULL, 0);
+    psa_close(handle);
+
+    if (status != PSA_SUCCESS) {
+        printk("[NS] Failed to reset Secure counter, status=%d\n", status);
+        return -1;
+    }
+    printk("[NS] ✓ Secure inference counter reset to 0\n");
 
     enclave_created = true;
 
-    printk("[NS] \u2713 Enclave creation complete\n");
+    BENCHMARK_END(create_enc, g_benchmark_metrics.enclave_create_cycles);
+    printk("[NS] ✓ Enclave creation complete (%u cycles, %u ms)\n",
+           g_benchmark_metrics.enclave_create_cycles,
+           benchmark_cycles_to_ms(g_benchmark_metrics.enclave_create_cycles));
     printk("--- END CREATE ENCLAVE ---\n\n");
     return 0;
 }
@@ -138,6 +192,16 @@ uint8_t* get_enclave_region(void)
 size_t get_enclave_region_size(void)
 {
     return enclave_region_size;
+}
+
+uint32_t get_max_inferences_per_enclave(void)
+{
+    return max_inferences_per_enclave;
+}
+
+bool is_enclave_created(void)
+{
+    return enclave_created;
 }
 /* ============================================================
  *                 THREAD ENTRY (INFERENCE)
@@ -187,6 +251,8 @@ int enter_enclave(void)
 
 int destroy_enclave(void)
 {
+    BENCHMARK_START(destroy_enc);
+    
     if (!enclave_created) {
         printk("[NS] No enclave to destroy\n");
         return -1;
@@ -198,7 +264,11 @@ int destroy_enclave(void)
     memset(enclave_region_base, 0, enclave_region_size);
 
     enclave_created = false;
+    max_inferences_per_enclave = 0;
 
-    printk("[NS] Enclave destroyed\n");
+    BENCHMARK_END(destroy_enc, g_benchmark_metrics.enclave_destroy_cycles);
+    printk("[NS] ✓ Enclave destroyed (memory zeroed, counters reset, %u cycles, %u ms)\n",
+           g_benchmark_metrics.enclave_destroy_cycles,
+           benchmark_cycles_to_ms(g_benchmark_metrics.enclave_destroy_cycles));
     return 0;
 }

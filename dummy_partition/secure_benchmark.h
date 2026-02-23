@@ -1,0 +1,92 @@
+/*
+ * Secure Benchmark System for TF-M Dummy Partition
+ * 
+ * Provides cycle-accurate performance measurement for Secure-side operations
+ * using ARM Cortex-M33 DWT (Data Watchpoint and Trace) hardware.
+ */
+
+#ifndef SECURE_BENCHMARK_H
+#define SECURE_BENCHMARK_H
+
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Secure-side performance metrics */
+typedef struct {
+    /* Cryptographic operations */
+    uint64_t aes_decrypt_cycles;
+    uint64_t late_hash_cycles;
+    uint64_t digest_compute_cycles;
+    
+    /* Counter management */
+    uint64_t get_max_cycles;
+    uint64_t check_allowed_cycles;
+    uint64_t increment_cycles;
+    uint64_t reset_cycles;
+    
+    /* Operation counts */
+    uint32_t aes_decrypt_count;
+    uint32_t late_hash_count;
+    uint32_t digest_count;
+    uint32_t counter_operations;
+    
+    /* Memory usage (Secure partition) */
+    uint32_t ram_used_bytes;
+    uint32_t ram_total_bytes;
+    uint32_t flash_used_bytes;
+    uint32_t flash_total_bytes;
+    
+} secure_benchmark_metrics_t;
+
+/* Global metrics (Secure-side) */
+extern secure_benchmark_metrics_t g_secure_metrics;
+
+/**
+ * Initialize Secure benchmark system (DWT cycle counter)
+ */
+void secure_benchmark_init(void);
+
+/**
+ * Get current DWT cycle count
+ */
+uint32_t secure_benchmark_get_cycles(void);
+
+/**
+ * Convert cycles to milliseconds (110 MHz CPU)
+ */
+uint32_t secure_benchmark_cycles_to_ms(uint64_t cycles);
+
+/**
+ * Convert cycles to microseconds (110 MHz CPU)
+ */
+uint32_t secure_benchmark_cycles_to_us(uint64_t cycles);
+
+/**
+ * Get Secure partition memory usage (RAM and Flash)
+ */
+void secure_benchmark_get_memory_usage(uint32_t *ram_used, uint32_t *ram_total,
+                                       uint32_t *flash_used, uint32_t *flash_total);
+
+/**
+ * Print Secure-side benchmark report
+ */
+void secure_benchmark_print_report(void);
+
+/* Benchmark macros for easy instrumentation */
+#define SECURE_BENCHMARK_START(var) \
+    uint32_t var = secure_benchmark_get_cycles()
+
+#define SECURE_BENCHMARK_END(var, field) \
+    do { \
+        uint32_t end_cycles = secure_benchmark_get_cycles(); \
+        g_secure_metrics.field += (end_cycles - var); \
+    } while(0)
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* SECURE_BENCHMARK_H */
