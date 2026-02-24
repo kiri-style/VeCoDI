@@ -12,9 +12,30 @@ on ARM Cortex-M33 with TrustZone, combining:
 - **CMSIS-NN**: Optimized neural network kernels for embedded devices
 - **Split Inference**: Model split into early (unprotected) and late (weight-protected) layers
 - **AES-CTR Encryption**: Late layer weights encrypted in ROM, decrypted at runtime by secure world
+- **DWT Benchmark System**: Cycle-accurate performance measurement (NS + Secure worlds)
+- **Counter Management**: Strict inference limiting with PSA-backed security
 
-Architecture
-============
+Performance Summary
+===================
+
+**Non-Secure Inference Pipeline**
+
+- **Early Layers**: 405 ms (44.6M cycles)
+- **Late Layers**: 74 ms (8.2M cycles)
+- **Total Inference**: 518 ms (57.0M cycles)
+- **Average per Inference**: 193 ms
+
+**Secure Cryptographic Operations**
+
+- **AES Decrypt**: 66 ms/operation (7.28M cycles @ 110 MHz)
+- **Counter Management**: <1 µs per operation (negligible overhead)
+- **IPC Latency Overhead**: ~13 ms per AES call
+
+**Memory Footprint**
+
+- **Non-Secure**: 187 KB Flash (71%), 121 KB RAM (92%)
+- **Secure**: 119 KB Flash (89%), 52 KB RAM (80%)
+- **Total**: ~310 KB / 512 KB Flash (60%), 174 KB / 192 KB RAM (91%)
 
 Three-Layer Security Model
 --------------------------
@@ -95,9 +116,129 @@ Inference Phase
      - ``early_output``: Main path feature map
      - ``early_skip``: Residual connection from conv2d_5
 
-4. **Late Layers** (``run_late_layers()``)
+4. **Inference Counter Management** (``DP_CMD_RUN_INFERENCE``)
    
-   - Inputs: ``early_output`` + ``early_skip``
+   - Secure world atomically checks and increments counter
+   - **Limit**: 3 inferences per enclave
+   - **Behavior**: 
+     - Inferences 1-3: ✅ Allowed
+     - Inference 4+: ✅ BLOCKED (no auto-recreation)
+   - Response: 1 (allowed) or 0 (denied)
+
+5. **Benchmark Reporting** (``benchmark_print_report()``)
+   
+   - NS metrics: 15 different timing measurements
+   - Secure metrics: Crypto operations + counter management
+   - Memory usage: RAM/Flash percentages for both worlds
+   - Formatted output: Box-drawing characters for readability
+
+Benchmark System
+================
+
+Architecture
+------------
+
+**Dual-World Performance Measurement**
+
+::
+
+    ┌─────────────────────────────────────┐
+    │  Non-Secure (Zephyr)                │
+    │  ├─ DWT Cycle Counter (ARM Cortex)  │
+    │  ├─ 15 Metrics                      │
+    │  └─ Enclave + Crypto + Inference    │
+    └─────────────────────────────────────┘
+    
+    ┌─────────────────────────────────────┐
+    │  Secure (TF-M)                      │
+    │  ├─ DWT Cycle Counter (ARM Cortex)  │
+    │  ├─ 4 Metrics                       │
+    │  └─ AES + Counter Ops               │
+    └─────────────────────────────────────┘
+
+**NS-Side Metrics (src/benchmark.h/cpp)**
+
+- ``enclave_create_cycles``: Enclave lifecycle (134 ms)
+- ``enclave_destroy_cycles``: Cleanup (4 ms)
+- ``aes_decrypt_cycles``: AES decrypt via PSA call (82 ms)
+- ``late_hash_cycles``: Late weights hash (8 ms)
+- ``inference_hash_cycles``: Integrity hash (11 ms)
+- ``early_layers_cycles``: Early inference (405 ms)
+- ``late_layers_cycles``: Late inference (74 ms)
+- ``total_inference_cycles``: End-to-end (518 ms)
+- ``run_enclave_cycles``: Full enclave execution (774 ms)
+- ``ram_used_bytes``: NS RAM usage (121.4 KB)
+- ``flash_used_bytes``: NS Flash usage (187.2 KB)
+
+**Secure-Side Metrics (dummy_partition/secure_benchmark.h/c)**
+
+- ``aes_decrypt_cycles``: Actual AES execution (132 ms total, 66 ms/op)
+- ``digest_compute_cycles``: SHA-256 operations (0 ms - NS-side only)
+- ``get_max_cycles``: Counter query (~1 µs)
+- ``check_allowed_cycles``: Limit check (~2 µs)
+- ``increment_cycles``: Counter increment (~0.1 µs)
+- ``ram_used_bytes``: Secure RAM (52.7 KB, 80%)
+- ``flash_used_bytes``: Secure Flash (119.5 KB, 89%)
+
+**PSA IPC Commands**
+
+::
+
+    DP_CMD_DECRYPT_LATE_WEIGHTS (3)
+    ├─ Input: Encrypted weights, IV
+    └─ Output: Decrypted weights in NS enclave
+
+    DP_CMD_RUN_INFERENCE (NEW - atomic check + increment)
+    ├─ Checks: inference_counter < MAX_INFERENCES
+    ├─ Action: Increments counter if allowed
+    └─ Response: 1 (allowed) or 0 (blocked)
+
+    DP_CMD_GET_BENCHMARK (8)
+    ├─ Action: Reads linker symbols for memory usage
+    └─ Output: Complete secure_benchmark_metrics_t structure
+
+Counter Management
+==================
+
+**Policy: Strict Blocking (No Auto-Recreation)**
+
+::
+
+    Enclave 1 (Inferences 1-3)
+    ├─ Inference 1: DP_CMD_RUN_INFERENCE → counter=1 → ✅ Execute
+    ├─ Inference 2: DP_CMD_RUN_INFERENCE → counter=2 → ✅ Execute
+    ├─ Inference 3: DP_CMD_RUN_INFERENCE → counter=3 → ✅ Execute
+    └─ Inference 4: DP_CMD_RUN_INFERENCE → counter=3 (at max) → ✅ BLOCKED
+
+    Result: Application must handle limit (no automatic enclave recycling)
+
+**Flow Diagram**
+
+::
+
+    NS run_enclave() call
+           ↓
+    [Create enclave? → Yes → Secure decrypt late weights]
+           ↓
+    Call DP_CMD_RUN_INFERENCE (Secure)
+           ↓
+        ┌──────────────────────────┐
+        │ Secure World             │
+        │ ├─ Check counter < 3?    │
+        │ ├─ If yes: increment+1   │
+        │ │         return 1       │
+        │ └─ If no:  return 0      │
+        └──────────────────────────┘
+           ↓
+        (response: 0 or 1)
+           ↓
+        ┌──────────────┐
+        │ If 0: BLOCK  │  ← Application must handle
+        │ If 1: Execute│
+        └──────────────┘
+
+Architecture
+============
    - Layers: conv2d_7, conv2d_8, add_2, avgpool, fc, softmax
    - Weights: Decrypted late weights from enclave RAM
    - Output: Class prediction (0-9)
@@ -357,6 +498,15 @@ References
 - CMSIS-NN Library: https://github.com/ARM-software/CMSIS-NN
 - Zephyr RTOS: https://docs.zephyrproject.org/
 
+Documentation Files
+====================
+
+- **README.rst**: Main project documentation (this file)
+- **BENCHMARK_RESULTS.md**: Detailed cycle-by-cycle analysis of all measurements
+- **src/README.md**: Non-Secure application architecture and components
+- **dummy_partition/README.md**: Secure partition implementation details
+- **split_inference/README.md**: CIFAR-10 model and split inference details
+
 
 The flash process uses STM32CubeProgrammer as the runner.
 
@@ -366,3 +516,5 @@ Notes
 	•	Ensure the board is connected via ST-LINK before flashing.
 	•	If flashing fails, verify ST-LINK connection, power supply, and SWD frequency.
 	•	The project is built for the Non-Secure (NS) domain of the STM32L5 (TrustZone enabled).
+	•	New feature: **Strict inference counter** with atomic PSA IPC - prevents exceeding 3 inferences per enclave.
+	•	New feature: **Comprehensive dual-world benchmark system** - measures all phases with DWT cycle counter (NS + Secure).

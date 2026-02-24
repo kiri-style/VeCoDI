@@ -56,6 +56,7 @@ static void print_secure_memory_stats(void)
 #define DP_CMD_INCREMENT_COUNTER    6
 #define DP_CMD_RESET_COUNTER        7
 #define DP_CMD_GET_BENCHMARK        8
+#define DP_CMD_RUN_INFERENCE        9  /* Atomic: check + increment counter */
 
 /* Security policy: maximum inferences per enclave */
 #define MAX_INFERENCES_PER_ENCLAVE  3
@@ -362,6 +363,31 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
             
             psa_write(msg->handle, 0, &g_secure_metrics, sizeof(g_secure_metrics));
             printf("[SECURE] Benchmark metrics sent to NS\n");
+            return PSA_SUCCESS;
+        }
+    
+    case DP_CMD_RUN_INFERENCE:
+        {
+            /* Atomic operation: Check if inference allowed + Increment counter */
+            uint32_t allowed = (inference_counter_secure + 1 <= MAX_INFERENCES_PER_ENCLAVE) ? 1 : 0;
+            
+            if (allowed) {
+                /* Increment counter atomically */
+                inference_counter_secure++;
+                printf("[SECURE] Inference ALLOWED and counter incremented: %u/%u\n", 
+                       inference_counter_secure, MAX_INFERENCES_PER_ENCLAVE);
+            } else {
+                printf("[SECURE] Inference DENIED (counter limit reached: %u/%u)\n",
+                       inference_counter_secure, MAX_INFERENCES_PER_ENCLAVE);
+            }
+            
+            /* Write result back to NS */
+            if (msg->out_size[0] != sizeof(allowed)) {
+                return PSA_ERROR_INVALID_ARGUMENT;
+            }
+            psa_write(msg->handle, 0, &allowed, sizeof(allowed));
+            g_secure_metrics.counter_operations++;
+            
             return PSA_SUCCESS;
         }
 

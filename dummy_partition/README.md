@@ -25,17 +25,49 @@ Defined in [dummy_partition.c](dummy_partition.c):
 - `DP_CMD_DECRYPT_MODEL = 2` (deprecated, returns NOT_SUPPORTED)
 - `DP_CMD_DECRYPT_LATE_WEIGHTS = 3` (AES-CTR decrypt late weights)
 
-**Secure Counter Management (NEW):**
+**Secure Counter Management (NEW - ATOMIC):**
 - `DP_CMD_GET_MAX_INFERENCES = 4` (returns MAX_INFERENCES_PER_ENCLAVE policy)
 - `DP_CMD_CHECK_INFERENCE_ALLOWED = 5` (returns 1 if allowed, 0 if limit reached)
 - `DP_CMD_INCREMENT_COUNTER = 6` (increments inference_counter_secure)
+- `DP_CMD_RUN_INFERENCE = 9` **(NEW ATOMIC OPERATION)**: atomically checks counter < 3 and increments in one Secure call
 - `DP_CMD_RESET_COUNTER = 7` (resets counter to 0 during enclave creation)
+
+**Benchmark & Diagnostics (NEW):**
+- `DP_CMD_GET_BENCHMARK = 8` (retrieves Secure-side performance metrics and memory usage)
 
 **Security Policy:**
 - `MAX_INFERENCES_PER_ENCLAVE = 3` (immutable, Secure-side constant)
 - `inference_counter_secure = 0` (protected counter in Secure world)
+- Counter incremented **BEFORE** inference execution (atomic operation)
 
-## Current Flow (Late Weights + Counter + Hash)
+## Benchmark System (Dual-World DWT Monitoring)
+
+### Secure-Side Metrics (4 measurements)
+Via `DP_CMD_GET_BENCHMARK` command:
+
+1. **AES-CTR Decryption**: Cycles to decrypt late weights
+2. **SHA-256 Digest**: Cycles for integrity hash computation
+3. **Counter Management**: Cycles for atomic check+increment operation
+4. **Memory Usage**: RAM and Flash consumption in Secure partition
+
+### ARM Cortex-M33 DWT Integration
+Both NS and Secure worlds use ARM's Data Watchpoint and Trace (DWT) cycle counter:
+```
+- DEMCR register: TRCENA bit enables DWT
+- DWT_CTRL: CYCCNTENA bit enables cycle counter
+- DWT_CYCCNT: 32-bit counter @ 110 MHz (wraps at ~39 seconds)
+- Conversion: cycles / 110MHz = time in seconds; divide by 1000 for ms
+```
+
+### Secure-Side Implementation Details
+- **File**: `dummy_partition/secure_benchmark.c/h`
+- **Memory Calculation**: Hardcoded from linker output (linker symbols unavailable in TF-M)
+  - Secure RAM: 52,732 bytes (from build log analysis)
+  - Secure Flash: 119,532 bytes (from TFM partition layout)
+- **Start/Stop Pattern**: Save DWT_CYCCNT at operation start, read at end, compute difference
+- **All Timing**: Includes PSA call overhead (minimal in Secure world)
+
+## Current Flow (Late Weights + Counter + Hash + Benchmark)
 
 ### 1. Decryption Flow (cmd=3)
 NS calls `psa_call()` with:

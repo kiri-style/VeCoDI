@@ -44,10 +44,80 @@ This folder contains the Non-Secure (NS) application that drives the split infer
 ### Application entry
 - **main.cpp**: high-level flow; calls `create_enclave()` then `enter_enclave()`.
 - **create_enclave.cpp**: allocates the NS buffer used for late weights, invokes PSA decrypt, and manages enclave state.
-- **run_enclave.cpp**: executes split inference inside the enclave thread.
+- **run_enclave.cpp**: executes split inference inside the enclave thread. **[MODIFIED]** Now atomically calls `DP_CMD_RUN_INFERENCE` (Secure checks counter + increments before inference runs).
 
 ### Split inference
 - **split_inference.cpp / split_inference.h**: CMSIS-NN early/late execution, buffer reuse, and prediction printing.
+
+### Benchmarking & Performance Monitoring
+- **benchmark.h**: NS-side benchmark API with DWT cycle counter support (ARM Cortex-M33)
+- **benchmark.cpp**: Implementation of DWT register access, cycle measurements, memory usage calculation via linker symbols
+- **secure_benchmark_ns.h/cpp**: NS wrapper to retrieve Secure-side metrics via PSA IPC (calls `DP_CMD_GET_BENCHMARK`)
+
+## Counter Management (NEW - Strict Blocking)
+**Location**: `src/run_enclave.cpp` + `dummy_partition/dummy_partition.c`
+
+The counter is now **atomic** and **Secure-side verified**:
+
+```cpp
+// In run_enclave.cpp:
+psa_handle_t handle = psa_connect(ENCLAVE_SID, ENCLAVE_PARTITION_VERSION);
+psa_call(handle, DP_CMD_RUN_INFERENCE, NULL, 0, NULL, 0);
+psa_close(handle);
+// Returns: 1 = allowed (counter < 3), 0 = blocked (limit reached)
+```
+
+**Policy**: 
+- Maximum 3 inferences per enclave
+- **Once limit reached**: inference execution is **blocked** (no auto-recreation)
+- **Message**: `"✓ BLOCKED: Inference limit reached (max 3 per enclave)"`
+- **All verification** happens in Secure world atomically
+
+## Performance Metrics
+
+### Hardware Configuration
+- **CPU**: STM32L552 ARM Cortex-M33 @ 110 MHz
+- **Cycle Time**: ~9.09 nanoseconds per cycle (1/110MHz)
+- **DWT Counter**: 32-bit cycle counter with automatic wrapping
+
+### Measured Performance
+```
+Inference Execution (per image):
+  ├─ Early Layers:         405 ms (CIFAR-10 feature extraction)
+  ├─ Late Layers:           74 ms (dense classification)
+  ├─ Inference Total:      518 ms (sum of above)
+  └─ Average per cycle:    193 ms (multiple runs averaged)
+
+AES-CTR Decryption:
+  ├─ NS-side call:         82 ms (includes 13 ms IPC latency)
+  └─ Secure-side exec:     66 ms (actual AES operation)
+
+Memory Usage:
+  ├─ NS RAM:               121.4 KB / 128 KB (92% utilized)
+  ├─ NS Flash:             187.2 KB / 256 KB (71% utilized)
+  ├─ Secure RAM:            52.7 KB / 64 KB (80% utilized)
+  └─ Secure Flash:         119.5 KB / 131 KB (89% utilized)
+```
+
+### Benchmark Data Points (15 NS metrics)
+1. `enclave_create_cycles`: Enclave creation overhead
+2. `enclave_destroy_cycles`: Enclave teardown
+3. `aes_decrypt_cycles`: AES-CTR decryption for late weights
+4. `late_hash_cycles`: SHA-256 hash of late-layer weights
+5. `inference_hash_cycles`: Integrity hash computation
+6. `early_layers_cycles`: CIFAR-10 early layers execution
+7. `late_layers_cycles`: CMSIS-NN late layers execution
+8. `total_inference_cycles`: Sum of inference phases
+9. `run_enclave_cycles`: Total enclave execution
+10. `inference_count`: Counter tracking inferences run
+11. `ns_ram_used`: Non-Secure RAM in bytes
+12. `ns_ram_total`: Total NS RAM available
+13. `ns_flash_used`: Non-Secure Flash consumed
+14. `ns_flash_total`: Total NS Flash available
+15. `heap_free`: Remaining heap memory
+16. `stack_used`: Stack depth during execution
+
+See [BENCHMARK_RESULTS.md](../BENCHMARK_RESULTS.md) for detailed cycle-by-cycle analysis.
 - **test_images.c / test_images.h**: CIFAR-10 sample inputs and labels.
 
 ### Model + artifacts
