@@ -132,8 +132,304 @@ See [BENCHMARK_RESULTS.md](../BENCHMARK_RESULTS.md) for detailed cycle-by-cycle 
 - **cifar_resnet_lite_int8_data.cc/h**: embedded model array (legacy path).
 - **model_encrypted*.h**: legacy encrypted model headers (not used by split flow).
 
+### UART Protocol (Mac ↔ STM32)
+- **uart_protocol.h**: Protocol command definitions (0x01-0x06)
+- **uart_protocol.cpp**: Binary protocol handlers (407 lines)
+  - CMD_COMPUTE_ENCLAVE_INFO (0x01): Generate EnclaveInfo hash
+  - CMD_VALIDATE_M_UPDATE (0x02): AES-256-GCM decrypt and apply quota
+  - CMD_GET_MAX_INFERENCES (0x03): Return total authorized quota
+  - CMD_RUN_INFERENCE (0x04): Execute inference (consumes quota)
+  - CMD_GET_INFERENCE_COUNT (0x05): Return consumed quota
+  - CMD_GET_REMAINING_INFERENCES (0x06): Return available quota
+
+### Provider/Verifier Simulation
+- **provider_sim.h/cpp**: Model Provider simulation for local testing
+  - Generate M_update packets with configurable c_limit
+  - ECDSA P-256 signature simulation
+  - Session key derivation (hardcoded for prototype)
+
+### Protocol Testing
+- **test_enclave_auth.c**: Test harness for authorization protocol
+  - Phase 1: EnclaveInfo computation
+  - Phase 2: M_update validation
+  - Phase 3: Counter verification
+- **test_inference_protocol.cpp**: End-to-end inference protocol test
+  - M_inf message generation/validation
+  - Proof-of-Execution (PoX) generation
+
 ### Security/IPC glue
 - **ns_irq.c / ns_irq.h**: NS interrupt setup for TrustZone.
+
+## UART Protocol Architecture (Mac ↔ STM32)
+
+### Overview
+The UART protocol enables **Mac-side authorization** of device inferences via encrypted M_update packets. This replaces the need for on-device Provider simulation in production deployments.
+
+### Communication Flow
+```
+┌──────────────────────────┐         USB/UART @ 115200        ┌─────────────────────────┐
+│   Mac (Provider)         │ ◄──────────────────────────────► │  STM32L552 (Device)     │
+│                          │                                   │                         │
+│  tools/mac_provider.py   │   Binary Protocol                │  src/uart_protocol.cpp  │
+│  - Generate M_update     │   ──────────────────────►        │  - PSA Crypto decrypt   │
+│  - AES-256-GCM encrypt   │   ◄──────────────────────        │  - Quota management     │
+│  - Monitor quota         │      Response packets            │  - Mock EnclaveInfo     │
+└──────────────────────────┘                                   └─────────────────────────┘
+```
+
+### EnclaveInfo Computation (CMD 0x01)
+
+**Purpose**: Generate deterministic 32-byte digest representing enclave identity.
+
+**Mac → Device**:
+- Data: 100 bytes = `model_pub[64] || model_secret[32] || code_hash[32] || model_id[4]`
+- Alternative: 0 bytes (uses default placeholder values)
+
+**Device Processing**:
+```c
+// XOR-based deterministic hash (simplified for prototype)
+for (uint32_t i = 0; i < 100; i++) {
+    mock_enclave_info[i % 32] ^= data[i];
+}
+```
+
+**Device → Mac**:
+- Status: `0x00` (OK)
+- Data: 32 bytes (EnclaveInfo digest)
+
+**Usage**: This EnclaveInfo is embedded in M_update plaintext to bind authorization to specific enclave instance.
+
+---
+
+### M_update Validation (CMD 0x02)
+
+**Purpose**: Decrypt AES-256-GCM encrypted authorization packet and apply inference quota.
+
+**Packet Structure** (Mac → Device):
+```
+┌─────────────┬──────────────────┬──────────┐
+│  Nonce (12) │  Ciphertext (n)  │ Tag (16) │
+└─────────────┴──────────────────┴──────────┘
+```
+
+**M_update Plaintext** (before encryption on Mac):
+```c
+struct M_update_plaintext {
+    uint32_t c_limit;         // Inference quota (4 bytes)
+    uint8_t pk_v[64];         // Verifier public key
+    uint8_t enclave_info[32]; // From CMD_COMPUTE_ENCLAVE_INFO
+    uint32_t cert_len;        // Certificate length
+    uint8_t cert[n];          // Certificate data
+};
+```
+
+**Device Processing**:
+1. **AES-256-GCM Decrypt** via PSA Crypto API:
+   ```c
+   psa_aead_decrypt(
+       key_handle,           // Session key (256-bit, hardcoded)
+       PSA_ALG_GCM,          // AES-GCM algorithm
+       nonce,                // 12 bytes from packet
+       12,                   // Nonce length
+       NULL, 0,              // No additional data
+       ciphertext_with_tag,  // Ciphertext || Tag
+       ciphertext_len + 16,  // Total length
+       plaintext,            // Output buffer
+       sizeof(plaintext),    // Max output size
+       &plaintext_len        // Actual output length
+   );
+   ```
+
+2. **Extract c_limit**:
+   ```c
+   uint32_t c_limit = plaintext[0] | (plaintext[1] << 8) 
+                    | (plaintext[2] << 16) | (plaintext[3] << 24);
+   ```
+
+3. **Anti-replay Check**:
+   ```c
+   if (c_limit <= mock_max_inferences) {
+       return RESP_ERROR;  // Reject quota downgrades
+   }
+   ```
+
+4. **Update Quota**:
+   ```c
+   mock_max_inferences = c_limit;
+   mock_inference_count = 0;  // Reset counter
+   ```
+
+**Device → Mac**:
+- Status: `0x00` (validated) or `0xFF` (failed)
+- Data: None
+
+**Security Properties**:
+- **Authenticated Encryption**: AES-GCM tag prevents tampering
+- **Anti-replay**: Strictly increasing c_limit enforcement
+- **PSA Crypto**: Hardware-accelerated in Secure World (TFM)
+
+---
+
+### Quota Management (CMD 0x03-0x06)
+
+The device maintains a **3-metric quota system** after M_update validation:
+
+| Command | Metric | Variable | Description |
+|---------|--------|----------|-------------|
+| **0x03** | Max | `mock_max_inferences` | Total authorized quota |
+| **0x05** | Count | `mock_inference_count` | Consumed quota |
+| **0x06** | Remaining | `max - count` | Available quota |
+
+**CMD 0x04 (RUN_INFERENCE) Gating**:
+```c
+if (mock_max_inferences == 0) {
+    return RESP_ERROR;  // No M_update applied yet
+}
+if (mock_inference_count >= mock_max_inferences) {
+    return RESP_ERROR;  // Quota exhausted
+}
+mock_inference_count++;
+return RESP_OK;
+```
+
+**Example Flow**:
+```
+1. Initial state: max=0, count=0, remaining=0
+   → CMD 0x04 returns 0xFF (blocked)
+
+2. Mac sends M_update (c_limit=20)
+   → CMD 0x02 validates → max=20, count=0, remaining=20
+
+3. Execute 3 inferences
+   → CMD 0x04 × 3 → max=20, count=3, remaining=17
+
+4. Query quota
+   → CMD 0x03 returns 20 (max)
+   → CMD 0x05 returns 3 (count)
+   → CMD 0x06 returns 17 (remaining)
+```
+
+---
+
+### Session Key Management
+
+**Current (Prototype)**:
+```c
+// Hardcoded in uart_protocol.cpp (Device)
+static const uint8_t session_key[32] = {
+    0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7,
+    0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE, 0xAF,
+    0xB0, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7,
+    0xB8, 0xB9, 0xBA, 0xBB, 0xBC, 0xBD, 0xBE, 0xBF
+};
+
+# Matching key in tools/mac_provider.py (Mac)
+SESSION_KEY = bytes([0xA0, 0xA1, ..., 0xBF])
+```
+
+**Production**: Should use **ECDH key exchange** to derive session key dynamically.
+
+---
+
+### UART Configuration
+
+**Device Side**:
+- **UART**: lpuart1 (ST-LINK VCP)
+- **Baud Rate**: 115200 8N1
+- **Polling**: k_yield() tight loop (no sleep, no overruns)
+- **Device Tree**: `boards/nucleo_l552ze_q.overlay`
+  ```dts
+  chosen {
+      zephyr,console = &lpuart1;
+  };
+  ```
+
+**Mac Side**:
+- **Port**: `/dev/tty.usbmodem*` (auto-detect)
+- **Timeout**: 10 seconds for response
+- **Library**: pyserial
+
+---
+
+### Performance Metrics
+
+| Operation | Latency | Notes |
+|-----------|---------|-------|
+| **CMD_COMPUTE_ENCLAVE_INFO** | ~5 ms | XOR-based placeholder |
+| **CMD_VALIDATE_M_UPDATE** | ~70 ms | PSA AEAD decrypt |
+| **CMD_GET_MAX_INFERENCES** | <1 ms | Read variable |
+| **CMD_RUN_INFERENCE** | <1 ms | Increment counter (mock) |
+| **CMD_GET_INFERENCE_COUNT** | <1 ms | Read variable |
+| **CMD_GET_REMAINING_INFERENCES** | <1 ms | Subtraction |
+
+---
+
+### Testing Tools
+
+**Mac-side Scripts** (`tools/`):
+- **mac_provider.py**: Interactive protocol client (385 lines)
+  - Menu-driven interface for all 6 commands
+  - AES-GCM encryption/decryption
+  - Quota monitoring (max, count, remaining)
+  - Usage: `python3 tools/mac_provider.py /dev/tty.usbmodem* 115200`
+
+- **step1_protocol_test.py**: Smoke test for CMD_COMPUTE_ENCLAVE_INFO
+- **test_uart.py**: Quick test for CMD_GET_MAX_INFERENCES
+
+**Automated Test Sequence**:
+```bash
+# Authorization → 3 inferences → quota check
+printf '3\n5\n5\n5\n4\n7\n8\nq\n' | python3 tools/mac_provider.py /dev/tty.usbmodem* 115200
+```
+
+**Expected Output**:
+```
+[3] M_update validated (c_limit=20) → max=20
+[5] Inference 1 → count=1
+[5] Inference 2 → count=2
+[5] Inference 3 → count=3
+[4] max_inferences = 20
+[7] inference_count = 3
+[8] remaining = 17
+```
+
+---
+
+### Integration with Main Flow
+
+**MAC_INTERACTIVE_MODE** (`src/main.cpp`):
+```cpp
+#define MAC_INTERACTIVE_MODE 1  // Enable UART protocol
+
+int main() {
+    uart_protocol_init();  // Initialize UART handler
+    
+    while (1) {
+        uart_protocol_process();  // Poll for commands
+        k_yield();                // Cooperative multitasking
+    }
+}
+```
+
+**Protocol-only Mode**:
+- No inference execution (mock handlers)
+- Quota management only
+- EnclaveInfo computed via XOR (not real hash)
+
+**Real Inference Integration** (TODO):
+- Replace `mock_inference_count++` with actual `run_split_inference()`
+- Gate inference in `run_enclave.cpp` based on `mock_max_inferences`
+- Integrate with TFM secure counter (DP_CMD_RUN_INFERENCE)
+
+---
+
+### Documentation
+
+- **Complete Protocol Spec**: [UART_PROTOCOL_SPEC.md](../UART_PROTOCOL_SPEC.md)
+- **Mac Interactive Guide**: [MAC_INTERACTIVE_GUIDE.md](../MAC_INTERACTIVE_GUIDE.md)
+- **Tools Documentation**: [tools/README.md](../tools/README.md)
+
+---
 
 ## Runtime Flow (Dynamic Secure Counter)
 1. **First run_enclave() call:**
