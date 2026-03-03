@@ -17,6 +17,7 @@ extern "C" {
 #define CMD_RUN_INFERENCE           0x04
 #define CMD_GET_INFERENCE_COUNT     0x05
 #define CMD_GET_REMAINING_INFERENCES 0x06
+#define CMD_ECDH_HANDSHAKE          0x07
 
 /* Response Codes (Device → Mac) */
 #define RESP_OK                     0x00

@@ -17,6 +17,9 @@ import hashlib
 from typing import Optional, Tuple
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.backends import default_backend
 import os
 
@@ -66,6 +69,9 @@ SESSION_KEY = bytes([
     0xB8, 0xB9, 0xBA, 0xBB, 0xBC, 0xBD, 0xBE, 0xBF
 ])
 
+# Dynamic session key (set by ECDH handshake)
+DYNAMIC_SESSION_KEY = None
+
 # Protocol commands
 CMD_COMPUTE_ENCLAVE_INFO = 0x01
 CMD_VALIDATE_M_UPDATE = 0x02
@@ -73,6 +79,7 @@ CMD_GET_MAX_INFERENCES = 0x03
 CMD_RUN_INFERENCE = 0x04
 CMD_GET_INFERENCE_COUNT = 0x05
 CMD_GET_REMAINING_INFERENCES = 0x06
+CMD_ECDH_HANDSHAKE = 0x07
 
 # Response codes
 RESP_OK = 0x00
@@ -218,6 +225,9 @@ class ModelProvider:
         if cert is None:
             cert = bytes(range(16))  # Default test certificate
         
+        # Use dynamic session key if available, otherwise fallback to static
+        session_key = DYNAMIC_SESSION_KEY if DYNAMIC_SESSION_KEY is not None else self.session_key
+        
         # Serialize plaintext: c_limit(4) || pk_v(64) || enclave_info(32) || cert_len(4) || cert(n)
         plaintext = struct.pack('<I', c_limit)  # c_limit
         plaintext += self.verifier_pk  # 64 bytes
@@ -229,13 +239,17 @@ class ModelProvider:
         print(f"  - c_limit: {c_limit}")
         print(f"  - plaintext size: {len(plaintext)} bytes")
         print(f"  - enclave_info: {enclave_info[:16].hex()}...")
+        if DYNAMIC_SESSION_KEY is not None:
+            print(f"  - Using ECDH-derived session key")
+        else:
+            print(f"  - Using static session key (fallback)")
         
         # Generate random nonce (12 bytes for GCM)
         nonce = os.urandom(12)
         print(f"  - nonce: {nonce.hex()}")
         
         # Encrypt with AES-256-GCM
-        aesgcm = AESGCM(self.session_key)
+        aesgcm = AESGCM(session_key)
         ciphertext_with_tag = aesgcm.encrypt(nonce, plaintext, None)
         
         # Split ciphertext and tag (last 16 bytes)
@@ -262,8 +276,89 @@ def print_menu():
     print("  6) Read device console (2 seconds)")
     print("  7) Get inference count from device")
     print("  8) Get remaining inferences from device")
+    print("  9) Perform ECDH handshake (establish dynamic session key)")
     print("  q) Quit")
     print()
+
+
+def perform_ecdh_handshake(device: 'STM32Device') -> bool:
+    """
+    Perform ECDH key exchange with device to establish dynamic session key
+    
+    Returns:
+        True if handshake succeeded, False otherwise
+    """
+    global DYNAMIC_SESSION_KEY
+    
+    print("\n[9] Performing ECDH handshake...")
+    
+    # Generate ephemeral ECDH key pair (P-256)
+    print("  - Generating Mac ephemeral key pair (P-256)...")
+    mac_private_key = ec.generate_private_key(ec.SECP256R1(), default_backend())
+    mac_public_key = mac_private_key.public_key()
+    
+    # Serialize Mac's public key (uncompressed format: 0x04 || x || y)
+    mac_pubkey_bytes = mac_public_key.public_bytes(
+        encoding=serialization.Encoding.X962,
+        format=serialization.PublicFormat.UncompressedPoint
+    )
+    
+    if len(mac_pubkey_bytes) != 65 or mac_pubkey_bytes[0] != 0x04:
+        print("✗ Invalid public key format")
+        return False
+    
+    print(f"  - Mac public key: {mac_pubkey_bytes[:16].hex()}... ({len(mac_pubkey_bytes)} bytes)")
+    
+    # Send Mac's public key to device
+    print("  - Sending ECDH handshake command to device...")
+    if not device.send_command(CMD_ECDH_HANDSHAKE, mac_pubkey_bytes):
+        print("✗ Failed to send ECDH handshake")
+        return False
+    
+    # Receive device's public key
+    resp = device.read_response()
+    if not resp or resp[0] != RESP_OK or len(resp[1]) != 65:
+        print(f"✗ Invalid response from device (status={resp[0] if resp else 'timeout'}, len={len(resp[1]) if resp else 0})")
+        return False
+    
+    device_pubkey_bytes = resp[1]
+    print(f"  - Device public key: {device_pubkey_bytes[:16].hex()}... ({len(device_pubkey_bytes)} bytes)")
+    
+    # Reconstruct device's public key object
+    try:
+        device_public_key = ec.EllipticCurvePublicKey.from_encoded_point(
+            ec.SECP256R1(), device_pubkey_bytes
+        )
+    except Exception as e:
+        print(f"✗ Failed to decode device public key: {e}")
+        return False
+    
+    # Perform ECDH key agreement to get shared secret
+    print("  - Computing ECDH shared secret...")
+    shared_secret = mac_private_key.exchange(ec.ECDH(), device_public_key)
+    
+    # Derive session key using HKDF-SHA256 (must match device)
+    print("  - Deriving session key via HKDF-SHA256...")
+    salt = b"uart_protocol_v1_salt"
+    info = b"uart_protocol_v1_session_key"
+    
+    hkdf = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        info=info,
+        backend=default_backend()
+    )
+    session_key = hkdf.derive(shared_secret)
+    
+    # Store dynamic session key
+    DYNAMIC_SESSION_KEY = session_key
+    
+    print(f"✓ ECDH handshake successful!")
+    print(f"  - Session key established: {session_key[:16].hex()}...")
+    print(f"  - Use this key for subsequent M_update encryption")
+    
+    return True
 
 
 def main():
@@ -398,6 +493,14 @@ def main():
                         print(f"✓ Remaining inferences: {remaining}")
                     else:
                         print("✗ Failed to get remaining inferences")
+            
+            elif choice == '9':
+                # Perform ECDH handshake
+                if perform_ecdh_handshake(device):
+                    print("\n✓ Dynamic session key established")
+                    print("  You can now use commands 2 or 3 to send encrypted M_update")
+                else:
+                    print("\n✗ ECDH handshake failed")
             
             else:
                 print("Invalid choice, try again")

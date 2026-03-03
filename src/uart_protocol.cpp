@@ -7,6 +7,7 @@
 #include <zephyr/drivers/gpio.h>
 #include <string.h>
 #include <psa/crypto.h>
+#include "run_enclave.h"
 
 /* Debug mode: Set to 1 to enable diagnostics, 0 for clean protocol */
 #define UART_DEBUG_MODE 0
@@ -38,8 +39,12 @@ static uint8_t mock_enclave_info[32] = {0};
 static uint32_t mock_max_inferences = 0;
 static uint32_t mock_inference_count = 0;
 
-/* Shared session key (must match tools/mac_provider.py) */
-static const uint8_t session_key[32] = {
+/* Dynamic session key (derived via ECDH handshake) */
+static uint8_t session_key[32] = {0};  /* Initialized to zeros, populated by ECDH */
+static bool session_key_established = false;
+
+/* Fallback static key for backward compatibility (testing only) */
+static const uint8_t fallback_session_key[32] = {
     0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7,
     0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE, 0xAF,
     0xB0, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7,
@@ -115,7 +120,8 @@ static bool is_valid_cmd(uint8_t cmd)
             cmd == CMD_GET_MAX_INFERENCES ||
             cmd == CMD_RUN_INFERENCE ||
             cmd == CMD_GET_INFERENCE_COUNT ||
-            cmd == CMD_GET_REMAINING_INFERENCES);
+            cmd == CMD_GET_REMAINING_INFERENCES ||
+            cmd == CMD_ECDH_HANDSHAKE);
 }
 
 static bool is_valid_len_for_cmd(uint8_t cmd, uint32_t len)
@@ -132,6 +138,8 @@ static bool is_valid_len_for_cmd(uint8_t cmd, uint32_t len)
         case CMD_GET_INFERENCE_COUNT:
         case CMD_GET_REMAINING_INFERENCES:
             return len == 0U;
+        case CMD_ECDH_HANDSHAKE:
+            return len == 65U;  /* Uncompressed P-256 public key: 0x04 || x || y */
         default:
             return false;
     }
@@ -145,6 +153,7 @@ static void handle_get_max_inferences(void);
 static void handle_run_inference(void);
 static void handle_get_inference_count(void);
 static void handle_get_remaining_inferences(void);
+static void handle_ecdh_handshake(const uint8_t *data, uint32_t len);
 
 int uart_protocol_init(void)
 {
@@ -344,6 +353,10 @@ static void process_command(void)
             handle_get_remaining_inferences();
             break;
         
+        case CMD_ECDH_HANDSHAKE:
+            handle_ecdh_handshake(rx_buffer, rx_len);
+            break;
+        
         default:
             uart_protocol_send_response(RESP_ERROR, NULL, 0);
             break;
@@ -398,18 +411,49 @@ static void handle_get_max_inferences(void)
 
 static void handle_run_inference(void)
 {
-    /* Must have a valid M_update first. */
+    /*
+     * ARCHITECTURE: Split Inference with Enclave
+     * 
+     * NS (uart_protocol.cpp):
+     *   1. Receive CMD_RUN_INFERENCE via UART
+     *   2. Validate quota: max_inferences > 0?
+     *   3. Call run_enclave() → Secure verification + decryption
+     * 
+     * S (dummy_partition.c - via run_enclave()):
+     *   1. Verify: ECDH established?
+     *   2. Verify: max_inferences > 0?
+     *   3. Verify: Anti-replay OK?
+     *   4. Decrypt late layers with session_key
+     *   5. Allow NS to execute enclave with decrypted data
+     * 
+     * NS (split_inference.cpp):
+     *   1. Execute early layers (input → early_output)
+     *   2. Execute late layers with decrypted weights
+     *   3. Return final_output
+     * 
+     * S (dummy_partition.c - after enclave execution):
+     *   1. Decrement max_inferences (atomic, protected in S)
+     *   2. Increment inference_count (atomic, protected in S)
+     *   3. Zero decrypted weights from memory
+     */
+    
+    /* Must have a valid M_update first (quota > 0) */
     if (mock_max_inferences == 0U) {
         uart_protocol_send_response(RESP_ERROR, NULL, 0);
         return;
     }
-
-    if (mock_inference_count < mock_max_inferences) {
-        mock_inference_count++;
-        uart_protocol_send_response(RESP_OK, NULL, 0);
-    } else {
-        uart_protocol_send_response(RESP_ERROR, NULL, 0);
-    }
+    
+    /* Run the enclave (NS+S integrated architecture):
+     * - NS prepares data and calls enclave
+     * - S verifies authorization and manages quota
+     * - NS executes split inference with decrypted weights
+     */
+    run_enclave();
+    
+    /* Enclave executed - just confirm success to Mac
+     * (Quota management done in Secure World, inaccessible from NS)
+     */
+    uart_protocol_send_response(RESP_OK, NULL, 0);
 }
 
 static void handle_get_inference_count(void)
@@ -438,4 +482,124 @@ static void handle_get_remaining_inferences(void)
     remaining_bytes[3] = (remaining >> 24) & 0xFF;
     
     uart_protocol_send_response(RESP_OK, remaining_bytes, 4);
+}
+
+static void handle_ecdh_handshake(const uint8_t *data, uint32_t len)
+{
+    /*
+     * ECDH Key Exchange - Device Side
+     * 
+     * Input: Mac's public key (65 bytes, uncompressed P-256)
+     *        Format: 0x04 || x_coord[32] || y_coord[32]
+     * 
+     * Output: Device's public key (65 bytes)
+     * 
+     * Side effect: Derives and stores session_key[32] via ECDH
+     */
+    
+    if (data == NULL || len != 65U || data[0] != 0x04) {
+        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+        return;
+    }
+    
+    /* Initialize PSA Crypto */
+    psa_status_t status = psa_crypto_init();
+    if (status != PSA_SUCCESS) {
+        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+        return;
+    }
+    
+    /* Step 1: Generate ephemeral ECDH key pair */
+    psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
+    psa_set_key_type(&attr, PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_SECP_R1));
+    psa_set_key_bits(&attr, 256);  /* P-256 */
+    psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_DERIVE);
+    psa_set_key_algorithm(&attr, PSA_ALG_ECDH);
+    psa_set_key_lifetime(&attr, PSA_KEY_LIFETIME_VOLATILE);  /* Auto-destroy */
+    
+    psa_key_id_t device_keypair = 0;
+    status = psa_generate_key(&attr, &device_keypair);
+    if (status != PSA_SUCCESS) {
+        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+        return;
+    }
+    
+    /* Step 2: Export device public key */
+    uint8_t device_pubkey[65];  /* 0x04 || x || y */
+    size_t pubkey_len = 0;
+    status = psa_export_public_key(device_keypair, device_pubkey, sizeof(device_pubkey), &pubkey_len);
+    if (status != PSA_SUCCESS || pubkey_len != 65) {
+        psa_destroy_key(device_keypair);
+        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+        return;
+    }
+    
+    /* Step 3: Import Mac's public key */
+    psa_key_attributes_t mac_attr = PSA_KEY_ATTRIBUTES_INIT;
+    psa_set_key_type(&mac_attr, PSA_KEY_TYPE_ECC_PUBLIC_KEY(PSA_ECC_FAMILY_SECP_R1));
+    psa_set_key_bits(&mac_attr, 256);
+    psa_set_key_usage_flags(&mac_attr, PSA_KEY_USAGE_DERIVE);
+    psa_set_key_algorithm(&mac_attr, PSA_ALG_ECDH);
+    psa_set_key_lifetime(&mac_attr, PSA_KEY_LIFETIME_VOLATILE);
+    
+    psa_key_id_t mac_pubkey_handle = 0;
+    status = psa_import_key(&mac_attr, data, len, &mac_pubkey_handle);
+    if (status != PSA_SUCCESS) {
+        psa_destroy_key(device_keypair);
+        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+        return;
+    }
+    
+    /* Step 4: Perform ECDH key agreement */
+    uint8_t shared_secret[32];
+    size_t secret_len = 0;
+    status = psa_raw_key_agreement(PSA_ALG_ECDH, device_keypair, 
+                                     data, len,  /* Mac's public key */
+                                     shared_secret, sizeof(shared_secret), &secret_len);
+    if (status != PSA_SUCCESS || secret_len != 32) {
+        psa_destroy_key(device_keypair);
+        psa_destroy_key(mac_pubkey_handle);
+        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+        return;
+    }
+    
+    /* Step 5: Derive session key from shared secret (HKDF-SHA256) */
+    psa_key_derivation_operation_t kdf_op = PSA_KEY_DERIVATION_OPERATION_INIT;
+    status = psa_key_derivation_setup(&kdf_op, PSA_ALG_HKDF(PSA_ALG_SHA_256));
+    if (status == PSA_SUCCESS) {
+        const uint8_t salt[] = "uart_protocol_v1_salt";
+        const uint8_t info[] = "uart_protocol_v1_session_key";
+        
+        status = psa_key_derivation_input_bytes(&kdf_op, PSA_KEY_DERIVATION_INPUT_SALT,
+                                                  salt, sizeof(salt) - 1);
+        if (status == PSA_SUCCESS) {
+            status = psa_key_derivation_input_bytes(&kdf_op, PSA_KEY_DERIVATION_INPUT_SECRET,
+                                                      shared_secret, secret_len);
+        }
+        if (status == PSA_SUCCESS) {
+            status = psa_key_derivation_input_bytes(&kdf_op, PSA_KEY_DERIVATION_INPUT_INFO,
+                                                      info, sizeof(info) - 1);
+        }
+        if (status == PSA_SUCCESS) {
+            status = psa_key_derivation_output_bytes(&kdf_op, session_key, 32);
+        }
+        psa_key_derivation_abort(&kdf_op);
+    }
+    
+    /* Cleanup ephemeral keys */
+    psa_destroy_key(device_keypair);
+    psa_destroy_key(mac_pubkey_handle);
+    memset(shared_secret, 0, sizeof(shared_secret));  /* Zero shared secret */
+    
+    if (status != PSA_SUCCESS) {
+        memset(session_key, 0, sizeof(session_key));  /* Clear on failure */
+        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+        return;
+    }
+    
+    /* Mark session key as established */
+    session_key_established = true;
+    
+    /* Step 6: Send device's public key back to Mac */
+    uart_protocol_send_response(RESP_OK, device_pubkey, 65);
 }
