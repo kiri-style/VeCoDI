@@ -1,8 +1,20 @@
-#+#+#+#+
 # Dummy Partition (TF-M Secure Service)
 
+## ✅ VERIFICATION STATUS: **ALL FEATURES VERIFIED ON HARDWARE**
+
+**Date**: 27 February 2026  
+**Platform**: STM32L552ZE-Q  
+**See**: [../VERIFICATION_REPORT.md](../VERIFICATION_REPORT.md) for complete test results
+
+---
+
 ## Overview
-This TF-M secure partition provides cryptographic services for the Non-Secure (NS) app. In the current flow it **decrypts encrypted late-layer weights** and writes them into an NS RAM buffer via PSA IPC.
+This TF-M secure partition provides cryptographic services for the Non-Secure (NS) app:
+- **Encrypted weight decryption** (AES-CTR)
+- **Secure counter management** (inference authorization)
+- **EnclaveInfo computation** (SHA-256) ✅ Verified
+- **M_update validation** (AES-256-GCM decrypt + verify) ✅ Verified
+- **Benchmark services** (DWT cycle counting)
 
 ## Key Paths (Secure World)
 - `dummy_partition/dummy_partition.c`: command dispatcher + AES-CTR decryption implementation
@@ -25,18 +37,22 @@ Defined in [dummy_partition.c](dummy_partition.c):
 - `DP_CMD_DECRYPT_MODEL = 2` (deprecated, returns NOT_SUPPORTED)
 - `DP_CMD_DECRYPT_LATE_WEIGHTS = 3` (AES-CTR decrypt late weights)
 
-**Secure Counter Management (NEW - ATOMIC):**
-- `DP_CMD_GET_MAX_INFERENCES = 4` (returns MAX_INFERENCES_PER_ENCLAVE policy)
+**Secure Counter Management (ATOMIC - Verified 27 Feb 2026):**
+- `DP_CMD_GET_MAX_INFERENCES = 4` (returns **dynamic** max_inferences_per_enclave) ✅
 - `DP_CMD_CHECK_INFERENCE_ALLOWED = 5` (returns 1 if allowed, 0 if limit reached)
 - `DP_CMD_INCREMENT_COUNTER = 6` (increments inference_counter_secure)
-- `DP_CMD_RUN_INFERENCE = 9` **(NEW ATOMIC OPERATION)**: atomically checks counter < 3 and increments in one Secure call
+- `DP_CMD_RUN_INFERENCE = 9` **(NEW ATOMIC OPERATION)**: atomically checks counter < **max_inferences_per_enclave** and increments in one Secure call
 - `DP_CMD_RESET_COUNTER = 7` (resets counter to 0 during enclave creation)
+
+**Enclave Authorization Protocol (Verified 27 Feb 2026):**
+- `DP_CMD_COMPUTE_ENCLAVE_INFO = 10` ✅ (SHA-256 hash of Model_pub || Model_secret || code || model_ID)
+- `DP_CMD_VALIDATE_M_UPDATE = 11` ✅ (AES-256-GCM decrypt, EnclaveInfo verify, anti-replay, atomic policy update)
 
 **Benchmark & Diagnostics (NEW):**
 - `DP_CMD_GET_BENCHMARK = 8` (retrieves Secure-side performance metrics and memory usage)
 
 **Security Policy:**
-- `MAX_INFERENCES_PER_ENCLAVE = 3` (immutable, Secure-side constant)
+- `max_inferences_per_enclave` is **dynamic** (starts at 0, updated on valid M_update)
 - `inference_counter_secure = 0` (protected counter in Secure world)
 - Counter incremented **BEFORE** inference execution (atomic operation)
 
@@ -96,7 +112,7 @@ The secure partition:
 **Get Policy (cmd=4):**
 ```
 in_vec[0] = cmd (DP_CMD_GET_MAX_INFERENCES)
-out_vec[0] = max_inferences (uint32_t, returns 3)
+out_vec[0] = max_inferences (uint32_t, returns dynamic value)
 ```
 
 **Check Allowed (cmd=5):**
@@ -104,7 +120,7 @@ out_vec[0] = max_inferences (uint32_t, returns 3)
 in_vec[0] = cmd (DP_CMD_CHECK_INFERENCE_ALLOWED)
 out_vec[0] = allowed (uint32_t, 1=allowed, 0=denied)
 ```
-Secure logic: `allowed = (inference_counter_secure < MAX_INFERENCES_PER_ENCLAVE) ? 1 : 0`
+Secure logic: `allowed = (inference_counter_secure < max_inferences_per_enclave) ? 1 : 0`
 
 **Increment Counter (cmd=6):**
 ```

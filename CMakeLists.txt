@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.20.0)
 
+# Ensure USART2 (VCP) overlay is applied (force cache for sysbuild)
+set(DTC_OVERLAY_FILE ${CMAKE_CURRENT_LIST_DIR}/boards/nucleo_l552ze_q.overlay CACHE STRING "" FORCE)
+
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 
 project(tensorflow_hello_world)
@@ -36,12 +39,15 @@ target_sources(app PRIVATE
     src/test_images.c
     src/benchmark.cpp
     src/secure_benchmark_ns.cpp
+    src/provider_sim.cpp
+    src/test_enclave_auth.c
+    src/inference_protocol.cpp
+    src/test_inference_protocol.cpp
+    src/uart_protocol.cpp
     split_inference/late/L_nn_wt_encrypted_data.c
     src/run_enclave.cpp
-    
-
-    #src/ns/run_early_layers.cpp
 )
+
 target_link_options(app PRIVATE
     -Wl,--undefined=ns_run_enclave
 )

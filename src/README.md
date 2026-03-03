@@ -1,5 +1,12 @@
 # Source Code (Non-Secure Application)
 
+## ✅ VERIFICATION STATUS: **COMPLETE END-TO-END PROTOCOL VERIFIED**
+
+**Date**: 27 February 2026  
+**See**: [../VERIFICATION_REPORT.md](../VERIFICATION_REPORT.md)
+
+---
+
 ## Overview
 This folder contains the Non-Secure (NS) application that drives the split inference flow. The NS app:
 - Creates the enclave environment.
@@ -54,24 +61,24 @@ This folder contains the Non-Secure (NS) application that drives the split infer
 - **benchmark.cpp**: Implementation of DWT register access, cycle measurements, memory usage calculation via linker symbols
 - **secure_benchmark_ns.h/cpp**: NS wrapper to retrieve Secure-side metrics via PSA IPC (calls `DP_CMD_GET_BENCHMARK`)
 
-## Counter Management (NEW - Strict Blocking)
+## Counter Management (Dynamic Policy - Verified 27 Feb 2026)
 **Location**: `src/run_enclave.cpp` + `dummy_partition/dummy_partition.c`
 
-The counter is now **atomic** and **Secure-side verified**:
+The counter is **atomic**, **Secure-side verified**, and **dynamically configured**:
 
 ```cpp
 // In run_enclave.cpp:
 psa_handle_t handle = psa_connect(ENCLAVE_SID, ENCLAVE_PARTITION_VERSION);
 psa_call(handle, DP_CMD_RUN_INFERENCE, NULL, 0, NULL, 0);
 psa_close(handle);
-// Returns: 1 = allowed (counter < 3), 0 = blocked (limit reached)
+// Returns: 1 = allowed (counter < max), 0 = blocked (limit reached)
 ```
 
-**Policy**: 
-- Maximum 3 inferences per enclave
-- **Once limit reached**: inference execution is **blocked** (no auto-recreation)
-- **Message**: `"✓ BLOCKED: Inference limit reached (max 3 per enclave)"`
-- **All verification** happens in Secure world atomically
+**Dynamic Policy** ✅ Verified: 
+- Initial state: `max_inferences_per_enclave = 0` (all inferences blocked)
+- After valid M_update: `max_inferences_per_enclave = c_limit` (from Model Provider)
+- Once limit reached: inference execution **blocked** (no auto-recreation)
+- All verification happens in Secure world atomically
 
 ## Performance Metrics
 
@@ -128,7 +135,7 @@ See [BENCHMARK_RESULTS.md](../BENCHMARK_RESULTS.md) for detailed cycle-by-cycle 
 ### Security/IPC glue
 - **ns_irq.c / ns_irq.h**: NS interrupt setup for TrustZone.
 
-## Runtime Flow (Current with Secure Counter)
+## Runtime Flow (Dynamic Secure Counter)
 1. **First run_enclave() call:**
    - NS detects no enclave exists (`is_enclave_created() == false`)
    - `create_enclave()`: allocate memory, PSA decrypt, reset Secure counter (cmd=7)
@@ -139,7 +146,7 @@ See [BENCHMARK_RESULTS.md](../BENCHMARK_RESULTS.md) for detailed cycle-by-cycle 
    - If allowed=1: `run_split_inference()` → PSA `INCREMENT_COUNTER` (cmd=6)
    - If allowed=0: `destroy_enclave()` → `create_enclave()` → reconfigure → run
 
-3. **Enclave lifecycle:** Max 3 inferences → auto-destroy → auto-recreate (counter reset)
+3. **Enclave lifecycle:** Dynamic max inferences (starts at 0, updated by M_update)
 
 4. **Secure partition operations:**
    - Decrypt AES-CTR into NS buffer (cmd=3)
@@ -160,12 +167,12 @@ The system implements **Secure-side inference counter** to enforce enclave lifec
 
 **Security Model:**
 - Counter stored in Secure world (TF-M partition): `inference_counter_secure`
-- Maximum inferences per enclave: `MAX_INFERENCES_PER_ENCLAVE = 3` (policy enforced in Secure)
+- Maximum inferences per enclave: **dynamic** (`max_inferences_per_enclave`), starts at 0 and is updated by valid M_update
 - NS side cannot manipulate counter directly
 - All counter operations via PSA IPC secure channel
 
 **PSA Commands for Counter Management:**
-- `DP_CMD_GET_MAX_INFERENCES (4)`: Returns maximum policy (3 inferences)
+- `DP_CMD_GET_MAX_INFERENCES (4)`: Returns dynamic max policy
 - `DP_CMD_CHECK_INFERENCE_ALLOWED (5)`: Returns 1 if allowed, 0 if limit reached
 - `DP_CMD_INCREMENT_COUNTER (6)`: Increments secure counter after successful inference
 - `DP_CMD_RESET_COUNTER (7)`: Resets counter to 0 during enclave creation
@@ -174,7 +181,7 @@ The system implements **Secure-side inference counter** to enforce enclave lifec
 
 **Enclave Creation:**
 1. `create_enclave()` decrypts late weights via PSA
-2. PSA call to `DP_CMD_GET_MAX_INFERENCES` → stores local copy (3)
+2. PSA call to `DP_CMD_GET_MAX_INFERENCES` → stores local copy (dynamic)
 3. PSA call to `DP_CMD_RESET_COUNTER` → Secure counter = 0
 4. Precomputes late weights hash (Phase 1)
 5. Sets `enclave_created = true`
@@ -190,18 +197,16 @@ The system implements **Secure-side inference counter** to enforce enclave lifec
 5. `run_split_inference()` → 1 image, compute hash, early+late layers
 6. **PSA call to `DP_CMD_INCREMENT_COUNTER`** → Secure counter++
 
-**Auto-Recreation Pattern:**
+**Dynamic Limit Pattern:**
 ```
-Call 1: counter=0, allowed=1 → run → increment (counter=1)
-Call 2: counter=1, allowed=1 → run → increment (counter=2)
-Call 3: counter=2, allowed=1 → run → increment (counter=3)
-Call 4: counter=3, allowed=0 → destroy → recreate (counter=0) → run → increment (counter=1)
+Before M_update: max=0 → allowed=0 → no inference
+After valid M_update: max=c_limit → allowed for 1..c_limit
 ```
 
 **Security Benefits:**
 - Counter tamper-proof (Secure world only)
 - Pre-execution verification (no wasted work)
-- Automatic enclave refresh after limit
+- Limit is controlled by M_update (secure policy)
 - Secure logging of counter operations
 - NS cannot bypass limit checks
 
