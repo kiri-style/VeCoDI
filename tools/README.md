@@ -1,5 +1,14 @@
 # tools
 
+## Version Information
+
+```
+Zephyr:     commit 61a8648c2cc6bbec9af368a96ecae87d6798e7fe (HEAD -> main)
+TF-M:       commit 04aa7243e04946b5422b124bea9c0675ab6b120f (HEAD, manifest-rev)
+Updated:    5 March 2026
+Protocol:   ECDH P-256 dynamic keys + AES-256-GCM encryption + anti-replay
+```
+
 ## Purpose
 Helper scripts for model artifacts, encryption headers, and Mac ↔ STM32 protocol communication.
 

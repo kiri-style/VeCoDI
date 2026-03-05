@@ -2,6 +2,17 @@
 Secure CIFAR-10 Split Inference with TF-M and Encrypted Late Weights
 =============================================================================
 
+**Build Information**
+
+::
+
+    Zephyr Version:     commit 61a8648c2cc6bbec9af368a96ecae87d6798e7fe (HEAD -> main)
+    TF-M Version:       commit 04aa7243e04946b5422b124bea9c0675ab6b120f (HEAD, manifest-rev)
+    Build Date:         5 March 2026
+    Target Board:       NUCLEO-L552ZE-Q (STM32L552ZE)
+    Flash Size:         179940 B (68.64% of 256 KB)
+    RAM Size:           128304 B (97.89% of 128 KB)
+
 Overview
 ========
 

@@ -1,5 +1,14 @@
 # Dummy Partition (TF-M Secure Service)
 
+## Version Information
+
+```
+Zephyr:     commit 61a8648c2cc6bbec9af368a96ecae87d6798e7fe (HEAD -> main)
+TF-M:       commit 04aa7243e04946b5422b124bea9c0675ab6b120f (HEAD, manifest-rev)
+Updated:    5 March 2026
+Platform:   STM32L552ZE-Q with ARM Cortex-M33 TrustZone
+```
+
 ## ✅ VERIFICATION STATUS: **ALL FEATURES VERIFIED ON HARDWARE**
 
 **Date**: 27 February 2026  

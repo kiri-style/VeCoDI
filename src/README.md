@@ -1,5 +1,14 @@
 # Source Code (Non-Secure Application)
 
+## Version Information
+
+```
+Zephyr:     commit 61a8648c2cc6bbec9af368a96ecae87d6798e7fe (HEAD -> main)
+TF-M:       commit 04aa7243e04946b5422b124bea9c0675ab6b120f (HEAD, manifest-rev)
+Updated:    5 March 2026
+Architecture: Split Inference with Secure/Non-Secure (NS/S) integration
+```
+
 ## ✅ VERIFICATION STATUS: **COMPLETE END-TO-END PROTOCOL VERIFIED**
 
 **Date**: 27 February 2026  
