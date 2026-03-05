@@ -10,6 +10,7 @@
 #include "run_enclave.h"
 #include "benchmark.h"
 #include "secure_benchmark_ns.h"
+#include "split_inference.h"
 
 /* Debug mode: Set to 1 to enable diagnostics, 0 for clean protocol */
 #define UART_DEBUG_MODE 0
@@ -125,7 +126,9 @@ static bool is_valid_cmd(uint8_t cmd)
             cmd == CMD_GET_REMAINING_INFERENCES ||
             cmd == CMD_ECDH_HANDSHAKE ||
             cmd == CMD_GET_BENCHMARK ||
-            cmd == CMD_GET_SECURE_BENCHMARK);
+            cmd == CMD_GET_SECURE_BENCHMARK ||
+            cmd == CMD_GET_INFERENCE_RESULT ||
+            cmd == CMD_SET_MAX_INFERENCES);
 }
 
 static bool is_valid_len_for_cmd(uint8_t cmd, uint32_t len)
@@ -143,7 +146,10 @@ static bool is_valid_len_for_cmd(uint8_t cmd, uint32_t len)
         case CMD_GET_REMAINING_INFERENCES:
         case CMD_GET_BENCHMARK:
         case CMD_GET_SECURE_BENCHMARK:
+        case CMD_GET_INFERENCE_RESULT:
             return len == 0U;
+        case CMD_SET_MAX_INFERENCES:
+            return len == 4U;  /* Max inferences is uint32_t */
         case CMD_ECDH_HANDSHAKE:
             return len == 65U;  /* Uncompressed P-256 public key: 0x04 || x || y */
         default:
@@ -162,6 +168,8 @@ static void handle_get_remaining_inferences(void);
 static void handle_ecdh_handshake(const uint8_t *data, uint32_t len);
 static void handle_get_benchmark(void);
 static void handle_get_secure_benchmark(void);
+static void handle_get_inference_result(void);
+static void handle_set_max_inferences(const uint8_t *data, uint32_t len);
 
 int uart_protocol_init(void)
 {
@@ -371,6 +379,14 @@ static void process_command(void)
         
         case CMD_GET_SECURE_BENCHMARK:
             handle_get_secure_benchmark();
+            break;
+        
+        case CMD_GET_INFERENCE_RESULT:
+            handle_get_inference_result();
+            break;
+        
+        case CMD_SET_MAX_INFERENCES:
+            handle_set_max_inferences(rx_buffer, rx_len);
             break;
         
         default:
@@ -663,4 +679,42 @@ static void handle_ecdh_handshake(const uint8_t *data, uint32_t len)
     
     /* Step 6: Send device's public key back to Mac */
     uart_protocol_send_response(RESP_OK, device_pubkey, 65);
+}
+
+static void handle_get_inference_result(void)
+{
+    /* Get last inference result (prediction and expected label)
+     * Format: [prediction:1][expected:1]
+     */
+    uint8_t result[2];
+    result[0] = get_last_prediction();
+    result[1] = get_last_expected_label();
+    
+    uart_protocol_send_response(RESP_OK, result, 2);
+}
+
+static void handle_set_max_inferences(const uint8_t *data, uint32_t len)
+{
+    /* Set maximum inference count
+     * Input: [max_inferences:4] (little-endian uint32_t)
+     */
+    if (data == NULL || len != 4U) {
+        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+        return;
+    }
+    
+    uint32_t max_inf = data[0] | (data[1] << 8) | (data[2] << 16) | (data[3] << 24);
+    
+    /* Call into secure world to set max inferences */
+    extern int set_max_inferences(uint32_t max_infs);
+    int ret = set_max_inferences(max_inf);
+    
+    if (ret == 0) {
+        /* Keep NS shadow state aligned with secure state */
+        mock_max_inferences = max_inf;
+        mock_inference_count = 0U;
+        uart_protocol_send_response(RESP_OK, NULL, 0);
+    } else {
+        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+    }
 }

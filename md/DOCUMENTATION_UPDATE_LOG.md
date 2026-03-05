@@ -1,6 +1,16 @@
-# Documentation Update Log - 27 February 2026
+# Documentation Update Log
 
-## Summary
+## Latest Updates - 5 March 2026
+
+### Changes Made
+- **Fixed ELF Section Parsing**: Corrected regex in `test_benchmark.py` to properly extract `.text` and `.rodata` sections from readelf output. Previously showed 0 bytes; now correctly displays 34.3 KB and 135.0 KB respectively.
+- **Verified Security Enforcement**: Confirmed that max_inferences quota verification happens atomically in the Secure partition (dummy_partition.c DP_CMD_RUN_INFERENCE), not just NS-side. NS-side check is optimization only.
+- **Completed ELF Analysis**: All sections (.text, .rodata, .data, .bss) and top 20 symbols now parse and display correctly in benchmark output.
+- **Testing**: Full E2E validation with max_inferences=4 shows 5th inference correctly blocked at Secure partition level.
+
+---
+
+## Summary (27 February 2026 onwards)
 
 Updated all project documentation to reflect the successful hardware verification of the complete 3-phase Enclave Authorization Protocol on STM32L552ZE-Q.
 

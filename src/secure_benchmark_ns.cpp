@@ -169,3 +169,37 @@ void print_secure_benchmark_report(const secure_benchmark_metrics_ns_t *metrics)
     printk("╚══════════════════════════════════════════════════════════════╝\n");
     printk("\n");
 }
+
+int set_max_inferences_secure(uint32_t max_infs)
+{
+    /* Set max inferences in Secure partition */
+    psa_handle_t handle;
+    psa_status_t status;
+    uint32_t cmd = 12; /* DP_CMD_SET_MAX_INFERENCES */
+
+    /* Connect to Secure partition */
+    handle = psa_connect(ENCLAVE_SID, ENCLAVE_VER);
+    if (!PSA_HANDLE_IS_VALID(handle)) {
+        printk("[NS] Failed to connect to Secure partition for set_max_inferences\n");
+        return -1;
+    }
+
+    /* Prepare invocation */
+    psa_invec in_vec[] = {
+        { &cmd, sizeof(cmd) },
+        { &max_infs, sizeof(max_infs) }
+    };
+
+    /* Call Secure partition */
+    status = psa_call(handle, PSA_IPC_CALL, in_vec, 2, NULL, 0);
+    
+    psa_close(handle);
+
+    if (status != PSA_SUCCESS) {
+        printk("[NS] Failed to set max inferences: %d\n", status);
+        return -1;
+    }
+
+    printk("[NS] Max inferences set to %u\n", max_infs);
+    return 0;
+}

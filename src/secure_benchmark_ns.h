@@ -53,6 +53,13 @@ int get_secure_benchmark_metrics(secure_benchmark_metrics_ns_t *metrics);
  */
 void print_secure_benchmark_report(const secure_benchmark_metrics_ns_t *metrics);
 
+/**
+ * Set maximum inferences in Secure partition
+ * @param max_infs Maximum inference count
+ * @return 0 on success, negative on error
+ */
+int set_max_inferences_secure(uint32_t max_infs);
+
 #ifdef __cplusplus
 }
 #endif

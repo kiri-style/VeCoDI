@@ -5,8 +5,6 @@
 **Configuration:** TrustZone-M, TF-M Secure partition, CMSIS-NN optimized  
 **Test:** Single inference with ECDH handshake and M_update (quota=10)
 
-> **📝 Note (5 March 2026):** ELF section analysis parsing has been corrected. `.text` and `.rodata` sections now display accurate values (34.3 KB and 135.0 KB respectively). Verification confirms max_inferences quota enforcement occurs atomically in Secure partition.
-
 ## Complete Results
 
 ```

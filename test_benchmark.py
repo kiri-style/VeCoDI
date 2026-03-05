@@ -9,6 +9,12 @@ from datetime import datetime
 sys.path.insert(0, 'tools')
 import mac_provider
 
+# CIFAR-10 class labels
+CIFAR10_LABELS = [
+    'airplane', 'automobile', 'bird', 'cat', 'deer',
+    'dog', 'frog', 'horse', 'ship', 'truck'
+]
+
 def analyze_elf_sections():
     """Analyze actual ELF file sections using arm-zephyr-eabi-readelf"""
     elf_file = "build/zephyr/zephyr.elf"
@@ -29,12 +35,15 @@ def analyze_elf_sections():
         
         sections = {}
         for line in result.stdout.split('\n'):
-            if '[' in line and ']' in line:  # Section header line
-                parts = line.split()
-                if len(parts) >= 6:
+            # Format: [ Nr] Name Type Addr Off Size ...
+            # Example: [ 2] text PROGBITS 080375f0 000708 008920 00  AX  0   0  8
+            if line.strip() and '[' in line and ']' in line:
+                import re
+                match = re.search(r'\[\s*\d+\]\s+(\S+)\s+\S+\s+\S+\s+\S+\s+([0-9a-f]+)', line)
+                if match:
                     try:
-                        name = parts[1]
-                        size_hex = parts[5]
+                        name = match.group(1)
+                        size_hex = match.group(2)
                         size = int(size_hex, 16)
                         if size > 0:
                             sections[name] = size
@@ -142,19 +151,106 @@ log(f'  Ciphertext size: {len(ciphertext)} bytes')
 log(f'  Auth tag: {tag.hex()} (16 bytes)')
 log('✓ Done')
 
-# Step 4: Run inference
-log('[4] Running inference...')
-if not device.send_command(mac_provider.CMD_RUN_INFERENCE):
-    log('✗ Failed')
+# Step 3b: Set max_inferences to 4
+log('\n[3b] Setting max_inferences = 4...')
+max_inf_value = 4
+max_inf_data = struct.pack('<I', max_inf_value)
+if not device.send_command(mac_provider.CMD_SET_MAX_INFERENCES, max_inf_data):
+    log('✗ Failed to set max inferences')
     device.disconnect()
     output_file.close()
     sys.exit(1)
 resp = device.read_response()
 if not resp or resp[0] != 0x00:
-    log('✗ Failed')
+    log('✗ Failed (device error)')
     device.disconnect()
     output_file.close()
     sys.exit(1)
+log(f'✓ Done (max_inferences = {max_inf_value})')
+
+# Step 4: Run multiple inferences and collect results
+log('\n[4] Running multiple inferences...')
+num_inferences = 5
+inference_results = []
+correct_count = 0
+blocked_count = 0
+
+for i in range(num_inferences):
+    # Get current inference count before running
+    if not device.send_command(mac_provider.CMD_GET_INFERENCE_COUNT):
+        log(f'  [{i+1}/{num_inferences}] ✗ Failed to get inference count')
+        device.disconnect()
+        output_file.close()
+        sys.exit(1)
+    resp = device.read_response()
+    if not resp or resp[0] != 0x00 or len(resp[1]) < 4:
+        current_count = "unknown"
+    else:
+        current_count = struct.unpack('<I', resp[1][:4])[0]
+    
+    log(f'\n  [{i+1}/{num_inferences}] Inference count before: {current_count} / {max_inf_value}')
+    
+    # Run inference
+    log(f'  Running inference...')
+    if not device.send_command(mac_provider.CMD_RUN_INFERENCE):
+        log('  ✗ Failed to run inference')
+        device.disconnect()
+        output_file.close()
+        sys.exit(1)
+    resp = device.read_response()
+    if not resp:
+        log('  ✗ Failed (no response)')
+        device.disconnect()
+        output_file.close()
+        sys.exit(1)
+    if resp[0] != 0x00:
+        blocked_count += 1
+        log('  ⚠ Inference blocked (max limit reached)')
+        break
+    
+    # Get result
+    if not device.send_command(mac_provider.CMD_GET_INFERENCE_RESULT):
+        log('  ✗ Failed to request result')
+        device.disconnect()
+        output_file.close()
+        sys.exit(1)
+    resp = device.read_response()
+    if not resp or resp[0] != 0x00 or len(resp[1]) < 2:
+        log('  ✗ Failed to get result')
+        device.disconnect()
+        output_file.close()
+        sys.exit(1)
+    
+    prediction = resp[1][0]
+    expected = resp[1][1]
+    pred_label = CIFAR10_LABELS[prediction] if prediction < len(CIFAR10_LABELS) else f'unknown({prediction})'
+    expected_label = CIFAR10_LABELS[expected] if expected < len(CIFAR10_LABELS) else f'unknown({expected})'
+    match = prediction == expected
+    match_symbol = "✓" if match else "✗"
+    
+    inference_results.append({
+        'pred': prediction,
+        'pred_label': pred_label,
+        'expected': expected,
+        'expected_label': expected_label,
+        'match': match
+    })
+    if match:
+        correct_count += 1
+    
+    log(f'    Prediction: {prediction:2d} ({pred_label:10s}) {match_symbol}')
+    log(f'    Expected:   {expected:2d} ({expected_label:10s})')
+
+executed_inferences = len(inference_results)
+accuracy_pct = (100 * correct_count // executed_inferences) if executed_inferences > 0 else 0
+
+log(f'\n✓ Inference Results Summary:')
+log(f'  Executed: {executed_inferences}/{num_inferences}')
+log(f'  Blocked: {blocked_count}')
+log(f'  Accuracy: {correct_count}/{executed_inferences} ({accuracy_pct}%)')
+for i, result in enumerate(inference_results, 1):
+    match_symbol = "✓" if result['match'] else "✗"
+    log(f'  [{i}] {result["expected_label"]:10s} → {result["pred_label"]:10s} {match_symbol}')
 log('✓ Done')
 
 # Step 5: Get NS benchmark metrics

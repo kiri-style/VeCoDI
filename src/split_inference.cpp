@@ -98,6 +98,8 @@ static uint8_t test_labels[NUM_TEST_IMAGES];
 static uint8_t last_integrity_hash[32];  /* Store last computed hash */
 static uint8_t late_weights_hash[32];     /* Pre-computed hash of code+late weights */
 static bool late_hash_computed = false;  /* Flag to track if late hash is ready */
+static uint8_t last_prediction = 255;     /* Store last inference prediction result */
+static uint8_t last_expected_label = 255; /* Store last expected label for comparison */
 
 /* ============================================================
  *                 INTEGRITY HASH (CNT)
@@ -566,6 +568,10 @@ void run_split_inference(void)
 
         run_early_layers(input_buffer, early_output, early_skip);
         int pred = run_late_layers(early_output, early_skip);
+        
+        /* Store prediction and expected label for UART query */
+        last_prediction = (uint8_t)(pred & 0xFF);
+        last_expected_label = (uint8_t)expected_label;
 
         BENCHMARK_END(total_inf, g_benchmark_metrics.total_inference_cycles);
         printk("[SPLIT] Prediction = %d (total inference: %u cycles, %u ms)\n", 
@@ -578,4 +584,15 @@ void run_split_inference(void)
     printk("\n[CNT] ✓ All hash computations complete\n");
 
     printk("[SPLIT] ===== DONE =====\n\n");
+}
+
+/* Get last inference result */
+uint8_t get_last_prediction(void)
+{
+    return last_prediction;
+}
+
+uint8_t get_last_expected_label(void)
+{
+    return last_expected_label;
 }

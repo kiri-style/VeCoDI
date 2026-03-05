@@ -59,6 +59,7 @@ static void print_secure_memory_stats(void)
 #define DP_CMD_RUN_INFERENCE        9   /* Atomic: check + increment counter */
 #define DP_CMD_COMPUTE_ENCLAVE_INFO 10  /* Compute EnclaveInfo hash */
 #define DP_CMD_VALIDATE_M_UPDATE    11  /* Validate and decrypt M_update */
+#define DP_CMD_SET_MAX_INFERENCES   12  /* Override max inferences and reset counter */
 
 /* EnclaveInfo size (SHA-256 hash) */
 #define ENCLAVE_INFO_SIZE 32
@@ -755,6 +756,29 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
             printf("[SECURE]   in_size[0]=%zu (nonce), in_size[1]=%zu (ciphertext), in_size[2]=%zu (tag)\n",
                    msg->in_size[0], msg->in_size[1], msg->in_size[2]);
             return tfm_dp_validate_m_update(msg);
+        }
+
+    case DP_CMD_SET_MAX_INFERENCES:
+        {
+            uint32_t new_max = 0;
+
+            if (msg->in_size[1] != sizeof(new_max)) {
+                printf("[SECURE] DP_CMD_SET_MAX_INFERENCES invalid size=%zu\n", msg->in_size[1]);
+                return PSA_ERROR_INVALID_ARGUMENT;
+            }
+
+            psa_read(msg->handle, 1, &new_max, sizeof(new_max));
+            if (new_max == 0U) {
+                printf("[SECURE] DP_CMD_SET_MAX_INFERENCES invalid value=0\n");
+                return PSA_ERROR_INVALID_ARGUMENT;
+            }
+
+            max_inferences_per_enclave_secure = new_max;
+            inference_counter_secure = 0U;
+            g_secure_metrics.counter_operations++;
+
+            printf("[SECURE] Max inferences overridden: max=%u, counter reset\n", new_max);
+            return PSA_SUCCESS;
         }
 
         default:

@@ -20,6 +20,8 @@ extern "C" {
 #define CMD_ECDH_HANDSHAKE          0x07
 #define CMD_GET_BENCHMARK           0x08
 #define CMD_GET_SECURE_BENCHMARK    0x09
+#define CMD_GET_INFERENCE_RESULT    0x0A
+#define CMD_SET_MAX_INFERENCES      0x0B
 
 /* Response Codes (Device → Mac) */
 #define RESP_OK                     0x00

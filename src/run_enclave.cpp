@@ -5,6 +5,7 @@
 #include "split_inference.h"
 #include "create_enclave.h"
 #include "benchmark.h"
+#include "secure_benchmark_ns.h"
 
 /* PSA definitions */
 #define ENCLAVE_SID  0xFFFFF002
@@ -93,4 +94,13 @@ void run_enclave(void)
     printk("[ENCLAVE] ===== EXIT (total: %u cycles, %u ms) =====\n",
            g_benchmark_metrics.run_enclave_cycles,
            benchmark_cycles_to_ms(g_benchmark_metrics.run_enclave_cycles));
+}
+
+int set_max_inferences(uint32_t max_infs)
+{
+    int ret = set_max_inferences_secure(max_infs);
+    if (ret == 0) {
+        printk("[ENCLAVE] Max inferences set in Secure partition: %u\n", max_infs);
+    }
+    return ret;
 }

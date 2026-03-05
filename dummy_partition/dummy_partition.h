@@ -25,6 +25,7 @@ extern "C" {
 #define DP_CMD_RUN_INFERENCE        9   /* Atomic: check + increment counter */
 #define DP_CMD_COMPUTE_ENCLAVE_INFO 10  /* Compute EnclaveInfo hash */
 #define DP_CMD_VALIDATE_M_UPDATE    11  /* Validate and decrypt M_update */
+#define DP_CMD_SET_MAX_INFERENCES   12  /* Override max inferences and reset counter */
 
 /* Service ID for Dummy Partition */
 #define TFM_DP_SERVICE_SID 0xFFFFF002

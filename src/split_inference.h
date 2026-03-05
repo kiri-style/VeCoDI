@@ -14,6 +14,10 @@ uint8_t *get_late_weights_buffer(void);
 size_t get_late_weights_size(void);
 int precompute_late_weights_hash(void);  /* Pre-compute hash of code+late weights */
 
+/* Get last inference result */
+uint8_t get_last_prediction(void);
+uint8_t get_last_expected_label(void);
+
 #ifdef __cplusplus
 }
 #endif
