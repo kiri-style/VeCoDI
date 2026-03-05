@@ -9,6 +9,7 @@
 #include <psa/crypto.h>
 #include "run_enclave.h"
 #include "benchmark.h"
+#include "secure_benchmark_ns.h"
 
 /* Debug mode: Set to 1 to enable diagnostics, 0 for clean protocol */
 #define UART_DEBUG_MODE 0
@@ -123,7 +124,8 @@ static bool is_valid_cmd(uint8_t cmd)
             cmd == CMD_GET_INFERENCE_COUNT ||
             cmd == CMD_GET_REMAINING_INFERENCES ||
             cmd == CMD_ECDH_HANDSHAKE ||
-            cmd == CMD_GET_BENCHMARK);
+            cmd == CMD_GET_BENCHMARK ||
+            cmd == CMD_GET_SECURE_BENCHMARK);
 }
 
 static bool is_valid_len_for_cmd(uint8_t cmd, uint32_t len)
@@ -140,6 +142,7 @@ static bool is_valid_len_for_cmd(uint8_t cmd, uint32_t len)
         case CMD_GET_INFERENCE_COUNT:
         case CMD_GET_REMAINING_INFERENCES:
         case CMD_GET_BENCHMARK:
+        case CMD_GET_SECURE_BENCHMARK:
             return len == 0U;
         case CMD_ECDH_HANDSHAKE:
             return len == 65U;  /* Uncompressed P-256 public key: 0x04 || x || y */
@@ -158,6 +161,7 @@ static void handle_get_inference_count(void);
 static void handle_get_remaining_inferences(void);
 static void handle_ecdh_handshake(const uint8_t *data, uint32_t len);
 static void handle_get_benchmark(void);
+static void handle_get_secure_benchmark(void);
 
 int uart_protocol_init(void)
 {
@@ -365,6 +369,10 @@ static void process_command(void)
             handle_get_benchmark();
             break;
         
+        case CMD_GET_SECURE_BENCHMARK:
+            handle_get_secure_benchmark();
+            break;
+        
         default:
             uart_protocol_send_response(RESP_ERROR, NULL, 0);
             break;
@@ -450,6 +458,11 @@ static void handle_run_inference(void)
         uart_protocol_send_response(RESP_ERROR, NULL, 0);
         return;
     }
+
+    if (mock_inference_count >= mock_max_inferences) {
+        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+        return;
+    }
     
     /* Run the enclave (NS+S integrated architecture):
      * - NS prepares data and calls enclave
@@ -457,6 +470,7 @@ static void handle_run_inference(void)
      * - NS executes split inference with decrypted weights
      */
     run_enclave();
+    mock_inference_count++;
     
     /* Enclave executed - just confirm success to Mac
      * (Quota management done in Secure World, inaccessible from NS)
@@ -496,10 +510,39 @@ static void handle_get_benchmark(void)
 {
     /* Send complete benchmark metrics structure to Mac */
     extern benchmark_metrics_t g_benchmark_metrics;
+
+    /* Refresh memory-related fields before sending */
+    uint32_t heap_total = 0;
+    benchmark_get_heap_usage(&g_benchmark_metrics.heap_used_bytes,
+                             &g_benchmark_metrics.heap_free_bytes,
+                             &heap_total);
+    (void)heap_total;
+    g_benchmark_metrics.stack_used_bytes = benchmark_get_stack_usage();
+    benchmark_get_memory_usage(&g_benchmark_metrics.ram_used_bytes,
+                               &g_benchmark_metrics.ram_total_bytes,
+                               &g_benchmark_metrics.flash_used_bytes,
+                               &g_benchmark_metrics.flash_total_bytes);
     
     /* Cast structure to bytes and send */
     const uint8_t *metrics_bytes = (const uint8_t *)&g_benchmark_metrics;
     uart_protocol_send_response(RESP_OK, metrics_bytes, sizeof(benchmark_metrics_t));
+}
+
+static void handle_get_secure_benchmark(void)
+{
+    /* Get Secure world benchmark metrics via PSA call */
+    secure_benchmark_metrics_ns_t secure_metrics;
+    
+    int ret = get_secure_benchmark_metrics(&secure_metrics);
+    if (ret != 0) {
+        /* Failed to get Secure metrics, send error */
+        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+        return;
+    }
+    
+    /* Send complete secure metrics structure to Mac */
+    const uint8_t *metrics_bytes = (const uint8_t *)&secure_metrics;
+    uart_protocol_send_response(RESP_OK, metrics_bytes, sizeof(secure_benchmark_metrics_ns_t));
 }
 
 static void handle_ecdh_handshake(const uint8_t *data, uint32_t len)
