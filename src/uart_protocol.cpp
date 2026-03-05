@@ -568,11 +568,11 @@ static void handle_ecdh_handshake(const uint8_t *data, uint32_t len)
         return;
     }
     
-    /* Step 4: Perform ECDH key agreement */
+    /* Step 4: Perform ECDH key agreement using imported Mac's public key */
     uint8_t shared_secret[32];
     size_t secret_len = 0;
     status = psa_raw_key_agreement(PSA_ALG_ECDH, device_keypair, 
-                                     data, len,  /* Mac's public key */
+                                     data, len,  /* Mac's public key bytes (uncompressed format) */
                                      shared_secret, sizeof(shared_secret), &secret_len);
     if (status != PSA_SUCCESS || secret_len != 32) {
         psa_destroy_key(device_keypair);

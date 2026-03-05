@@ -4,19 +4,9 @@
 #include <string.h>
 
 // ============================================================================
-// ARM Cortex-M DWT (Data Watchpoint and Trace) Registers
+// Cycle Counter - Using Zephyr's sys_clock_elapsed() instead of DWT
+// (DWT is not accessible from Non-Secure world in TrustZone-M)
 // ============================================================================
-
-// DWT Control Register
-#define DWT_CTRL        (*((volatile uint32_t *)0xE0001000))
-// DWT Cycle Count Register
-#define DWT_CYCCNT      (*((volatile uint32_t *)0xE0001004))
-// CoreDebug Demcr Register (enables DWT)
-#define DEMCR           (*((volatile uint32_t *)0xE000EDFC))
-
-// DWT Control bits
-#define DWT_CTRL_CYCCNTENA  (1 << 0)  // Enable cycle counter
-#define DEMCR_TRCENA        (1 << 24) // Enable trace/debug
 
 // System clock (STM32L552 default)
 #ifndef CONFIG_SYS_CLOCK_HW_CYCLES_PER_SEC
@@ -28,20 +18,17 @@
 // Global metrics storage
 benchmark_metrics_t g_benchmark_metrics;
 
+// Reference point for cycle counting
+static uint32_t benchmark_start_cycles = 0;
+
 // ============================================================================
 // Initialization
 // ============================================================================
 
 void benchmark_init(void)
 {
-    // Enable trace/debug block (required for DWT)
-    DEMCR |= DEMCR_TRCENA;
-    
-    // Reset cycle counter
-    DWT_CYCCNT = 0;
-    
-    // Enable cycle counter
-    DWT_CTRL |= DWT_CTRL_CYCCNTENA;
+    // Initialize with current kernel cycle count
+    benchmark_start_cycles = k_cycle_get_32();
     
     // Reset metrics
     benchmark_reset_metrics();
@@ -51,11 +38,16 @@ void benchmark_init(void)
 
 // ============================================================================
 // Cycle Counter Implementation
+// Using Zephyr's k_cycle_get_32() for TrustZone-M safe access
 // ============================================================================
 
 uint32_t benchmark_get_cycles(void)
 {
-    return DWT_CYCCNT;
+    // Get current cycle count and calculate elapsed
+    uint32_t current_cycles = k_cycle_get_32();
+    uint32_t elapsed_cycles = current_cycles - benchmark_start_cycles;
+    
+    return elapsed_cycles;
 }
 
 uint32_t benchmark_cycles_to_us(uint32_t cycles)

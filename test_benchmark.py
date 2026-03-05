@@ -87,9 +87,9 @@ if not resp or resp[0] != 0x00:
 data = resp[1]
 print(f'✓ Received {len(data)} bytes')
 
-if len(data) >= 112:
-    # Parse benchmark_metrics_t
-    values = struct.unpack('<28I', data[:112])
+if len(data) >= 72:
+    # Parse benchmark_metrics_t (18 x uint32_t = 72 bytes)
+    values = struct.unpack('<18I', data[:72])
     
     print('\n' + '='*60)
     print('BENCHMARK RESULTS FROM DEVICE')
@@ -116,8 +116,16 @@ if len(data) >= 112:
     print(f'  Heap Used:  {values[9]:>10,} bytes ({values[9]/1024:.1f} KB)')
     print(f'  Heap Free:  {values[10]:>10,} bytes ({values[10]/1024:.1f} KB)')
     print(f'  Stack Used: {values[11]:>10,} bytes ({values[11]/1024:.1f} KB)')
-    print(f'  RAM Used:   {values[12]:>10,} / {values[13]:,} bytes ({values[12]/values[13]*100:.1f}%)')
-    print(f'  Flash Used: {values[14]:>10,} / {values[15]:,} bytes ({values[14]/values[15]*100:.1f}%)')
+    
+    if values[13] > 0:
+        print(f'  RAM Used:   {values[12]:>10,} / {values[13]:,} bytes ({values[12]/values[13]*100:.1f}%)')
+    else:
+        print(f'  RAM Used:   {values[12]:>10,} / {values[13]:,} bytes (N/A)')
+    
+    if values[15] > 0:
+        print(f'  Flash Used: {values[14]:>10,} / {values[15]:,} bytes ({values[14]/values[15]*100:.1f}%)')
+    else:
+        print(f'  Flash Used: {values[14]:>10,} / {values[15]:,} bytes (N/A)')
     
     print(f'\nCounters:')
     print(f'  Inferences:   {values[16]}')
@@ -125,6 +133,6 @@ if len(data) >= 112:
     
     print('\n' + '='*60)
 else:
-    print(f'✗ Data too short: {len(data)} bytes (expected >= 112)')
+    print(f'✗ Data too short: {len(data)} bytes (expected >= 72)')
 
 device.disconnect()
