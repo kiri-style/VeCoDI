@@ -101,21 +101,37 @@ psa_close(handle);
 ### Measured Performance
 ```
 Inference Execution (per image):
-  ├─ Early Layers:         405 ms (CIFAR-10 feature extraction)
-  ├─ Late Layers:           74 ms (dense classification)
-  ├─ Inference Total:      518 ms (sum of above)
-  └─ Average per cycle:    193 ms (multiple runs averaged)
+  ├─ Early Layers:         390.8 ms (42,984,997 cycles @ 110 MHz)
+  ├─ Late Layers:           72.0 ms (7,922,258 cycles)
+  ├─ Inference Total:      468.7 ms (51,553,622 cycles)
+  └─ Enclave Create:        72.6 ms (7,980,975 cycles)
 
-AES-CTR Decryption:
-  ├─ NS-side call:         82 ms (includes 13 ms IPC latency)
-  └─ Secure-side exec:     66 ms (actual AES operation)
+Secure Cryptographic Operations:
+  ├─ AES-CTR Decrypt:       69.7 ms (7,662,219 cycles)
+  └─ Counter Management:    <1 µs (548-29 cycles)
 
-Memory Usage:
-  ├─ NS RAM:               121.4 KB / 128 KB (92% utilized)
-  ├─ NS Flash:             187.2 KB / 256 KB (71% utilized)
-  ├─ Secure RAM:            52.7 KB / 64 KB (80% utilized)
-  └─ Secure Flash:         119.5 KB / 131 KB (89% utilized)
+Memory Usage (ELF Binary Analysis):
+  ├─ NS RAM:               121,788 / 131,072 bytes (92.9%)
+  │   ├─ BSS (buffers):    117,809 bytes (115.0 KB)
+  │   └─ DATA (globals):     3,976 bytes (3.9 KB)
+  ├─ NS Flash:             176,160 / 262,144 bytes (67.2%)
+  │   ├─ rodata (weights): 138,252 bytes (135.0 KB)
+  │   └─ text (code):       ~38 KB
+  ├─ Secure RAM:            52,732 / 65,536 bytes (80.5%)
+  └─ Secure Flash:         119,532 / 134,144 bytes (89.1%)
 ```
+
+### Dynamic Memory Breakdown (Top 10 symbols)
+1. `enclave_memory`: 39,552 bytes (decrypted late weights)
+2. `late_wt_encrypted`: 39,552 bytes (encrypted in ROM)
+3. `wt_conv2d_6`: 18,432 bytes (early layer weights)
+4. `early_buf0/1/2`: 16,384 bytes each (inference buffers)
+5. `wt_conv2d_4`: 9,216 bytes (early layer weights)
+6. `early_skip`: 8,192 bytes (skip connection buffer)
+7. `early_ctx_buf`: 8,192 bytes (context for early layers)
+8. `wt_conv2d_3`: 4,608 bytes (early layer weights)
+9. `early_output`: 4,096 bytes (output buffer)
+10. `late_ctx_buf`: 4,096 bytes (context for late layers)
 
 ### Benchmark Data Points (15 NS metrics)
 1. `enclave_create_cycles`: Enclave creation overhead

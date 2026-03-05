@@ -48,6 +48,30 @@ Performance Summary
 - **Secure**: 119,532 / 134,144 bytes Flash (89.1%), 52,732 / 65,536 bytes RAM (80.5%)
 - **Total**: 295,692 / 396,288 bytes Flash (74.6%), 174,520 / 196,608 bytes RAM (88.8%)
 
+**ELF Binary Analysis** (from build/zephyr/zephyr.elf)
+
+Flash (ROM) Sections:
+
+- **rodata** (Constants + Encrypted Weights): 138,252 bytes (135.0 KB)
+  
+  - Encrypted late layer weights: 39,552 bytes (encrypted in ROM)
+  - Early layer weights (plain ROM): ~37 KB (conv2d_0 to conv2d_6)
+  - Constants & tensors: ~58 KB
+
+- **text** (Code): ~38 KB (derived from total)
+
+RAM (SRAM) Sections:
+
+- **bss** (Zero-initialized Buffers): 117,809 bytes (115.0 KB)
+  
+  - Early inference buffers (buf0/1/2): 16 KB × 3 = 48 KB
+  - Context buffers: 8 KB + 4 KB = 12 KB
+  - Enclave memory (decrypted weights): 39,552 bytes (38.6 KB)
+  - Main stack: 4 KB
+  - Other buffers/padding: ~14 KB
+
+- **data** (Initialized Globals): 3,976 bytes (3.9 KB)
+
 Three-Layer Security Model
 --------------------------
 
