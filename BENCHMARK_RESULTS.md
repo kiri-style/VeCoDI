@@ -1,124 +1,160 @@
 # Performance Benchmark Results
 
-**Date:** 23 février 2026  
+**Date:** 5 March 2026  
 **Platform:** STM32L552ZE-Q (Cortex-M33 @ 110 MHz)  
 **Configuration:** TrustZone-M, TF-M Secure partition, CMSIS-NN optimized  
-**Test:** 4 inferences (3 allowed per enclave → 1 recreation)
+**Test:** Single inference with ECDH handshake and M_update (quota=10)
 
 ## Complete Results
 
 ```
 ╔══════════════════════════════════════════════════════════════╗
-║           PERFORMANCE BENCHMARK REPORT                      ║
+║        NON-SECURE (NS) BENCHMARK RESULTS                    ║
 ╠══════════════════════════════════════════════════════════════╣
 ║ ENCLAVE LIFECYCLE                                            ║
 ╟──────────────────────────────────────────────────────────────╢
-║ Create:      15129032 cycles  (   137 ms)                   ║
-║ Destroy:       545712 cycles  (     4 ms)                   ║
-║ Recreations:        1 times                                 ║
+║ Create:       7,980,846 cycles  (    72.6 ms)               ║
+║ Destroy:              0 cycles  (     0.0 ms)               ║
 ╟──────────────────────────────────────────────────────────────╢
 ║ CRYPTOGRAPHIC OPERATIONS                                     ║
 ╟──────────────────────────────────────────────────────────────╢
-║ AES Decrypt:  9116683 cycles  (    82 ms)                   ║
-║ Late Hash:     920422 cycles  (     8 ms)                   ║
-║ Inf Hash:     1294657 cycles  (    11 ms)                   ║
+║ AES Decrypt:  7,676,315 cycles  (    69.8 ms)               ║
+║ Late Hash:      550,525 cycles  (     5.0 ms)               ║
+║ Inference Hash: 620,080 cycles  (     5.6 ms)               ║
 ╟──────────────────────────────────────────────────────────────╢
 ║ INFERENCE PERFORMANCE                                        ║
 ╟──────────────────────────────────────────────────────────────╢
-║ Early Layers:  44600121 cycles  (   405 ms)                 ║
-║ Late Layers:    8226237 cycles  (    74 ms)                 ║
-║ Total Inf:     56993850 cycles  (   518 ms)                 ║
+║ Early Layers: 42,984,934 cycles  (   390.8 ms)              ║
+║ Late Layers:   7,922,015 cycles  (    72.0 ms)              ║
+║ Total Inf:    51,551,046 cycles  (   468.6 ms)              ║
 ╟──────────────────────────────────────────────────────────────╢
 ║ END-TO-END METRICS                                           ║
 ╟──────────────────────────────────────────────────────────────╢
-║ run_enclave(): 85570285 cycles  (   777 ms)                 ║
-║ Inferences:           4 total                               ║
-║ Avg per inf:   21392571 cycles  (   194 ms)                 ║
+║ run_enclave(): 60,099,679 cycles  (   546.4 ms)             ║
+║ Inferences:            1 total                              ║
 ╟──────────────────────────────────────────────────────────────╢
-║ MEMORY USAGE                                                 ║
+║ MEMORY USAGE (NS World)                                      ║
 ╟──────────────────────────────────────────────────────────────╢
-║ Heap Used:           0 bytes  (     0 KB)                  ║
-║ Heap Free:           0 bytes  (     0 KB)                  ║
-║ Stack Used:       2048 bytes  (     2 KB)                  ║
+║ Heap Used:           0 bytes  (     0 KB)                   ║
+║ Stack Used:      2,048 bytes  (     2 KB)                   ║
+║ RAM Used:      121,788 / 131,072 bytes (92.9%)              ║
+║ Flash Used:    176,160 / 262,144 bytes (67.2%)              ║
+╚══════════════════════════════════════════════════════════════╝
+
+╔══════════════════════════════════════════════════════════════╗
+║        SECURE (S) BENCHMARK RESULTS                         ║
+╠══════════════════════════════════════════════════════════════╣
+║ CRYPTOGRAPHIC OPERATIONS                                     ║
+╟──────────────────────────────────────────────────────────────╢
+║ AES Decrypt:  7,662,090 cycles  (    69.7 ms) [1 ops]       ║
+║ Late Hash:            0 cycles  (     0.0 ms) [0 ops]       ║
+║ Digest Compute:       0 cycles  (     0.0 ms) [0 ops]       ║
+╟──────────────────────────────────────────────────────────────╢
+║ COUNTER MANAGEMENT                                           ║
+╟──────────────────────────────────────────────────────────────╢
+║ Get Max:            548 cycles  (     0.0 ms)               ║
+║ Check Allowed:        0 cycles  (     0.0 ms)               ║
+║ Increment:            0 cycles  (     0.0 ms)               ║
+║ Reset:               29 cycles  (     0.0 ms)               ║
+║ Total Ops:                  3 operations                    ║
+╟──────────────────────────────────────────────────────────────╢
+║ MEMORY USAGE (Secure World)                                 ║
+╟──────────────────────────────────────────────────────────────╢
+║ RAM Used:       52,732 / 65,536 bytes (80.5%)               ║
+║ Flash Used:    119,532 / 134,144 bytes (89.1%)              ║
+╚══════════════════════════════════════════════════════════════╝
+
+╔══════════════════════════════════════════════════════════════╗
+║        COMBINED SYSTEM METRICS                              ║
+╠══════════════════════════════════════════════════════════════╣
+║ Total RAM:      174,520 / 196,608 bytes (88.8%)             ║
+║ Total Flash:    295,692 / 396,288 bytes (74.6%)             ║
 ╚══════════════════════════════════════════════════════════════╝
 ```
 
-## Memory Footprint
+## Memory Footprint Analysis
 
-### Non-Secure (NS) World - Detailed Breakdown
+### Non-Secure (NS) World - Flash (ROM): 176,160 bytes (67.2% of 256 KB)
 
-**Flash (ROM) Usage: 188,804 bytes / 256 KB (72.02%)**
+**ELF Binary Analysis** (from build/zephyr/zephyr.elf)
+
 ```
-Component Breakdown (estimated):
-├─ Application Code              ~45 KB
-│  ├─ main.cpp                    ~2 KB
-│  ├─ create_enclave.cpp          ~4 KB
-│  ├─ run_enclave.cpp             ~3 KB
-│  ├─ split_inference.cpp         ~8 KB
-│  ├─ benchmark.cpp               ~3 KB
-│  └─ test_images.c (20 images)   ~25 KB (20 × 3072 bytes + code)
+Sections:
+├─ rodata (Read-Only Data):      138,252 bytes (135.0 KB)
+│  ├─ Encrypted late weights:     39,552 bytes (encrypted)
+│  ├─ Early weights (plain ROM):  ~37 KB
+│  │  ├─ wt_conv2d_6:             18,432 bytes (18.0 KB)
+│  │  ├─ wt_conv2d_4:              9,216 bytes (9.0 KB)
+│  │  ├─ wt_conv2d_3:              4,608 bytes (4.5 KB)
+│  │  ├─ wt_conv2d_2:              2,304 bytes (2.2 KB)
+│  │  ├─ wt_conv2d_1:              2,304 bytes (2.2 KB)
+│  │  ├─ wt_conv2d_5:                512 bytes (0.5 KB)
+│  │  └─ wt_conv2d_0:                432 bytes (0.4 KB)
+│  └─ Constants/Device table:     ~58 KB
 │
-├─ CMSIS-NN Library              ~35 KB
-│  ├─ Convolution kernels         ~15 KB
-│  ├─ Pooling operations          ~5 KB
-│  ├─ Activation functions        ~3 KB
-│  └─ Fully connected             ~12 KB
-│
-├─ Model Weights (Early Layers)  ~37 KB
-│  ├─ wt_conv2d_0                 432 bytes
-│  ├─ wt_conv2d_1                 2,304 bytes
-│  ├─ wt_conv2d_2                 2,304 bytes
-│  ├─ wt_conv2d_3                 4,608 bytes
-│  ├─ wt_conv2d_4                 9,216 bytes
-│  ├─ wt_conv2d_5                 512 bytes
-│  └─ wt_conv2d_6                 18,432 bytes
-│
-├─ Encrypted Late Weights        ~40 KB
-│  ├─ wt_conv2d_7 (encrypted)     36,864 bytes
-│  ├─ wt_conv2d_8 (encrypted)     2,048 bytes
-│  ├─ wt_fc (encrypted)           640 bytes
-│  └─ IV + metadata               ~50 bytes
-│
-├─ Zephyr RTOS Kernel            ~15 KB
-│  ├─ Scheduler                   ~3 KB
-│  ├─ Thread management           ~4 KB
-│  ├─ IPC/Synchronization         ~3 KB
-│  └─ System calls                ~5 KB
-│
-├─ mbedTLS PSA Crypto            ~12 KB
-│  ├─ SHA-256                     ~4 KB
-│  ├─ AES (stub, actual in TFM)   ~2 KB
-│  └─ PSA API wrapper             ~6 KB
-│
-└─ Other (libc, drivers, etc.)   ~4 KB
+└─ text (Executable Code):        ~38 KB
+   ├─ Application code:           ~15 KB
+   ├─ Zephyr RTOS:                ~15 KB
+   ├─ TF-Lite Micro:              ~18 KB
+   ├─ CMSIS-NN kernels:           ~12 KB
+   └─ PSA Crypto client:           ~5 KB
 ```
 
-**RAM Usage: 127,944 bytes / 128 KB (97.61%)**
+### Non-Secure (NS) World - RAM (SRAM): 121,788 bytes (92.9% of 128 KB)
+
+**ELF Binary Analysis**
+
 ```
-Section Breakdown:
-├─ BSS (Zero-initialized)         ~85 KB
-│  ├─ Tensor buffers              ~48 KB
-│  │  ├─ early_buf0[16384]        16 KB
-│  │  ├─ early_buf1[16384]        16 KB
-│  │  ├─ early_buf2[16384]        16 KB
-│  │  └─ Context buffers          ~12 KB (early_ctx + late_ctx)
+Sections:
+├─ bss (Zero-initialized):        117,809 bytes (115.0 KB)
+│  ├─ Early inference buffers:     48 KB
+│  │  ├─ early_buf0:              16,384 bytes (16 KB)
+│  │  ├─ early_buf1:              16,384 bytes (16 KB)
+│  │  └─ early_buf2:              16,384 bytes (16 KB)
 │  │
-│  ├─ Enclave Memory              ~39 KB
-│  │  └─ enclave_memory[39552]    (late weights decrypted)
+│  ├─ Context/State buffers:      12.2 KB
+│  │  ├─ early_ctx_buf:            8,192 bytes (8 KB)
+│  │  └─ late_ctx_buf:             4,096 bytes (4 KB)
 │  │
-│  ├─ Early/Late outputs          ~3 KB
-│  │  ├─ early_output[]           2,048 bytes
-│  │  ├─ early_skip[]             512 bytes
-│  │  └─ input_buffer[]           3,072 bytes
+│  ├─ Enclave region:             39,552 bytes (38.6 KB)
+│  │  └─ enclave_memory (decrypted weights)
 │  │
-│  └─ Test images selection       ~60 bytes
-│     ├─ test_images[1]           8 bytes
-│     ├─ test_labels[1]           1 byte
-│     └─ hash buffers             64 bytes
+│  ├─ Test images:                ~3 KB (CIFAR-10 samples)
+│  ├─ Main stack:                  4,096 bytes (4 KB)
+│  └─ Output buffers:              ~2.5 KB
+│     ├─ early_output
+│     └─ early_skip
 │
-├─ DATA (Initialized)             ~8 KB
-│  ├─ Biases (all layers)         ~2 KB
-│  ├─ Parameters (quant, conv)    ~3 KB
+└─ data (Initialized):             3,976 bytes (3.9 KB)
+   ├─ Layer biases:               ~2 KB
+   ├─ Quantization parameters:    ~1 KB
+   └─ Global config/primitives:   ~1 KB
+```
+
+### Secure (S) World
+
+```
+Memory Usage:
+├─ Flash: 119,532 bytes (89.1% of 134 KB)
+│  ├─ TF-M Bootloader (BL2)
+│  ├─ TF-M Secure partition
+│  ├─ Dummy partition (crypto)
+│  └─ PSA stubs
+│
+└─ RAM:   52,732 bytes (80.5% of 64 KB)
+   ├─ PSA IPC message buffers
+   ├─ Secure partition state
+   └─ TF-M context/stacks
+```
+
+### Combined System Metrics
+
+```
+Total Memory:
+├─ Flash: 295,692 bytes / 396,288 available (74.6%)
+├─ RAM:   174,520 bytes / 196,608 available (88.8%)
+└─ Most constrained: NS RAM at 92.9%
+```
 │  ├─ Dimensions structs          ~1 KB
 │  └─ Global variables            ~2 KB
 │

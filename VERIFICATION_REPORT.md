@@ -1,6 +1,6 @@
 # Enclave Authorization Protocol - Verification Report
 
-**Date**: 27 February 2026  
+**Date**: 5 March 2026  
 **Platform**: STM32L552ZE-Q (NUCLEO-L552ZE-Q)  
 **Status**: ✅ **ALL PHASES VERIFIED ON HARDWARE**
 
@@ -18,12 +18,14 @@ Complete end-to-end verification of the 3-phase Enclave Authorization Protocol o
 
 | Component | Details |
 |-----------|---------|
-| **Hardware** | STM32L552ZE-Q (ARM Cortex-M33, TrustZone-M) |
-| **Flash Usage** | 202,148 bytes (77.11% of 256KB NS) |
-| **RAM Usage** | 128,024 bytes (97.67% of 128KB) |
+| **Hardware** | STM32L552ZE-Q (ARM Cortex-M33 @ 110 MHz, TrustZone-M) |
+| **NS Flash Usage** | 176,160 bytes (67.2% of 262 KB) |
+| **NS RAM Usage** | 121,788 bytes (92.9% of 128 KB) |
+| **S Flash Usage** | 119,532 bytes (89.1% of 134 KB) |
+| **S RAM Usage** | 52,732 bytes (80.5% of 64 KB) |
 | **Framework** | Zephyr RTOS v4.3.0 + TF-M |
-| **Crypto** | PSA Crypto API |
-| **Build Tool** | West 1.5.0+ |
+| **Crypto** | PSA Crypto API (AES-256-GCM) |
+| **Build Tool** | West 1.5.0+, arm-zephyr-eabi GCC 12.2.0 |
 
 ---
 
