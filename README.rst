@@ -9,9 +9,9 @@ Secure CIFAR-10 Split Inference with TF-M and Encrypted Late Weights
     Zephyr Version:     commit 61a8648c2cc6bbec9af368a96ecae87d6798e7fe (HEAD -> main)
     TF-M Version:       commit 04aa7243e04946b5422b124bea9c0675ab6b120f (HEAD, manifest-rev)
     Build Date:         5 March 2026
-    Target Board:       NUCLEO-L552ZE-Q (STM32L552ZE)
-    Flash Size:         179940 B (68.64% of 256 KB)
-    RAM Size:           128304 B (97.89% of 128 KB)
+    Target Board:       NUCLEO-L552ZE-Q (STM32L552ZE, Cortex-M33 @ 110 MHz)
+    Total Flash Used:   295,692 B (74.6% of 396 KB)
+    Total RAM Used:     174,520 B (88.8% of 192 KB)
 
 Overview
 ========
@@ -29,24 +29,24 @@ on ARM Cortex-M33 with TrustZone, combining:
 Performance Summary
 ===================
 
-**Non-Secure Inference Pipeline**
+**Non-Secure (NS) Inference Pipeline**
 
-- **Early Layers**: 405 ms (44.6M cycles)
-- **Late Layers**: 74 ms (8.2M cycles)
-- **Total Inference**: 518 ms (57.0M cycles)
-- **Average per Inference**: 193 ms
+- **Early Layers**: 390.8 ms (42,984,997 cycles)
+- **Late Layers**: 72.0 ms (7,922,258 cycles)
+- **Total Inference**: 468.7 ms (51,553,622 cycles)
+- **Enclave Create**: 72.6 ms (7,980,975 cycles)
 
-**Secure Cryptographic Operations**
+**Secure (S) Cryptographic Operations**
 
-- **AES Decrypt**: 66 ms/operation (7.28M cycles @ 110 MHz)
-- **Counter Management**: <1 µs per operation (negligible overhead)
-- **IPC Latency Overhead**: ~13 ms per AES call
+- **AES Decrypt**: 69.7 ms (7,662,219 cycles @ 110 MHz) [1 operation]
+- **Counter Management**: <1 µs per operation (548-29 cycles)
+- **IPC Latency Overhead**: Included in NS measurements
 
 **Memory Footprint**
 
-- **Non-Secure**: 187 KB Flash (71%), 121 KB RAM (92%)
-- **Secure**: 119 KB Flash (89%), 52 KB RAM (80%)
-- **Total**: ~310 KB / 512 KB Flash (60%), 174 KB / 192 KB RAM (91%)
+- **Non-Secure**: 176,160 / 262,144 bytes Flash (67.2%), 121,788 / 131,072 bytes RAM (92.9%)
+- **Secure**: 119,532 / 134,144 bytes Flash (89.1%), 52,732 / 65,536 bytes RAM (80.5%)
+- **Total**: 295,692 / 396,288 bytes Flash (74.6%), 174,520 / 196,608 bytes RAM (88.8%)
 
 Three-Layer Security Model
 --------------------------
