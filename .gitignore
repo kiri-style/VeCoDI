@@ -37,6 +37,5 @@ src/model_encrypted*.h
 src/qnn_inference.c
 src/cifar_resnet_lite_int8_encrypted.h
 src/cifar10_reference_data.h
-tools/
 .github/
 VM_split_inference/

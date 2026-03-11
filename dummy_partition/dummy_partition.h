@@ -35,7 +35,6 @@ extern "C" {
 
 /* AES-256 key for M_update message encryption (predefined in Secure Flash) */
 #define M_UPDATE_AES256_KEY_SIZE 32
-extern const uint8_t m_update_aes256_key[32];
 
 /* EnclaveInfo size (SHA-256 hash) */
 #define ENCLAVE_INFO_SIZE 32

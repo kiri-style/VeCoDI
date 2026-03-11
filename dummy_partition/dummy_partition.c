@@ -12,6 +12,7 @@
 
 #include "psa/service.h"
 #include "psa_manifest/tfm_dummy_partition.h"
+#include "dummy_partition.h"
 
 #include "stm32l5xx_hal_secure_sram.h"
 #include "secure_benchmark.h"
@@ -316,7 +317,7 @@ static psa_status_t tfm_dp_validate_m_update(psa_msg_t *msg)
     psa_set_key_algorithm(&attr, PSA_ALG_GCM);
 
     psa_key_id_t key_id;
-    status = psa_import_key(&attr, m_update_aes256_key, sizeof(m_update_aes256_key), &key_id);
+    status = psa_import_key(&attr, m_update_aes256_key, 32, &key_id);
     psa_reset_key_attributes(&attr);
     if (status != PSA_SUCCESS) {
         return status;
@@ -781,8 +782,8 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
             return PSA_SUCCESS;
         }
 
-        default:
-            return PSA_ERROR_NOT_SUPPORTED;
+    default:
+        return PSA_ERROR_NOT_SUPPORTED;
     }
 }
 

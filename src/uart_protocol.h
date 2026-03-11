@@ -22,6 +22,7 @@ extern "C" {
 #define CMD_GET_SECURE_BENCHMARK    0x09
 #define CMD_GET_INFERENCE_RESULT    0x0A
 #define CMD_SET_MAX_INFERENCES      0x0B
+#define CMD_GET_DEVICE_PUBKEY       0x0C  /* Return pk_d (65B) for PoX verification */
 
 /* Response Codes (Device → Mac) */
 #define RESP_OK                     0x00
