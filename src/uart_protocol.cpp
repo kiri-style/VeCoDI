@@ -7,7 +7,12 @@
 #include <zephyr/drivers/gpio.h>
 #include <string.h>
 #include <psa/crypto.h>
+#include <psa/client.h>
 #include "run_enclave.h"
+
+/* Secure partition constants (mirrors dummy_partition.h, not on NS include path) */
+#define TFM_DP_SERVICE_SID          0xFFFFF002U
+#define DP_CMD_COMPUTE_ENCLAVE_INFO 10U
 #include "benchmark.h"
 #include "secure_benchmark_ns.h"
 #include "split_inference.h"
@@ -38,7 +43,6 @@ static uint8_t len_buffer[4];
 static uint32_t rx_data_start_ms = 0;
 
 /* Protocol-only mock state (no inference execution) */
-static uint8_t mock_enclave_info[32] = {0};
 static uint32_t mock_max_inferences = 0;
 static uint32_t mock_inference_count = 0;
 
@@ -614,20 +618,48 @@ static void process_command(void)
 
 static void handle_compute_enclave_info(const uint8_t *data, uint32_t len)
 {
-    /* Protocol-only deterministic placeholder for EnclaveInfo (32 bytes) */
-    memset(mock_enclave_info, 0, sizeof(mock_enclave_info));
-
-    if (len > 0U && data != NULL) {
-        for (uint32_t i = 0; i < len; i++) {
-            mock_enclave_info[i % sizeof(mock_enclave_info)] ^= data[i];
-        }
-    } else {
-        for (size_t i = 0; i < sizeof(mock_enclave_info); i++) {
-            mock_enclave_info[i] = (uint8_t)(0xA0U + (uint8_t)i);
-        }
+    /*
+     * Input layout (from host/Pvd):
+     *   model_pub(32) || model_secret(32) || code_hash(32) || model_id(4)  = 100 bytes
+     *
+     * Delegates to Secure partition: SHA-256(model_pub || model_secret || code_hash || model_id)
+     */
+    if (len < 100U || data == NULL) {
+        uart_send_encrypted_response(RESP_ERROR, NULL, 0);
+        return;
     }
 
-    uart_send_encrypted_response(RESP_OK, mock_enclave_info, sizeof(mock_enclave_info));
+    /* data[0..95]  = model_pub(32) || model_secret(32) || code_hash(32) */
+    /* data[96..99] = model_id (LE uint32) */
+    uint32_t model_id_le;
+    memcpy(&model_id_le, data + 96, sizeof(model_id_le));
+
+    uint8_t enclave_info[32] = {0};
+
+    /* Call Secure partition for real SHA-256 via PSA IPC */
+    psa_handle_t psa_h = psa_connect(TFM_DP_SERVICE_SID, 1);
+    if (psa_h <= 0) {
+        uart_send_encrypted_response(RESP_ERROR, NULL, 0);
+        return;
+    }
+
+    uint32_t cmd = DP_CMD_COMPUTE_ENCLAVE_INFO;
+    psa_invec  in_vecs[3] = {
+        { &cmd,        sizeof(cmd)        },  /* in[0]: command word */
+        { data,        96U                },  /* in[1]: model_pub||model_secret||code_hash */
+        { &model_id_le, sizeof(model_id_le) } /* in[2]: model_id (4 bytes LE) */
+    };
+    psa_outvec out_vec = { enclave_info, sizeof(enclave_info) };
+
+    psa_status_t status = psa_call(psa_h, PSA_IPC_CALL, in_vecs, 3, &out_vec, 1);
+    psa_close(psa_h);
+
+    if (status != PSA_SUCCESS) {
+        uart_send_encrypted_response(RESP_ERROR, NULL, 0);
+        return;
+    }
+
+    uart_send_encrypted_response(RESP_OK, enclave_info, sizeof(enclave_info));
 }
 
 static void handle_validate_m_update(const uint8_t *data, uint32_t len)
