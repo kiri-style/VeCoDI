@@ -26,6 +26,11 @@ extern "C" {
 #define DP_CMD_COMPUTE_ENCLAVE_INFO 10  /* Compute EnclaveInfo hash */
 #define DP_CMD_VALIDATE_M_UPDATE    11  /* Validate and decrypt M_update */
 #define DP_CMD_SET_MAX_INFERENCES   12  /* Override max inferences and reset counter */
+#define DP_CMD_SET_SESSION_KEY      13  /* Share ECDH session_key with Secure partition */
+
+/* M_update auth-state response returned to NS after validate:
+ * c_limit(4) + pk_v(64) + model_id(4) + cert_len(4) + cert(n, max 128) = 204 bytes */
+#define M_UPDATE_AUTH_RESP_MAX  204
 
 /* Service ID for Dummy Partition */
 #define TFM_DP_SERVICE_SID 0xFFFFF002

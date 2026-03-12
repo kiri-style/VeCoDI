@@ -13,6 +13,8 @@
 /* Secure partition constants (mirrors dummy_partition.h, not on NS include path) */
 #define TFM_DP_SERVICE_SID          0xFFFFF002U
 #define DP_CMD_COMPUTE_ENCLAVE_INFO 10U
+#define DP_CMD_VALIDATE_M_UPDATE    11U
+#define DP_CMD_SET_SESSION_KEY      13U
 #include "benchmark.h"
 #include "secure_benchmark_ns.h"
 #include "split_inference.h"
@@ -664,21 +666,82 @@ static void handle_compute_enclave_info(const uint8_t *data, uint32_t len)
 
 static void handle_validate_m_update(const uint8_t *data, uint32_t len)
 {
-    uint32_t new_limit = 0;
-
-    if (process_m_update_payload(data, len, &new_limit) != 0 || new_limit == 0U) {
+    /*
+     * NS receives encrypted M_update from host and forwards the raw bytes
+     * to the Secure partition for AES-256-GCM decryption + EnclaveInfo
+     * validation + counter update.  Secure returns auth fields so NS can
+     * store them for later M_inf verification.
+     *
+     * Secure in[0] = cmd (4B)
+     * Secure in[1] = full packet: nonce(12) || ciphertext || tag(16)
+     * Secure out[0] = c_limit(4) + pk_v(64) + model_id(4) + cert_len(4) + cert(n)
+     */
+    if (data == NULL || len < 28U) {
         uart_protocol_send_response(RESP_ERROR, NULL, 0);
         return;
     }
 
-    /* Anti-replay behavior: require strictly increasing limit. */
-    if (new_limit <= mock_max_inferences) {
+    /* Build auth-state response buffer (max 204B) */
+    uint8_t auth_resp[204];
+    memset(auth_resp, 0, sizeof(auth_resp));
+
+    psa_handle_t psa_h = psa_connect(TFM_DP_SERVICE_SID, 1);
+    if (psa_h <= 0) {
         uart_protocol_send_response(RESP_ERROR, NULL, 0);
         return;
     }
 
-    mock_max_inferences = new_limit;
+    uint32_t cmd = DP_CMD_VALIDATE_M_UPDATE;
+    psa_invec  in_v[2] = {
+        { &cmd, sizeof(cmd) },   /* in[0]: command word */
+        { data, len         }    /* in[1]: full raw packet */
+    };
+    psa_outvec out_v = { auth_resp, sizeof(auth_resp) };
+
+    psa_status_t psa_st = psa_call(psa_h, PSA_IPC_CALL, in_v, 2, &out_v, 1);
+    psa_close(psa_h);
+
+    if (psa_st != PSA_SUCCESS) {
+        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+        return;
+    }
+
+    /* Parse auth response: c_limit(4) + pk_v(64) + model_id(4) + cert_len(4) + cert(n) */
+    size_t resp_len = out_v.len;
+    if (resp_len < (4U + 64U + 4U + 4U)) {
+        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+        return;
+    }
+
+    size_t   roff    = 0;
+    uint32_t c_limit = 0;
+    memcpy(&c_limit, auth_resp + roff, 4); roff += 4;
+
+    /* Anti-replay shadow check on NS side */
+    if (c_limit <= mock_max_inferences) {
+        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+        return;
+    }
+    mock_max_inferences  = c_limit;
     mock_inference_count = 0U;
+
+    /* pk_v (64B raw x||y) */
+    memcpy(stored_pk_v, auth_resp + roff, 64U);
+    pk_v_valid = true;
+    roff += 64U;
+
+    /* model_id (4B LE) */
+    memcpy(&stored_model_id, auth_resp + roff, 4U);
+    roff += 4U;
+
+    /* cert_len + cert */
+    uint32_t clen = 0;
+    memcpy(&clen, auth_resp + roff, 4U);
+    roff += 4U;
+    if (clen <= sizeof(stored_cert) && roff + clen <= resp_len) {
+        stored_cert_len = clen;
+        memcpy(stored_cert, auth_resp + roff, clen);
+    }
 
     uart_protocol_send_response(RESP_OK, NULL, 0);
 }
@@ -1036,7 +1099,22 @@ static void handle_ecdh_handshake(const uint8_t *data, uint32_t len)
     
     /* Mark session key as established */
     session_key_established = true;
-    
+
+    /* Share session_key with Secure partition so it can decrypt M_update.
+     * Secure stores it as secure_session_key and uses it in DP_CMD_VALIDATE_M_UPDATE. */
+    {
+        psa_handle_t sh = psa_connect(TFM_DP_SERVICE_SID, 1);
+        if (sh > 0) {
+            uint32_t cmd = DP_CMD_SET_SESSION_KEY;
+            psa_invec in_v[2] = {
+                { &cmd,       sizeof(cmd)  },
+                { session_key, 32U         }
+            };
+            psa_call(sh, PSA_IPC_CALL, in_v, 2, NULL, 0);
+            psa_close(sh);
+        }
+    }
+
     /* Step 6: Send device's public key back to Mac */
     uart_protocol_send_response(RESP_OK, device_pubkey, 65);
 }

@@ -61,6 +61,7 @@ static void print_secure_memory_stats(void)
 #define DP_CMD_COMPUTE_ENCLAVE_INFO 10  /* Compute EnclaveInfo hash */
 #define DP_CMD_VALIDATE_M_UPDATE    11  /* Validate and decrypt M_update */
 #define DP_CMD_SET_MAX_INFERENCES   12  /* Override max inferences and reset counter */
+#define DP_CMD_SET_SESSION_KEY      13  /* Receive ECDH session_key from NS */
 
 /* EnclaveInfo size (SHA-256 hash) */
 #define ENCLAVE_INFO_SIZE 32
@@ -78,6 +79,17 @@ static uint8_t current_model_secret[32];
 static uint8_t current_code_hash[32];
 static uint32_t current_model_id = 0;
 static bool current_model_info_valid = false;
+
+/* ECDH session key shared by NS after handshake — used to decrypt M_update. */
+static uint8_t  secure_session_key[32] = {0};
+static bool     secure_session_key_set  = false;
+
+/* Authorization state extracted from M_update plaintext (authoritative Secure copy). */
+static uint8_t  s_pk_v[64]    = {0};
+static uint32_t s_model_id    = 0;
+static uint8_t  s_cert[128]   = {0};
+static uint32_t s_cert_len    = 0;
+static bool     s_auth_valid  = false;
 
 /* Fixed-size secret container used for digest service. */
 struct dp_secret {
@@ -278,37 +290,41 @@ static psa_status_t tfm_dp_validate_m_update(psa_msg_t *msg)
 {
     psa_status_t status = PSA_SUCCESS;
 
-    /* Validate input sizes (strict). */
-    if (msg->in_size[1] != M_UPDATE_NONCE_SIZE ||
-        msg->in_size[3] != M_UPDATE_TAG_SIZE) {
-        return PSA_ERROR_INVALID_ARGUMENT;
+    if (!secure_session_key_set) {
+        printf("[SECURE] M_update rejected: session_key not set\n");
+        return PSA_ERROR_BAD_STATE;
     }
-    if (msg->in_size[2] < M_UPDATE_CIPHERTEXT_MIN ||
-        msg->in_size[2] > M_UPDATE_CIPHERTEXT_MAX) {
-        return PSA_ERROR_INVALID_ARGUMENT;
-    }
-
-    /* Ensure model info is available for EnclaveInfo recomputation. */
     if (!current_model_info_valid) {
+        printf("[SECURE] M_update rejected: EnclaveInfo not yet computed\n");
         return PSA_ERROR_BAD_STATE;
     }
 
-    uint8_t nonce[M_UPDATE_NONCE_SIZE];
-    uint8_t tag[M_UPDATE_TAG_SIZE];
-    uint8_t ciphertext[M_UPDATE_CIPHERTEXT_MAX];
-    uint8_t ciphertext_with_tag[M_UPDATE_CIPHERTEXT_MAX + M_UPDATE_TAG_SIZE];
-    uint8_t plaintext[M_UPDATE_PLAINTEXT_MAX];
-    size_t plaintext_len = 0;
-
-    psa_read(msg->handle, 1, nonce, sizeof(nonce));
-    psa_read(msg->handle, 2, ciphertext, msg->in_size[2]);
-    psa_read(msg->handle, 3, tag, sizeof(tag));
-
-    /* Import AES-256 key for GCM decryption. */
-    status = psa_crypto_init();
-    if (status != PSA_SUCCESS) {
-        return status;
+    /* in[1] = full raw packet: nonce(12) || ciphertext || tag(16) */
+    size_t pkt_len = msg->in_size[1];
+    if (pkt_len < (size_t)(M_UPDATE_NONCE_SIZE + M_UPDATE_TAG_SIZE + M_UPDATE_PLAINTEXT_MIN) ||
+        pkt_len > (size_t)(M_UPDATE_NONCE_SIZE + M_UPDATE_CIPHERTEXT_MAX + M_UPDATE_TAG_SIZE)) {
+        return PSA_ERROR_INVALID_ARGUMENT;
     }
+    /* out[0] must fit: c_limit(4)+pk_v(64)+model_id(4)+cert_len(4)+cert(max 128) = 204 */
+    if (msg->out_size[0] < (4U + M_UPDATE_PK_V_SIZE + 4U + 4U)) {
+        return PSA_ERROR_INVALID_ARGUMENT;
+    }
+
+    /* Read full packet (nonce || ciphertext || tag) */
+    uint8_t packet[M_UPDATE_NONCE_SIZE + M_UPDATE_CIPHERTEXT_MAX + M_UPDATE_TAG_SIZE];
+    psa_read(msg->handle, 1, packet, pkt_len);
+
+    uint8_t *nonce   = packet;
+    size_t   ct_len  = pkt_len - M_UPDATE_NONCE_SIZE - M_UPDATE_TAG_SIZE;
+    /* ciphertext||tag sit contiguously right after nonce */
+    uint8_t *ct_tag  = packet + M_UPDATE_NONCE_SIZE;
+
+    /* AES-256-GCM decrypt with stored session_key */
+    uint8_t plaintext[M_UPDATE_PLAINTEXT_MAX];
+    size_t  plaintext_len = 0;
+
+    status = psa_crypto_init();
+    if (status != PSA_SUCCESS) { return status; }
 
     psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
     psa_set_key_type(&attr, PSA_KEY_TYPE_AES);
@@ -317,113 +333,110 @@ static psa_status_t tfm_dp_validate_m_update(psa_msg_t *msg)
     psa_set_key_algorithm(&attr, PSA_ALG_GCM);
 
     psa_key_id_t key_id;
-    status = psa_import_key(&attr, m_update_aes256_key, 32, &key_id);
+    status = psa_import_key(&attr, secure_session_key, 32, &key_id);
     psa_reset_key_attributes(&attr);
-    if (status != PSA_SUCCESS) {
-        return status;
-    }
-
-    /* GCM expects ciphertext || tag in psa_aead_decrypt. */
-    memcpy(ciphertext_with_tag, ciphertext, msg->in_size[2]);
-    memcpy(ciphertext_with_tag + msg->in_size[2], tag, sizeof(tag));
+    if (status != PSA_SUCCESS) { return status; }
 
     status = psa_aead_decrypt(
-        key_id,
-        PSA_ALG_GCM,
-        nonce, sizeof(nonce),
-        NULL, 0, /* AAD: none */
-        ciphertext_with_tag, msg->in_size[2] + sizeof(tag),
+        key_id, PSA_ALG_GCM,
+        nonce, M_UPDATE_NONCE_SIZE,
+        NULL, 0,
+        ct_tag, ct_len + M_UPDATE_TAG_SIZE,
         plaintext, sizeof(plaintext),
         &plaintext_len);
-
     psa_destroy_key(key_id);
 
-    if (status == PSA_ERROR_INVALID_SIGNATURE) {
-        /* Authentication failed. */
+    if (status != PSA_SUCCESS) {
+        printf("[SECURE] M_update AES-GCM decrypt failed: %d\n", (int)status);
         secure_memzero(plaintext, sizeof(plaintext));
-        secure_memzero(ciphertext_with_tag, sizeof(ciphertext_with_tag));
+        secure_memzero(packet, pkt_len);
         return PSA_ERROR_INVALID_SIGNATURE;
     }
-    if (status != PSA_SUCCESS) {
-        secure_memzero(plaintext, sizeof(plaintext));
-        secure_memzero(ciphertext_with_tag, sizeof(ciphertext_with_tag));
-        return status;
-    }
 
-    /* Parse plaintext safely with strict bounds checks. */
+    /* Parse plaintext: c_limit(4) | pk_v(64) | enclave_info(32) | cert_len(4) | cert(n) */
     if (plaintext_len < M_UPDATE_PLAINTEXT_MIN || plaintext_len > M_UPDATE_PLAINTEXT_MAX) {
         secure_memzero(plaintext, sizeof(plaintext));
         return PSA_ERROR_INVALID_ARGUMENT;
     }
 
-    size_t offset = 0;
-    uint32_t c_limit = 0;
-    uint32_t cert_len = 0;
+    size_t   off      = 0;
+    uint32_t c_limit  = 0;
+    uint32_t cert_len_val = 0;
 
-    memcpy(&c_limit, &plaintext[offset], sizeof(uint32_t));
-    offset += sizeof(uint32_t);
+    memcpy(&c_limit,       &plaintext[off], 4); off += 4;
+    uint8_t *pk_v_ptr          = &plaintext[off]; off += M_UPDATE_PK_V_SIZE;
+    uint8_t *enclave_info_rcvd = &plaintext[off]; off += ENCLAVE_INFO_SIZE;
+    memcpy(&cert_len_val,  &plaintext[off], 4); off += 4;
 
-    const uint8_t *pk_v = &plaintext[offset];
-    offset += M_UPDATE_PK_V_SIZE;
-
-    const uint8_t *enclave_info_received = &plaintext[offset];
-    offset += ENCLAVE_INFO_SIZE;
-
-    memcpy(&cert_len, &plaintext[offset], sizeof(uint32_t));
-    offset += sizeof(uint32_t);
-
-    if (cert_len > M_UPDATE_CERT_MAX_SIZE) {
+    if (cert_len_val > M_UPDATE_CERT_MAX_SIZE || (off + cert_len_val) != plaintext_len) {
         secure_memzero(plaintext, sizeof(plaintext));
         return PSA_ERROR_INVALID_ARGUMENT;
     }
-    if ((offset + cert_len) != plaintext_len) {
-        secure_memzero(plaintext, sizeof(plaintext));
-        return PSA_ERROR_INVALID_ARGUMENT;
-    }
+    uint8_t *cert_ptr = &plaintext[off];
 
-    const uint8_t *cert = &plaintext[offset];
-    (void)pk_v;
-    (void)cert;
-
-    /* Recompute current EnclaveInfo and compare (constant-time). */
-    uint8_t enclave_info_current[ENCLAVE_INFO_SIZE];
-    status = compute_enclave_info(
-        current_model_pub,
-        current_model_secret,
-        current_code_hash,
-        current_model_id,
-        enclave_info_current);
+    /* Recompute EnclaveInfo and compare (constant-time). */
+    uint8_t enclave_info_cur[ENCLAVE_INFO_SIZE];
+    status = compute_enclave_info(current_model_pub, current_model_secret,
+                                  current_code_hash, current_model_id,
+                                  enclave_info_cur);
     if (status != PSA_SUCCESS) {
         secure_memzero(plaintext, sizeof(plaintext));
-        secure_memzero(enclave_info_current, sizeof(enclave_info_current));
         return status;
     }
-
-    if (!secure_memequal(enclave_info_received, enclave_info_current, ENCLAVE_INFO_SIZE)) {
+    if (!secure_memequal(enclave_info_rcvd, enclave_info_cur, ENCLAVE_INFO_SIZE)) {
+        printf("[SECURE] M_update EnclaveInfo mismatch\n");
         secure_memzero(plaintext, sizeof(plaintext));
-        secure_memzero(enclave_info_current, sizeof(enclave_info_current));
+        secure_memzero(enclave_info_cur, sizeof(enclave_info_cur));
         return PSA_ERROR_INVALID_ARGUMENT;
     }
 
     /* Anti-replay: c_limit must be strictly increasing. */
     if (c_limit <= last_accepted_counter_limit) {
         secure_memzero(plaintext, sizeof(plaintext));
-        secure_memzero(enclave_info_current, sizeof(enclave_info_current));
         return PSA_ERROR_NOT_PERMITTED;
     }
 
-    /* All checks passed: update secure state atomically. */
-    last_accepted_counter_limit = c_limit;
+    /* All checks passed — update Secure state atomically. */
+    last_accepted_counter_limit       = c_limit;
     max_inferences_per_enclave_secure = c_limit;
-    inference_counter_secure = 0;
+    inference_counter_secure          = 0;
 
-    /* Zeroize sensitive buffers. */
-    secure_memzero(plaintext, sizeof(plaintext));
-    secure_memzero(ciphertext_with_tag, sizeof(ciphertext_with_tag));
-    secure_memzero(enclave_info_current, sizeof(enclave_info_current));
-    secure_memzero(nonce, sizeof(nonce));
-    secure_memzero(tag, sizeof(tag));
-    secure_memzero(ciphertext, sizeof(ciphertext));
+    /* Store auth fields in Secure (authoritative copy). */
+    memcpy(s_pk_v, pk_v_ptr, M_UPDATE_PK_V_SIZE);
+    s_cert_len = cert_len_val;
+    memcpy(s_cert, cert_ptr, cert_len_val);
+    s_model_id = 0;
+    if (cert_len_val >= 4U) {
+        s_model_id = (uint32_t)cert_ptr[0]
+                   | ((uint32_t)cert_ptr[1] << 8)
+                   | ((uint32_t)cert_ptr[2] << 16)
+                   | ((uint32_t)cert_ptr[3] << 24);
+    }
+    s_auth_valid = true;
+
+    printf("[SECURE] M_update OK: c_limit=%u, model_id=%u, cert_len=%u\n",
+           c_limit, s_model_id, s_cert_len);
+
+    /* Build auth-state response: c_limit(4) + pk_v(64) + model_id(4) + cert_len(4) + cert(n) */
+    uint8_t resp[4U + M_UPDATE_PK_V_SIZE + 4U + 4U + M_UPDATE_CERT_MAX_SIZE];
+    size_t  roff = 0;
+    memcpy(resp + roff, &c_limit,    4); roff += 4;
+    memcpy(resp + roff, s_pk_v,      M_UPDATE_PK_V_SIZE); roff += M_UPDATE_PK_V_SIZE;
+    memcpy(resp + roff, &s_model_id, 4); roff += 4;
+    memcpy(resp + roff, &s_cert_len, 4); roff += 4;
+    if (s_cert_len > 0U) {
+        memcpy(resp + roff, s_cert, s_cert_len); roff += s_cert_len;
+    }
+
+    if (msg->out_size[0] >= roff) {
+        psa_write(msg->handle, 0, resp, roff);
+    }
+
+    /* Zeroize sensitive data. */
+    secure_memzero(plaintext,        sizeof(plaintext));
+    secure_memzero(packet,           pkt_len);
+    secure_memzero(enclave_info_cur, sizeof(enclave_info_cur));
+    secure_memzero(resp,             sizeof(resp));
 
     return PSA_SUCCESS;
 }
@@ -748,6 +761,20 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
             printf("[SECURE]   EnclaveInfo (first 16 bytes): ");
             for (int i = 0; i < 16; i++) printf("%02X ", enclave_info[i]);
             printf("\n");
+            return PSA_SUCCESS;
+        }
+
+    case DP_CMD_SET_SESSION_KEY:
+        {
+            /* NS shares ECDH-derived session_key so Secure can decrypt M_update. */
+            if (msg->in_size[1] != 32U) {
+                printf("[SECURE] DP_CMD_SET_SESSION_KEY: bad size %zu\n", msg->in_size[1]);
+                return PSA_ERROR_INVALID_ARGUMENT;
+            }
+            psa_read(msg->handle, 1, secure_session_key, 32);
+            secure_session_key_set = true;
+            s_auth_valid = false;  /* new session invalidates previous M_update */
+            printf("[SECURE] DP_CMD_SET_SESSION_KEY: session key stored\n");
             return PSA_SUCCESS;
         }
 
