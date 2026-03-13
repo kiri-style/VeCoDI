@@ -475,14 +475,11 @@ This phase implements a **Provider-Device Enclave Authorization Protocol** ensur
 
 ✅ **Completed**:
 
-- ``src/provider_sim.h``: Provider API header (structures, function declarations)
-- ``src/provider_sim.cpp``: Provider simulator implementation (~350 lines)
+- ``tools/mac_provider.py``: Host Provider/Verifier tool for interactive hardware testing
   
-  * Hardcoded ECDSA P-256 keys (provider_sk/pk, verifier_sk/pk)
-  * Hardcoded session_key (32 bytes, shared with Secure)
-  * ``serialize_m_update_payload()``: Binary serialization
-  * ``provider_sim_generate_m_update()``: Encryption pipeline
-  * Comprehensive debug output at each step
+  * ECDH + HKDF dynamic session key
+  * M_update generation (AES-256-GCM)
+  * Verified inference flow and SAU-state query support
 
 - ``src/test_enclave_auth.c``: Test harness (~200 lines)
   

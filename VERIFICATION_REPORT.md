@@ -263,7 +263,6 @@ Complete end-to-end verification of the 3-phase Enclave Authorization Protocol o
 | `src/test_enclave_auth.c` | `test_m_update_generation()` | ✅ Verified |
 | | `ns_validate_m_update()` | ✅ Verified |
 | | `ns_get_max_inferences()` | ✅ Verified |
-| `src/provider_sim.cpp` | `provider_sim_generate_m_update()` | ✅ Verified |
 
 ---
 

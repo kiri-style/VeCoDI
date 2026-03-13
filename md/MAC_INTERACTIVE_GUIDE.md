@@ -231,9 +231,9 @@ Réponse:
 
 ⚠️ **IMPORTANT**: Les clés actuelles sont hardcodées pour les tests.
 
-Les clés doivent correspondre entre:
+Les éléments cryptographiques doivent rester cohérents entre:
 - **Mac**: `tools/mac_provider.py`
-- **Device**: `src/provider_sim.cpp` et `dummy_partition/dummy_partition.c`
+- **Device**: `src/uart_protocol.cpp` et `dummy_partition/dummy_partition.c`
 
 Pour la production:
 1. Générer des clés aléatoires sécurisées

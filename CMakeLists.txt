@@ -41,8 +41,6 @@ target_sources(app PRIVATE
     src/test_images.c
     src/benchmark.cpp
     src/secure_benchmark_ns.cpp
-    src/provider_sim.cpp
-    src/test_enclave_auth.c
     src/inference_protocol.cpp
     src/test_inference_protocol.cpp
     src/uart_protocol.cpp

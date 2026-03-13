@@ -176,10 +176,10 @@ See [BENCHMARK_RESULTS.md](../BENCHMARK_RESULTS.md) for detailed cycle-by-cycle 
    - CMD_GET_DEVICE_PUBKEY (0x0C): Return device public key `pk_d`
    - CMD_GET_SAU_STATE (0x0D): Return SAU state (`state+base+size`)
 
-### Provider/Verifier Simulation
-- **provider_sim.h/cpp**: Model Provider simulation for local testing
+### Provider/Verifier Host Tool
+- **tools/mac_provider.py**: Interactive Model Provider/Verifier used for hardware tests
    - Generate M_update packets with configurable c_limit
-   - Session key derivation via ECDH/HKDF in UART flow
+   - ECDH/HKDF dynamic session key flow
 
 ### Protocol Testing
 - **test_enclave_auth.c**: Test harness for authorization protocol
