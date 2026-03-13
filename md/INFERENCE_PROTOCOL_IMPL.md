@@ -4,7 +4,7 @@
 
 Implementation of cryptographic inference protocol enabling **Verifier-to-Device inference requests** with **Proof-of-Execution (PoX)** from the Device back to Verifier.
 
-**Status**: ✅ **WORKING** - Tested on STM32L552 hardware
+**Status**: ✅ **WORKING** - Tested on STM32L552 hardware and integrated with host interactive verification flow
 
 ## Protocol Definition
 
@@ -162,12 +162,18 @@ Total: 161 bytes
    - Late layers: 74 ms, 8.2M cycles
    - Total: 504 ms, 55.5M cycles
 
-## Future Work (Phase B)
+## Current Validation Scope
 
-- Device-side M_update validation (decrypt, verify tag, extract c_limit)
-- Verifier ECDSA signature verification in PoX
-- Full round-trip protocol validation
-- Real CIFAR-10 input (currently using 64-byte stub for memory optimization)
+- Device validates signed inference requests before secure path execution.
+- Device generates PoX signatures with `sk_d`.
+- Host retrieves `pk_d` and verifies PoX in interactive flow (option `9`).
+- Negative PoX validation is covered by security test T6 (altered message must fail).
+
+## Remaining Improvements
+
+- Move from reduced payload test shape to full production payload format where required.
+- Extend end-to-end tests with broader adversarial vectors and persistent replay windows.
+- Consolidate this module and `uart_protocol.cpp` paths into a single canonical protocol implementation surface.
 
 ## Memory Optimization
 
@@ -224,6 +230,6 @@ Expected output confirms all 5 protocol steps execute successfully.
 
 ---
 
-**Last Updated**: 26 February 2026  
-**Status**: ✅ Production Ready (Testing Phase)  
+**Last Updated**: 13 March 2026  
+**Status**: ✅ Production-ready protocol path with active negative/positive verification in test workflow  
 **Hardware**: STM32L552ZE-Q, ARM Cortex-M33 with TrustZone-M

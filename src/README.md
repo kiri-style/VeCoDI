@@ -182,6 +182,8 @@ See [BENCHMARK_RESULTS.md](../BENCHMARK_RESULTS.md) for detailed cycle-by-cycle 
 - **tools/mac_provider.py**: Interactive Model Provider/Verifier used for hardware tests
    - Generate M_update packets with configurable c_limit
    - ECDH/HKDF dynamic session key flow
+   - PoX verification (valid + negative checks)
+   - Security test suite (unitary/combinable)
 
 ### Protocol Testing
 - **test_enclave_auth.c**: Test harness for authorization protocol
@@ -191,6 +193,14 @@ See [BENCHMARK_RESULTS.md](../BENCHMARK_RESULTS.md) for detailed cycle-by-cycle 
 - **test_inference_protocol.cpp**: End-to-end inference protocol test
   - M_inf message generation/validation
   - Proof-of-Execution (PoX) generation
+
+### Interactive Security Tests (option 18 in mac_provider)
+- **T1** fake EnclaveInfo in M_update → rejection expected
+- **T2** replay same M_update → replay rejection expected
+- **T3** tampered AES-GCM tag in M_update → rejection expected
+- **T4** invalid verifier signature in M_inf → rejection expected
+- **T5** rejected inference must not create SAU-open side effect
+- **T6** PoX negative check: wrong-message verify must fail, correct-message verify must pass
 
 ### Security/IPC glue
 - **ns_irq.c / ns_irq.h**: NS interrupt setup for TrustZone.
@@ -208,7 +218,7 @@ The UART protocol enables **Mac-side authorization** of device inferences via en
 │  tools/mac_provider.py   │   Binary Protocol                │  src/uart_protocol.cpp  │
 │  - Generate M_update     │   ──────────────────────►        │  - PSA Crypto decrypt   │
 │  - AES-256-GCM encrypt   │   ◄──────────────────────        │  - Quota management     │
-│  - Monitor quota         │      Response packets            │  - Mock EnclaveInfo     │
+│  - Verify PoX + tests    │      Response packets            │  - Attested EnclaveInfo │
 └──────────────────────────┘                                   └─────────────────────────┘
 ```
 

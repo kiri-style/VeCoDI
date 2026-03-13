@@ -265,23 +265,23 @@ Complete end-to-end verification of the 3-phase Enclave Authorization Protocol o
   - Fix: Update `printk()` format specifiers in secure partition
 
 ### 📋 Future Enhancements
-1. **Anti-replay stress testing**: Test multiple M_update with same/decreasing c_limit
-2. **Integration with inference protocol**: Enforce counter during M_inf validation
-3. **Production hardening**: 
+1. **Anti-replay stress testing**: Expand long-run and randomized replay campaigns
+2. **Production hardening**: 
    - Replace simulated provider with real key management
    - Implement certificate chain validation
    - Add secure key provisioning flow
+3. **Coverage expansion**:
+  - Add persistent fault-injection campaigns around SAU transitions
+  - Extend PoX negative vectors beyond message tamper (key mismatch, cert mismatch)
 
 ---
 
 ## Conclusion
 
-The complete 3-phase Enclave Authorization Protocol has been **successfully implemented and verified** on STM32L552 hardware. All cryptographic operations, security checks, and dynamic policy mechanisms are functioning as designed.
-
-**Next Milestone**: Integration with the Inference Protocol (M_inf/PoX) to enforce authorization limits during inference execution.
+The complete 3-phase Enclave Authorization Protocol has been **successfully implemented and verified** on STM32L552 hardware. Inference protocol integration (`M_inf`/PoX), host-side verification, and negative tests are now active in the interactive workflow.
 
 ---
 
 **Verified by**: GitHub Copilot AI Agent  
-**Date**: 27 February 2026  
+**Date**: 13 March 2026  
 **Build**: west v1.5.0+, Zephyr SDK 0.17.4, TF-M

@@ -2,9 +2,9 @@
 
 ## Overview
 
-Binary protocol for bidirectional communication between Mac (Provider/Verifier) and STM32L552 (Device) over USB/UART. Implements Model Provider authorization workflow with AES-256-GCM encrypted M_update packets.
+Binary protocol for bidirectional communication between Mac (Provider/Verifier) and STM32L552 (Device) over USB/UART. Implements authorization (`EnclaveInfo` + `M_update`), secure inference request validation (`M_inf`) and PoX return path.
 
-**Status**: ✅ **Fully Implemented and Tested** (March 2026)
+**Status**: ✅ **Implemented and validated on hardware** (March 2026)
 
 ---
 
@@ -60,7 +60,9 @@ Compute enclave information digest (hash of model + code).
 
 **Response**:
 - Status: `0x00`
-- Data: 32 bytes (EnclaveInfo digest)
+- Data:
+  - 32 bytes (`EnclaveInfo`) in basic mode, or
+  - 124 bytes (`EnclaveInfo[32] || sig_d[64] || nonce[28]`) when attested response is enabled
 
 **Purpose**: First step of authorization protocol. Device computes deterministic digest used in M_update encryption.
 
@@ -121,24 +123,29 @@ Response: [00 04 00 00 00  14 00 00 00]  // max_inferences = 20
 ---
 
 ### 0x04: CMD_RUN_INFERENCE
-Execute one inference (consumes quota).
+Execute one gated inference (consumes quota).
 
 **Request**:
-- Data: None (0 bytes)
+- Data can be:
+  - 0 bytes (legacy path), or
+  - encrypted `M_inf` payload (nonce+model_id+signature verifier)
 
 **Response**:
-- Status: `0x00` (inference executed) or `0xFF` (blocked)
-- Data: None
+- Status: `0x00` (success) or `0xFF` (rejected)
+- Data:
+  - legacy: empty payload
+  - secure path: encrypted payload containing output class and PoX signature
 
 **Gating Logic**:
 1. Check `max_inferences != 0` (M_update applied)
 2. Check `inference_count < max_inferences` (quota available)
-3. If both true: increment `inference_count`, return `0x00`
-4. Otherwise: return `0xFF`
+3. If secure mode: decrypt/verify `M_inf` before executing inference
+4. Increment `inference_count` only on success
 
 **Blocking Conditions**:
 - No M_update applied yet (`max_inferences == 0`)
 - Quota exhausted (`inference_count >= max_inferences`)
+- Invalid encrypted payload, invalid signature, or decrypt/auth failure
 
 ---
 
@@ -185,6 +192,22 @@ Response: [00 04 00 00 00  11 00 00 00]  // remaining = 17 (20 - 3)
 
 ---
 
+### Additional Security/Diagnostics Commands
+
+| CMD  | Name                        | Description |
+|------|-----------------------------|-------------|
+| 0x07 | `CMD_ECDH_HANDSHAKE`        | ECDH P-256 handshake to derive session context |
+| 0x08 | `CMD_GET_BENCHMARK`         | Read NS benchmark metrics |
+| 0x09 | `CMD_GET_SECURE_BENCHMARK`  | Read Secure benchmark metrics |
+| 0x0A | `CMD_GET_INFERENCE_RESULT`  | Read last prediction/expected pair |
+| 0x0B | `CMD_SET_MAX_INFERENCES`    | Override max quota for tests |
+| 0x0C | `CMD_GET_DEVICE_PUBKEY`     | Export `pk_d` for host PoX verification |
+| 0x0D | `CMD_GET_SAU_STATE`         | Deterministic SAU state (`state/base/size`) |
+| 0x0E | `CMD_RUN_INFERENCE_NO_SAU`  | Danger test: inference without SAU open |
+| 0x0F | `CMD_READ_PROTECTED_MEM`    | Danger test: direct protected-memory read |
+
+---
+
 ## Complete Quota Management
 
 The protocol implements a **3-metric quota system**:
@@ -225,7 +248,7 @@ After quota exhausted:
 
 ### 1. AES-256-GCM Encryption
 - **Algorithm**: AES-256-GCM (Galois/Counter Mode)
-- **Key**: 256-bit session key (hardcoded, shared between Mac and Device)
+- **Key**: 256-bit session key established after ECDH handshake (test fallback may be used depending on build)
 - **Nonce**: 12 bytes (96 bits), randomly generated per M_update
 - **Tag**: 16 bytes (128 bits), authenticated encryption tag
 - **Implementation**: PSA Crypto API (hardware-accelerated on STM32L552)
@@ -242,17 +265,10 @@ After quota exhausted:
 - **Gate Check**: `if (mock_max_inferences == 0) return ERROR;`
 - **Prevents**: Unauthorized inference execution
 
-### 4. Session Key Management
-```c
-// Shared secret (must match on both sides)
-const uint8_t session_key[32] = {
-    0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7,
-    0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE, 0xAF,
-    0xB0, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7,
-    0xB8, 0xB9, 0xBA, 0xBB, 0xBC, 0xBD, 0xBE, 0xBF
-};
-```
-**Note**: Hardcoded for testing. Production should use key derivation (ECDH, etc.).
+### 4. Session and PoX Verification
+- Session establishment is initiated by `CMD_ECDH_HANDSHAKE`.
+- Host retrieves `pk_d` (`0x0C`) then verifies PoX signatures returned by secure inference path (`0x04`).
+- Negative PoX validation is exercised in host security test T6.
 
 ---
 
@@ -366,7 +382,7 @@ Result:
 | **CMD_COMPUTE_ENCLAVE_INFO** | ~5 ms | XOR-based placeholder |
 | **CMD_VALIDATE_M_UPDATE** | ~70 ms | PSA AEAD decrypt |
 | **CMD_GET_MAX_INFERENCES** | <1 ms | Read variable |
-| **CMD_RUN_INFERENCE** | <1 ms | Increment counter (mock) |
+| **CMD_RUN_INFERENCE** | variable | Includes gating, optional decrypt/verify M_inf, inference, PoX generation |
 | **CMD_GET_INFERENCE_COUNT** | <1 ms | Read variable |
 | **CMD_GET_REMAINING_INFERENCES** | <1 ms | Subtraction |
 
@@ -409,20 +425,14 @@ else:
 
 ---
 
-## Future Enhancements
+## Current Coverage
 
-### Short-term (Prototype)
-- [x] Quota management (max, count, remaining)
-- [x] Anti-replay protection
-- [x] Inference gating
-- [ ] Reset command (clear quota without reflash)
-
-### Long-term (Production)
-- [ ] Key derivation (ECDH session key establishment)
-- [ ] Certificate validation in M_update
-- [ ] Signature verification (ECDSA P-256)
-- [ ] Proof-of-Execution (PoX) generation
-- [ ] Real inference integration (replace mock handlers)
+- [x] Quota management (max/count/remaining)
+- [x] Anti-replay protection on `M_update`
+- [x] ECDH session bootstrap
+- [x] Secure inference path (`M_inf` verification + PoX response)
+- [x] Host-side PoX positive/negative checks
+- [x] SAU deterministic state command and danger diagnostics (`0x0E`, `0x0F`)
 
 ---
 

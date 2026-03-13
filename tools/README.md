@@ -38,6 +38,18 @@ Bench/Debug:
 - `15` Deterministic SAU state (UNREGISTERED/OPEN/CLOSED + base + size)
 - `16` Raw UART command
 - `17` Session status
+- `18` Security tests (unitary or combined: ex `1,4,6`)
+- `19` DANGER: inference without SAU open
+- `20` DANGER: direct read of protected memory
+
+## Protocol architecture (host perspective)
+
+1. `1` ECDH → dynamic session key
+2. `2` EnclaveInfo attested (`nonce -> enclave_info||sig_d`) and verified with `pk_d`
+3. `3` M_update authorized (`c_limit` strictly increasing)
+4. `9` Verified inference returns encrypted `pred || pox_sig`
+5. Mac verifies PoX signature against:
+  - `model_id(4 LE) || cert || nonce_inf || pred`
 
 ## Important behavior
 
@@ -46,6 +58,39 @@ Bench/Debug:
   - successful `3` (M_update accepted)
 - Anti-replay is enforced by device: `M_update` is rejected when `c_limit <= current max`.
 - If `3` is rejected, resend with higher `c_limit`.
+
+## Security tests (option 18)
+
+- **T1** Fake EnclaveInfo
+  - Sends M_update with modified EnclaveInfo
+  - Expected: rejection
+
+- **T2** Replay M_update
+  - Sends same valid packet twice
+  - Expected: first pass, second rejected
+
+- **T3** GCM tag tamper
+  - Flips one tag bit
+  - Expected: rejection
+
+- **T4** Invalid M_inf signature
+  - Sends random/invalid verifier signature
+  - Expected: rejection
+
+- **T5** SAU side-effect check on rejected inference
+  - Reads SAU state before/after rejected M_inf
+  - Expected: no transition to OPEN + same region
+
+- **T6** PoX negative verification
+  - Gets a real PoX then verifies with a wrong message
+  - Expected: wrong-message verify = False, correct-message verify = True
+
+## Danger tests
+
+- **19 / 0x0E** inference without SAU open
+  - Validation path for forbidden access behavior
+- **20 / 0x0F** direct protected-memory read
+  - With SAU closed: may cause HardFault/reset/no response
 
 ## Other helper scripts
 

@@ -24,6 +24,64 @@ Secure CIFAR-10 Split Inference with TF-M and Encrypted Late Weights
 - ``M_update`` rejection with ``RESP_ERROR`` is expected if ``c_limit`` is not strictly increasing.
 - SAU can be ``UNREGISTERED`` before enclave creation; after first enclave lifecycle it typically reports ``CLOSED``.
 
+Protocol Architecture (Current)
+===============================
+
+Host (Mac) → NS (Zephyr) → S (TF-M) split:
+
+1. **Session/Auth setup**
+
+   - ``CMD_ECDH_HANDSHAKE (0x07)``: derive dynamic session key (Mac + device).
+   - ``CMD_COMPUTE_ENCLAVE_INFO (0x01)`` in attested mode: Mac sends nonce(32), device returns
+     ``enclave_info(32) || sig_d(64)``.
+   - Mac verifies ``sig_d`` with ``pk_d`` from ``CMD_GET_DEVICE_PUBKEY (0x0C)``.
+
+2. **Authorization update**
+
+   - Mac sends ``CMD_VALIDATE_M_UPDATE (0x02)`` with AES-GCM packet.
+   - Secure world decrypts/validates EnclaveInfo + anti-replay (strictly increasing ``c_limit``).
+   - On success, policy/quota and verifier authorization state are updated.
+
+3. **Verified inference + PoX**
+
+   - Mac sends ``CMD_RUN_INFERENCE (0x04)`` with encrypted ``M_inf`` (nonce + model_id + verifier signature).
+   - Device verifies request, executes inference, returns encrypted response:
+     ``pred(1) || pox_sig(64)``.
+   - Mac verifies PoX signature over:
+     ``model_id(4 LE) || cert || nonce_inf(32) || pred(1)``.
+
+4. **Memory protection checks**
+
+   - ``CMD_GET_SAU_STATE (0x0D)`` returns deterministic SAU state (`UNREGISTERED/OPEN/CLOSED`) + region.
+   - Danger test commands:
+     - ``0x0E``: inference path without explicit SAU open
+     - ``0x0F``: direct protected-memory read (expected fault/reset when SAU closed)
+
+Security Test Matrix (Mac option 18)
+====================================
+
+- **T1** Fake EnclaveInfo in ``M_update``
+  - Expected: rejected (``RESP_ERROR``)
+- **T2** Replay exact same ``M_update``
+  - Expected: first accepted, replay rejected
+- **T3** Tampered GCM tag in ``M_update``
+  - Expected: rejected
+- **T4** Invalid verifier signature in ``M_inf``
+  - Expected: rejected
+- **T5** Rejected inference must not create SAU-open side effect
+  - Expected: no transition to SAU OPEN + region unchanged
+- **T6** PoX negative verification
+  - Flow: get real PoX, verify against intentionally wrong message
+  - Expected: wrong-message PoX check = ``False``; correct-message check = ``True``
+
+Danger checks from menu
+-----------------------
+
+- **19** ``CMD_RUN_INFERENCE_NO_SAU (0x0E)``
+  - Expected: rejection or fault path (depends on state/policy)
+- **20** ``CMD_READ_PROTECTED_MEM (0x0F)``
+  - Expected with SAU closed: timeout/no response + possible reset (HardFault path)
+
 Overview
 ========
 

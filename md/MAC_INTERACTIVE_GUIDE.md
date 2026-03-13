@@ -302,24 +302,29 @@ pip3 install pyserial
 
 ---
 
-## Prochaines Étapes
+## Tests sécurité (option 18)
 
-### Intégration Inference Complète
+La suite intégrée dans `mac_provider.py` couvre les cas négatifs suivants:
 
-Actuellement, `CMD_RUN_INFERENCE` vérifie juste le compteur. Pour l'intégration complète:
+- **T1**: Rejeu de `M_update` (anti-replay, `c_limit` identique)
+- **T2**: `M_update` avec tag AES-GCM falsifié
+- **T3**: `M_update` avec `EnclaveInfo` incorrect
+- **T4**: Inference sans session ECDH active
+- **T5**: Vérification qu'un échec ne force pas la SAU en OPEN
+- **T6**: Vérification négative PoX (message altéré doit échouer)
 
-1. Modifier `handle_run_inference()` dans `uart_protocol.cpp`
-2. Appeler `run_split_inference()` avec une vraie image CIFAR-10
-3. Retourner le résultat de classification au Mac
+Exemples:
 
-### Protocole Inference (M_inf / PoX)
+- `18` puis `a` → lance T1..T6
+- `18` puis `4` → lance uniquement T4
+- `18` puis `1,4,6` → lance un sous-ensemble combiné
 
-Intégrer le protocole d'inference avec signatures ECDSA:
+## Validation danger (options 19/20)
 
-1. Mac envoie M_inf (signed inference request)
-2. Device valide signature + nonce
-3. Device exécute inference
-4. Device retourne PoX (signed proof of execution)
+- **19** (`CMD_RUN_INFERENCE_NO_SAU`, `0x0E`) : tente une inference sans ouvrir SAU.
+- **20** (`CMD_READ_PROTECTED_MEM`, `0x0F`) : tente une lecture directe mémoire protégée (comportement attendu: erreur, no-response, ou reset selon protection active).
+
+Ces options sont destinées aux tests de robustesse et demandent confirmation explicite.
 
 ---
 
@@ -332,5 +337,5 @@ Intégrer le protocole d'inference avec signatures ECDSA:
 
 ---
 
-**Dernière mise à jour**: 27 février 2026  
+**Dernière mise à jour**: 13 mars 2026  
 **Testé sur**: macOS + STM32L552ZE-Q

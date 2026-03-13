@@ -439,6 +439,23 @@ def verify_attested_enclave_info(device_pk_d: bytes, nonce: bytes, enclave_info:
         return False
 
 
+def verify_pox_signature(device_pk_d: bytes, model_id: int, cert: bytes, nonce_inf: bytes, output_class: int, sig_raw: bytes) -> bool:
+    """Verify PoX signature over: model_id(4 LE) || cert || nonce_inf(32) || output(1)."""
+    if len(device_pk_d) != 65 or len(nonce_inf) != 32 or len(sig_raw) != 64:
+        return False
+    try:
+        pub = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), device_pk_d)
+        r = int.from_bytes(sig_raw[:32], 'big')
+        s = int.from_bytes(sig_raw[32:], 'big')
+        sig_der = encode_dss_signature(r, s)
+
+        msg = struct.pack('<I', model_id) + cert + nonce_inf + bytes([output_class & 0xFF])
+        pub.verify(sig_der, msg, ec.ECDSA(hashes.SHA256()))
+        return True
+    except (ValueError, InvalidSignature):
+        return False
+
+
 def request_enclave_info_attested(device: 'STM32Device', device_pk_d: Optional[bytes]) -> Tuple[Optional[bytes], Optional[bytes]]:
     """Request EnclaveInfo using nonce attestation mode.
     Returns: (enclave_info, maybe_updated_device_pk_d)
@@ -733,6 +750,93 @@ def run_security_tests(
                 same_region = (base_before == base_after and size_before == size_after)
                 verdict("T5 SAU region unchanged", same_region)
 
+    # -------- Test 6: PoX negative verification must fail --------
+    if should_run('t6'):
+        print("\n  [T6] PoX negative test (verification must fail with wrong message)")
+
+        if DYNAMIC_SESSION_KEY is None:
+            verdict("T6 session key available", False)
+        else:
+            # Ensure we have pk_d for PoX verification.
+            if device_pk_d is None:
+                device_pk_d = get_device_pubkey(device)
+            verdict("T6 device pk_d available", device_pk_d is not None)
+
+            # Prepare a temporary verifier key and authorize it via M_update.
+            cur2 = get_device_max_inferences(device)
+            if cur2 is None:
+                verdict("T6 read current max", False)
+            else:
+                temp_vk = ec.generate_private_key(ec.SECP256R1(), default_backend())
+                vk_full = temp_vk.public_key().public_bytes(
+                    encoding=serialization.Encoding.X962,
+                    format=serialization.PublicFormat.UncompressedPoint
+                )
+                provider.verifier_pk = vk_full[1:]
+
+                nonce_m, ct_m, tag_m = provider.generate_m_update(
+                    cur2 + 1,
+                    enclave_info_cache,
+                    struct.pack('<I', model_id) + bytes(range(16))
+                )
+                m_ok = False
+                if device.send_command(CMD_VALIDATE_M_UPDATE, nonce_m + ct_m + tag_m):
+                    r_m = device.read_response()
+                    m_ok = (r_m is not None and r_m[0] == RESP_OK)
+                verdict("T6 temporary M_update accepted", m_ok)
+
+                if m_ok and device_pk_d is not None:
+                    # Run one valid verified inference to obtain a real PoX signature.
+                    nonce_inf = os.urandom(32)
+                    model_id_bytes = struct.pack('<I', model_id)
+                    msg = nonce_inf + model_id_bytes
+                    sig_der = temp_vk.sign(msg, ec.ECDSA(hashes.SHA256()))
+                    r_v, s_v = decode_dss_signature(sig_der)
+                    sig_v_raw = r_v.to_bytes(32, 'big') + s_v.to_bytes(32, 'big')
+                    minf_plain = nonce_inf + model_id_bytes + sig_v_raw
+                    minf_enc = encrypt_command(DYNAMIC_SESSION_KEY, minf_plain)
+
+                    got_pox = False
+                    pox_invalid_as_expected = False
+                    pox_valid_sanity = False
+                    pred_dbg = None
+                    if device.send_command(CMD_RUN_INFERENCE, minf_enc):
+                        r_inf = device.read_response()
+                        if r_inf and r_inf[0] == RESP_OK and len(r_inf[1]) > 0:
+                            dec = decrypt_response(DYNAMIC_SESSION_KEY, r_inf[1])
+                            if dec and len(dec) >= 65:
+                                got_pox = True
+                                pred = dec[0]
+                                pred_dbg = pred
+                                pox_sig = dec[1:65]
+
+                                # Intentionally verify with wrong model_id.
+                                bad_ok = verify_pox_signature(
+                                    device_pk_d=device_pk_d,
+                                    model_id=(model_id + 1),
+                                    cert=struct.pack('<I', model_id) + bytes(range(16)),
+                                    nonce_inf=nonce_inf,
+                                    output_class=pred,
+                                    sig_raw=pox_sig,
+                                )
+                                pox_invalid_as_expected = (bad_ok is False)
+
+                                # Sanity: verify with correct message must pass.
+                                pox_valid_sanity = verify_pox_signature(
+                                    device_pk_d=device_pk_d,
+                                    model_id=model_id,
+                                    cert=struct.pack('<I', model_id) + bytes(range(16)),
+                                    nonce_inf=nonce_inf,
+                                    output_class=pred,
+                                    sig_raw=pox_sig,
+                                )
+
+                                print(f"  [T6 dbg] pred={pred_dbg}, pox_wrong_msg={bad_ok}, pox_correct_msg={pox_valid_sanity}")
+
+                    verdict("T6 received PoX from valid inference", got_pox)
+                    verdict("T6 wrong-message PoX verification fails", pox_invalid_as_expected)
+                    verdict("T6 correct-message PoX verification passes", pox_valid_sanity)
+
     print(f"\n[18] Security tests summary: {passed}/{total} passed")
     if passed == total:
         print("✓ All negative security checks behaved as expected")
@@ -906,7 +1010,22 @@ def main():
                             dec = decrypt_response(DYNAMIC_SESSION_KEY, resp[1])
                             if dec and len(dec) >= 65:
                                 pred = dec[0]
-                                print(f"✓ verified inference OK, pred={pred}")
+                                pox_sig = dec[1:65]
+
+                                if device_pk_d is None:
+                                    device_pk_d = get_device_pubkey(device)
+
+                                if device_pk_d is not None and verify_pox_signature(
+                                    device_pk_d=device_pk_d,
+                                    model_id=model_id,
+                                    cert=cert,
+                                    nonce_inf=nonce_inf,
+                                    output_class=pred,
+                                    sig_raw=pox_sig,
+                                ):
+                                    print(f"✓ verified inference OK, pred={pred}, PoX=VALID")
+                                else:
+                                    print(f"! verified inference OK, pred={pred}, PoX=INVALID")
                             else:
                                 print("✓ verified inference OK (response not decoded)")
                         else:
@@ -1013,14 +1132,16 @@ def main():
                 print("  3) T3 GCM tag tamper")
                 print("  4) T4 invalid M_inf signature")
                 print("  5) T5 inference blocked with SAU closed")
+                print("  6) T6 PoX negative verification")
                 print("\n  Tip: select unit tests individually or combine them (ex: 1,4,5)")
-                sel = input("Select [a or list like 1,4,5] (default a): ").strip().lower()
+                sel = input("Select [a or list like 1,4,5,6] (default a): ").strip().lower()
                 mapping = {
                     '1': {'t1'},
                     '2': {'t2'},
                     '3': {'t3'},
                     '4': {'t4'},
                     '5': {'t5'},
+                    '6': {'t6'},
                 }
 
                 if sel in ('', 'a', 'all'):
@@ -1037,7 +1158,7 @@ def main():
 
                     if invalid or not selected:
                         print(f"✗ Invalid selection: {', '.join(invalid) if invalid else sel}")
-                        print("  Use: a  OR  one/many among 1,2,3,4,5")
+                        print("  Use: a  OR  one/many among 1,2,3,4,5,6")
                         continue
 
                 enclave_info_cache, device_pk_d = run_security_tests(
