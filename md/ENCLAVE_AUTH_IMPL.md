@@ -191,8 +191,9 @@ Plaintext =
 │ (CMD 0x0A path)      │ PSA  │ info()             │
 └──────────────────────┘ IPC  └────────────────────┘
       │
-      │ 2. Build M_update with returned EnclaveInfo
-      │    and encrypt with session key (AES-256-GCM)
+      │ 2. Host Provider/Verifier computes M_update
+      │    using returned EnclaveInfo, then encrypts it
+      │    with session key (AES-256-GCM) and sends it
       ▼
 ┌──────────────────────┐      ┌────────────────────┐
 │ Device (NS)          │      │ Secure Partition   │
