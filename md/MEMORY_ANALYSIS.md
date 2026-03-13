@@ -245,5 +245,5 @@ arm-zephyr-eabi-objdump -t build/zephyr/zephyr.elf
 
 - [README.rst](README.rst) - Main project overview
 - [src/README.md](src/README.md) - Source code organization
-- [BENCHMARK_RESULTS.md](BENCHMARK_RESULTS.md) - Performance metrics
+- [DEVICE_BENCHMARK.md](DEVICE_BENCHMARK.md) - Performance metrics and collection workflow
 - Build artifacts: `build/zephyr/zephyr.elf` (compiled binary)

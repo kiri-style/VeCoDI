@@ -137,7 +137,7 @@ Complete end-to-end verification of the 3-phase Enclave Authorization Protocol o
 
 ### Verification Checklist
 
-- ✅ Provider simulator initialized with hardcoded keys
+- ✅ Host provider flow initialized for runtime session-based authorization
 - ✅ Plaintext serialized correctly (120 bytes)
 - ✅ AES-256-GCM key imported via PSA Crypto
 - ✅ Random 96-bit nonce generated
@@ -223,7 +223,7 @@ Complete end-to-end verification of the 3-phase Enclave Authorization Protocol o
 │                                                               │
 │  Phase 2: M_update Generation                                │
 │  ─────────────────────────────                               │
-│  Provider Simulator:                                         │
+│  Host Provider/Verifier:                                     │
 │    plaintext = c_limit || pk_v || EnclaveInfo || cert       │
 │    AES-256-GCM(plaintext) → [ciphertext || nonce || tag]    │
 │                                                               │
@@ -263,7 +263,7 @@ Complete end-to-end verification of the 3-phase Enclave Authorization Protocol o
 
 | File | Key Functions | Status |
 |------|---------------|--------|
-| `src/test_enclave_auth.c` | `test_m_update_generation()` | ✅ Verified |
+| `src/test_enclave_auth.c` | `test_m_update_generation()` (host-flow helper test) | ✅ Verified |
 | | `ns_validate_m_update()` | ✅ Verified |
 | | `ns_get_max_inferences()` | ✅ Verified |
 

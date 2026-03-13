@@ -146,7 +146,7 @@ Memory Usage (ELF Binary Analysis):
 13. `heap_free`: Remaining heap memory
 14. `stack_used`: Stack depth during execution
 
-See [BENCHMARK_RESULTS.md](../md/BENCHMARK_RESULTS.md) for detailed cycle-by-cycle analysis.
+See [DEVICE_BENCHMARK.md](../md/DEVICE_BENCHMARK.md) for benchmark collection, metrics, and report workflow.
 - **test_images.c / test_images.h**: CIFAR-10 sample inputs and labels.
 
 ### Model + artifacts
@@ -373,7 +373,7 @@ Latency depends on command type:
 - Metadata and counter commands are typically sub-millisecond.
 - Cryptographic paths (`M_update` decrypt/validate, secure inference request processing, PoX flow) are higher and depend on payload size and platform state.
 
-Refer to `../BENCHMARK_RESULTS.md` for measured values.
+Refer to `../md/DEVICE_BENCHMARK.md` for measured values and benchmark workflow.
 
 ---
 

@@ -2,7 +2,6 @@
 
 ## ✅ VERIFICATION STATUS: **ALL PHASES COMPLETE & VERIFIED ON HARDWARE**
 
-**Date**: 27 February 2026  
 **Platform**: STM32L552ZE-Q  
 **See**: [VERIFICATION_REPORT.md](VERIFICATION_REPORT.md) for complete test results
 
@@ -61,16 +60,13 @@ Result: 32-byte SHA-256 hash
   - `out[0]`: enclave_info (32 bytes)
 - **Execution**: Atomic in Secure partition via TF-M
 
-### 2. Provider Simulator (src/provider_sim.cpp / provider_sim.h)
+### 2. Host Provider/Verifier Side
 
-#### Hardcoded Keys (Simulation Only)
-```c
-provider_sk[32]  /* ECDSA P-256 private key */
-provider_pk[64]  /* ECDSA P-256 public key (x||y) */
-verifier_sk[32]  /* Verifier ECDSA P-256 private key */
-verifier_pk[64]  /* Verifier ECDSA P-256 public key (x||y) */
-session_key[32]  /* Shared session key (same as Secure AES-256 key) */
-```
+#### Key Material (Real Deployment Model)
+- Device and host establish a session during first connection.
+- Session keys are negotiated at runtime (ECDH handshake).
+- `M_update` is encrypted and authenticated with the negotiated session key.
+- Verifier key material (`pk_v`) is carried in `M_update` payload and stored by the device after validation.
 
 #### M_update Message Structure
 ```c
@@ -103,22 +99,10 @@ Plaintext =
    - AAD: none (no additional authenticated data)
 4. **Extract** ciphertext and authentication tag (16 bytes)
 
-#### Functions
-```c
-void provider_sim_init(void)
-/* Initialize PSA crypto and load hardcoded keys */
-
-int provider_sim_generate_m_update(
-    uint32_t c_limit,
-    const uint8_t *enclave_info,
-    const uint8_t *cert,
-    uint32_t cert_len,
-    m_update_message_t *m_update_out)
-/* Generate encrypted M_update message; returns 0 on success */
-
-void provider_sim_get_public_key(uint8_t *pk_p_out)
-/* Export provider's public key (for future certificate verification) */
-```
+#### Host-side Generation
+- Build plaintext payload: `c_limit || pk_v || enclave_info || cert_len || cert`.
+- Encrypt payload with AES-256-GCM using runtime session key.
+- Send encrypted `M_update` (`nonce || ciphertext || tag`) over UART command channel.
 
 ### 3. Header Files
 
@@ -129,9 +113,8 @@ void provider_sim_get_public_key(uint8_t *pk_p_out)
 - Defines `MAX_INFERENCES_PER_ENCLAVE` (initial value = 0, dynamic policy)
 
 #### src/provider_sim.h
-- Defines `m_update_payload_t` and `m_update_message_t` structures
-- Declares provider API functions
-- Defines constants: `M_UPDATE_AES256_KEY_SIZE` (32), `ENCLAVE_INFO_SIZE` (32)
+- Contains a local helper implementation used for standalone generation tests only
+- Not the reference production flow for host-device authorization
 
 ### 4. Test File (src/test_enclave_auth.c)
 
@@ -166,7 +149,7 @@ void provider_sim_get_public_key(uint8_t *pk_p_out)
 - **Total Secure overhead**: ~600 bytes (well within 11.5KB available)
 
 ### Non-Secure Application
-- Provider simulator: ~2.5KB code
+- Host-side M_update helper path: ~2.5KB code
 - M_update message struct: ~400 bytes (static)
 - PSA calls overhead: minimal
 - **Total NS overhead**: ~3KB
@@ -195,45 +178,35 @@ void provider_sim_get_public_key(uint8_t *pk_p_out)
 ## Protocol Flow (Current Implementation)
 
 ```
-┌─────────────┐
-│   Provider  │
-│  Simulator  │
-└──────┬──────┘
-       │ 1. Generate M_update
-       │    - Serialize payload
-       │    - Encrypt with AES-256-GCM
-       │    - Include EnclaveInfo
-       │
-       ▼
 ┌──────────────────────┐
-│ Device (NS)          │
-│ test_m_update_gen()  │
-│                      │
-│ → provider_sim_init()│
-│ → gen_m_update()     │
-│    (ciphertext+tag)  │
+│ Host Provider/       │
+│ Verifier             │
+└──────────┬───────────┘
+      │ 1. Request EnclaveInfo (nonce-based request)
+      │
+      ▼
+┌──────────────────────┐      ┌────────────────────┐
+│ Device (NS)          │      │ Secure Partition   │
+│ protocol handler     │─────▶│ compute_enclave_   │
+│ (CMD 0x0A path)      │ PSA  │ info()             │
+└──────────────────────┘ IPC  └────────────────────┘
+      │
+      │ 2. Build M_update with returned EnclaveInfo
+      │    and encrypt with session key (AES-256-GCM)
+      ▼
+┌──────────────────────┐      ┌────────────────────┐
+│ Device (NS)          │      │ Secure Partition   │
+│ protocol handler     │─────▶│ validate_m_update()│
+│ (CMD 0x0B path)      │ PSA  │                    │
+└──────────────────────┘ IPC  └────────────────────┘
+      │
+      │ 3. Secure world verifies tag + EnclaveInfo
+      │    then atomically updates policy limit
+      ▼
+┌──────────────────────┐
+│ Authorized inference │
+│ under updated policy │
 └──────────────────────┘
-       │
-  ▼
-┌──────────────────────┐      ┌────────────────────┐
-│ Device (NS)          │      │ Secure Partition   │
-│ validate_m_update()  │─────▶│ validate_m_update  │
-│                      │ PSA  │ [CMD 11]           │
-│ → PSA IPC call       │ IPC  │                    │
-└──────────────────────┘      │ AES-256-GCM        │
-          │ EnclaveInfo check │
-          │ Update max limit  │
-          └────────────────────┘
-  │
-  ▼
-┌──────────────────────┐      ┌────────────────────┐
-│ Device (NS)          │      │ Secure Partition   │
-│ test_enclave_info()  │─────▶│ compute_enclave_   │
-│                      │ PSA  │ info() [CMD 10]    │
-│ → PSA IPC call       │ IPC  │                    │
-└──────────────────────┘      │ Returns SHA-256    │
-                              │ EnclaveInfo hash   │
-                              └────────────────────┘
 ```
 
 ## Phase B (Implemented)
@@ -287,7 +260,7 @@ west flash
   SUCCESS: EnclaveInfo computed
     EnclaveInfo (first 16 bytes): XX XX XX XX ...
 
-[TEST] Generating M_update message via Provider Simulator...
+[TEST] Generating M_update message via host provider flow...
   SUCCESS: M_update generated
     New counter limit: 10
     Ciphertext size: X bytes
@@ -306,8 +279,8 @@ west flash
 - `dummy_partition/dummy_partition.h` - Added exports and constants
 
 **Created:**
-- `src/provider_sim.cpp` - Provider simulator implementation
-- `src/provider_sim.h` - Provider simulator API
+- `src/provider_sim.cpp` - Local helper for standalone generation tests
+- `src/provider_sim.h` - Helper API for test-only message generation
 - `src/test_enclave_auth.c` - Test harness
 
 **Build Status:** ✅ Successful (all components compile)

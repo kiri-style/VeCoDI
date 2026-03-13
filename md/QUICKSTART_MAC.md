@@ -52,7 +52,7 @@ The current menu includes:
 
 ## Full Documentation
 
-See [MAC_INTERACTIVE_GUIDE.md](MAC_INTERACTIVE_GUIDE.md) for full details.
+See [../tools/README.md](../tools/README.md) for full interactive command details.
 
 ## Return to Auto-Test Mode
 

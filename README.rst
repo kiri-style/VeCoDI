@@ -614,14 +614,14 @@ This phase implements a **Verifier-to-Device Inference Protocol** with cryptogra
         |                                 |
         ├─ Generate M_inf:            ├─ Verify M_inf signature ✓
         │  - Random nonce (12B)       │
-        │  - Input data (64B test)    ├─ Execute inference → result=6
-        │  - Model ID (4B)            │
-        │  - ECDSA sig over above      └─ Generate PoX:
+        │  - Model ID (4B)            ├─ Execute inference → result=6
+        │  - ECDSA sig over           │
+        │    (nonce || model_id)       └─ Generate PoX:
         │  - Total: 80 bytes             - Echo nonce
-        │                                - Echo input
         └─ Verify PoX signature ←────    - Output (1B)
            ✓ Execution verified          - Cert (16B)
-                                         - ECDSA sig over above
+                                         - ECDSA sig over
+                                           (model_id || cert || nonce || output)
                                          - Total: 97 bytes
 
 **Message Formats**
@@ -1006,7 +1006,7 @@ Documentation Files
 - **md/ENCLAVE_AUTH_IMPL.md**: Enclave Authorization Protocol implementation details
 - **md/INFERENCE_PROTOCOL_IMPL.md**: Inference Protocol (Phase 2) implementation details
 - **md/PROTOCOL_DETAILED_ARCHITECTURE.md**: End-to-end protocol architecture with exchange diagrams and sequence flows
-- **md/BENCHMARK_RESULTS.md**: Detailed cycle-by-cycle analysis of all measurements
+- **md/DEVICE_BENCHMARK.md**: Device benchmark collection, metrics format, and workflow
 - **src/README.md**: Non-Secure application architecture and components
 - **dummy_partition/README.md**: Secure partition implementation details
 - **split_inference/README.md**: CIFAR-10 model and split inference details

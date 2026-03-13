@@ -441,7 +441,7 @@ else:
 ### Implementation Files
 - Device: `src/uart_protocol.h`, `src/uart_protocol.cpp`
 - Mac: `tools/mac_provider.py`
-- Documentation: `MAC_INTERACTIVE_GUIDE.md`, `tools/README.md`
+- Documentation: `QUICKSTART_MAC.md`, `tools/README.md`
 
 ### Related Protocols
 - Enclave Authorization Protocol: `ENCLAVE_AUTH_IMPL.md`
