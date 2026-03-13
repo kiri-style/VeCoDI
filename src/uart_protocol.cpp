@@ -338,7 +338,8 @@ static bool is_valid_cmd(uint8_t cmd)
             cmd == CMD_GET_SECURE_BENCHMARK ||
             cmd == CMD_GET_INFERENCE_RESULT ||
             cmd == CMD_SET_MAX_INFERENCES ||
-            cmd == CMD_GET_DEVICE_PUBKEY);
+            cmd == CMD_GET_DEVICE_PUBKEY ||
+            cmd == CMD_GET_SAU_STATE);
 }
 
 static bool is_valid_len_for_cmd(uint8_t cmd, uint32_t len)
@@ -357,6 +358,7 @@ static bool is_valid_len_for_cmd(uint8_t cmd, uint32_t len)
         case CMD_GET_SECURE_BENCHMARK:
         case CMD_GET_INFERENCE_RESULT:
         case CMD_GET_DEVICE_PUBKEY:
+        case CMD_GET_SAU_STATE:
             return len == 0U;
         case CMD_RUN_INFERENCE:
             /* len=0: legacy (no M_inf);  len=128: new protocol (encrypted M_inf) */
@@ -384,6 +386,7 @@ static void handle_get_secure_benchmark(void);
 static void handle_get_inference_result(void);
 static void handle_set_max_inferences(const uint8_t *data, uint32_t len);
 static void handle_get_device_pubkey(void);
+static void handle_get_sau_state(void);
 
 int uart_protocol_init(void)
 {
@@ -608,6 +611,10 @@ static void process_command(void)
 
         case CMD_GET_DEVICE_PUBKEY:
             handle_get_device_pubkey();
+            break;
+
+        case CMD_GET_SAU_STATE:
+            handle_get_sau_state();
             break;
 
         default:
@@ -1169,4 +1176,33 @@ static void handle_get_device_pubkey(void)
         return;
     }
     uart_protocol_send_response(RESP_OK, device_pk_d, sizeof(device_pk_d));
+}
+
+static void handle_get_sau_state(void)
+{
+    /* Response format returned to host:
+     *   byte 0   = state code: 0=unregistered, 1=open, 2=closed
+     *   bytes 1-4 = base (LE uint32)
+     *   bytes 5-8 = size (LE uint32)
+     */
+    psa_handle_t handle = psa_connect(TFM_DP_SERVICE_SID, 1);
+    if (handle <= 0) {
+        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+        return;
+    }
+
+    uint32_t cmd = 16U; /* DP_CMD_GET_SAU_STATE */
+    uint8_t resp[9] = {0};
+    psa_invec in_vec = { &cmd, sizeof(cmd) };
+    psa_outvec out_vec = { resp, sizeof(resp) };
+
+    psa_status_t status = psa_call(handle, PSA_IPC_CALL, &in_vec, 1, &out_vec, 1);
+    psa_close(handle);
+
+    if (status != PSA_SUCCESS) {
+        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+        return;
+    }
+
+    uart_protocol_send_response(RESP_OK, resp, sizeof(resp));
 }

@@ -1,6 +1,6 @@
 # Enclave Authorization Protocol - Verification Report
 
-**Date**: 5 March 2026  
+**Date**: 13 March 2026  
 **Platform**: STM32L552ZE-Q (NUCLEO-L552ZE-Q)  
 **Status**: ✅ **ALL PHASES VERIFIED ON HARDWARE**
 
@@ -11,6 +11,31 @@
 Complete end-to-end verification of the 3-phase Enclave Authorization Protocol on ARM Cortex-M33 with TrustZone-M. All cryptographic operations, secure validation checks, and dynamic policy mechanisms confirmed working.
 
 **Verification Result**: 🎉 **100% PASS**
+
+---
+
+## Latest Validation Update (13 March 2026)
+
+### What was re-validated
+
+- ✅ Interactive Mac flow (`tools/mac_provider.py`) end-to-end on hardware.
+- ✅ ECDH handshake and dynamic session key derivation.
+- ✅ EnclaveInfo computation and response decoding.
+- ✅ M_update anti-replay behavior: rejected when `c_limit <= current max`, accepted when strictly greater.
+- ✅ Verified inference command (`9`) works after successful M_update.
+- ✅ Deterministic SAU query via `CMD_GET_SAU_STATE (0x0D)`.
+
+### Practical outcomes observed
+
+- Before enclave lifecycle: SAU can return `UNREGISTERED`.
+- After inference path creates/closes enclave window: SAU returns `CLOSED` with valid base/size.
+- Example validated SAU window: `base=0x20000FC0`, `size=39552`.
+
+### Host-tool robustness fixes validated
+
+- Added deterministic SAU feedback path in interactive menu (`option 15`).
+- Fixed verifier key/session handling so failed M_update does not desynchronize host/device state.
+- Added explicit anti-replay guidance in interactive prompt for `c_limit`.
 
 ---
 

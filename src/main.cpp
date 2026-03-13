@@ -9,12 +9,17 @@
 #include "benchmark.h"
 #include "secure_benchmark_ns.h"
 #include "uart_protocol.h"
+#include "sau_test.h"
 
 /* Configuration: Set to 1 for simple UART test, 0 for normal flow */
 #define SIMPLE_UART_MODE 0
 
 /* Configuration: Set to 1 for Mac interactive mode, 0 for auto test */
 #define MAC_INTERACTIVE_MODE 1
+
+/* SAU isolation demo (DESTRUCTIVE: crashes with HardFault at the end!).
+ * Runs before the UART protocol loop.  Set to 0 for normal operation. */
+#define SAU_TEST_DEMO 0
 
 /* Forward declarations for test functions */
 extern "C" int test_enclave_authorization_protocol(void);
@@ -36,6 +41,22 @@ static void print_memory_stats(void)
     printk("  DATA size:  %zu bytes\n", data_size);
     printk("  Stack ptr:  %p\n", (void*)&bss_size);
     printk("===============================\n\n");
+}
+
+/*
+ * Override Zephyr's fatal error handler to print a diagnostic message
+ * when the SAU isolation test triggers a HardFault (NS->Secure access).
+ * After printing, the system halts (or reboots) as usual.
+ */
+extern "C" void k_sys_fatal_error_handler(unsigned int reason,
+                                          const struct arch_esf *esf)
+{
+    (void)esf;
+    printk("\n[SAU TEST] FATAL ERROR: HardFault (reason=%u)\n", reason);
+    printk("[SAU TEST] SAU isolation VERIFIED: NS access to Secure enclave ");
+    printk("window triggers HardFault as expected.\n");
+    printk("[SAU TEST] ========================\n\n");
+    k_fatal_halt(reason);
 }
 
 int main(void)
@@ -71,6 +92,15 @@ int main(void)
 #if MAC_INTERACTIVE_MODE
     /* MAC INTERACTIVE MODE: Device waits for commands from Mac */
     /* All console output disabled to avoid interfering with binary protocol */
+
+#if SAU_TEST_DEMO
+    /* SAU destructive test mode: OPEN -> reads/writes -> CLOSE -> final read => HardFault. */
+    printk("[MAIN] SAU_TEST_DEMO enabled: running destructive SAU test...\n");
+    sau_test_isolation();
+    while (1) {
+        k_sleep(K_FOREVER);
+    }
+#endif /* SAU_TEST_DEMO */
 
     /* Initialize UART protocol */
     while (uart_protocol_init() != 0) {

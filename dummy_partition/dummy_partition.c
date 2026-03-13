@@ -563,6 +563,141 @@ __always_inline void rtpox_configure_sau_secure(uint32_t address_init, uint32_t 
     __ISB();
 }
 
+/* =====================================================================
+ * SAU DYNAMIC RAM ENCLAVE ISOLATION
+ * TF-M Region 1  = original NS-RAM coverage (saved at init)
+ * SAU_REGION_BEFORE (5) = NS split below enclave window
+ * SAU_REGION_AFTER  (7) = NS split above enclave window
+ *
+ * CLOSED: Region 1 disabled, Regions 5+7 cover everything except
+ *         the enclave window => enclave range defaults to Secure.
+ * OPEN:   Regions 5+7 disabled, Region 1 restored => full NS RAM.
+ * ===================================================================== */
+
+#define SAU_REGION_NS_RAM    1U   /* TF-M initial NS-data SAU region index */
+#define SAU_REGION_BEFORE    5U   /* our NS before-enclave region */
+#define SAU_REGION_AFTER     7U   /* our NS after-enclave region  */
+
+static uint32_t sau_enclave_base       = 0U;
+static uint32_t sau_enclave_size       = 0U;
+static bool     sau_enclave_registered = false;
+static bool     sau_enclave_open       = true;  /* tracks current state */
+
+/* Limits of TF-M's NS-RAM SAU region (Region 1), read at init. */
+static uint32_t sau_ns_ram_base  = 0U;
+static uint32_t sau_ns_ram_limit = 0U;
+
+/* Write a SAU region: base and limit both 32-byte-aligned boundaries,
+ * enable=1 => Non-Secure (NSC=0), enable=0 => disabled (=> Secure default). */
+static void sau_write_region(uint32_t idx, uint32_t base,
+                              uint32_t limit, int enable)
+{
+    SAU->RNR  = idx;
+    SAU->RBAR = base  & SAU_RBAR_BADDR_Msk;
+    SAU->RLAR = (limit & SAU_RLAR_LADDR_Msk)
+                | (enable ? SAU_RLAR_ENABLE_Msk : 0U);
+    __DSB();
+    __ISB();
+}
+
+/* Disable a SAU region (clears ENABLE bit, leaves RBAR/RLAR address intact). */
+static void sau_disable_region(uint32_t idx)
+{
+    SAU->RNR  = idx;
+    SAU->RLAR &= ~SAU_RLAR_ENABLE_Msk;
+    __DSB();
+    __ISB();
+}
+
+/* Called once at partition startup: read & save TF-M's NS-RAM region. */
+static void sau_partition_init(void)
+{
+    SAU->RNR = SAU_REGION_NS_RAM;
+    uint32_t rbar = SAU->RBAR;
+    uint32_t rlar = SAU->RLAR;
+    sau_ns_ram_base  = rbar & SAU_RBAR_BADDR_Msk;
+    /* Reconstruct full limit: RLAR[31:5] with bits[4:0]=0x1F */
+    sau_ns_ram_limit = (rlar & SAU_RLAR_LADDR_Msk) | 0x1FU;
+    printf("[SECURE SAU] NS-RAM region %u: 0x%08X..0x%08X (en=%u)\n",
+           SAU_REGION_NS_RAM, sau_ns_ram_base, sau_ns_ram_limit,
+           (unsigned)((rlar & SAU_RLAR_ENABLE_Msk) ? 1U : 0U));
+    printf("[SECURE SAU] Regions %u,%u reserved for enclave window\n",
+           SAU_REGION_BEFORE, SAU_REGION_AFTER);
+}
+
+/* CLOSE: split NS-RAM region so the enclave window becomes Secure. */
+static psa_status_t sau_close_enclave(void)
+{
+    if (!sau_enclave_registered) {
+        printf("[SECURE SAU] CLOSE: enclave not registered\n");
+        return PSA_ERROR_BAD_STATE;
+    }
+    uint32_t enc_base  = sau_enclave_base;
+    uint32_t enc_limit = sau_enclave_base + sau_enclave_size - 1U;
+
+    /* 32-byte alignment required by SAU (bits[4:0] of base must be 0;  */
+    /* bits[4:0] of limit must be 0x1F, i.e. limit+1 is 32-byte aligned) */
+    if ((enc_base & 0x1FU) != 0U || ((enc_limit + 1U) & 0x1FU) != 0U) {
+        printf("[SECURE SAU] CLOSE: alignment error base=0x%08X limit=0x%08X\n",
+               enc_base, enc_limit);
+        return PSA_ERROR_INVALID_ARGUMENT;
+    }
+
+    /* 1. Disable the three regions first (idempotent). */
+    sau_disable_region(SAU_REGION_NS_RAM);
+    sau_disable_region(SAU_REGION_BEFORE);
+    sau_disable_region(SAU_REGION_AFTER);
+
+    /* 2. NS region A: [ns_ram_base .. enc_base-1] */
+    if (enc_base > sau_ns_ram_base) {
+        sau_write_region(SAU_REGION_BEFORE,
+                         sau_ns_ram_base,
+                         enc_base - 1U,
+                         1 /* NS, enabled */);
+    }
+
+    /* 3. Enclave window [enc_base .. enc_limit] => covered by NO enabled region
+     *    => defaults to Secure => NS access triggers BusFault -> HardFault */
+
+    /* 4. NS region C: [enc_limit+1 .. ns_ram_limit] */
+    if ((enc_limit + 1U) <= sau_ns_ram_limit) {
+        sau_write_region(SAU_REGION_AFTER,
+                         enc_limit + 1U,
+                         sau_ns_ram_limit,
+                         1 /* NS, enabled */);
+    }
+
+    sau_enclave_open = false;
+    printf("[SECURE SAU] CLOSED: enclave 0x%08X..0x%08X = Secure\n",
+           enc_base, enc_limit);
+    return PSA_SUCCESS;
+}
+
+/* OPEN: restore full NS-RAM region so the enclave window is accessible from NS. */
+static psa_status_t sau_open_enclave(void)
+{
+    if (!sau_enclave_registered) {
+        printf("[SECURE SAU] OPEN: enclave not registered\n");
+        return PSA_ERROR_BAD_STATE;
+    }
+
+    /* 1. Disable split regions. */
+    sau_disable_region(SAU_REGION_BEFORE);
+    sau_disable_region(SAU_REGION_AFTER);
+
+    /* 2. Restore original full NS-RAM region (TF-M Region 1). */
+    sau_write_region(SAU_REGION_NS_RAM,
+                     sau_ns_ram_base,
+                     sau_ns_ram_limit,
+                     1 /* NS, enabled */);
+
+    sau_enclave_open = true;
+    printf("[SECURE SAU] OPEN: enclave 0x%08X..0x%08X = Non-Secure\n",
+           sau_enclave_base,
+           sau_enclave_base + sau_enclave_size - 1U);
+    return PSA_SUCCESS;
+}
+
 /* Write digest back to caller, ensuring NS can read SRAM1 region. */
 static void psa_write_digest(void *handle, uint8_t *digest,
                  uint32_t digest_size)
@@ -809,6 +944,99 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
             return PSA_SUCCESS;
         }
 
+    case DP_CMD_SAU_REGISTER:
+        {
+            /* NS registers the enclave RAM window so Secure can protect it.
+             * in[1] = {base(uint32_t), size(uint32_t)} = 8 bytes.
+             * Validates 32-byte alignment and that range is within NS RAM.
+             * After registration the enclave window is OPEN (unchanged SAU). */
+            if (msg->in_size[1] != 8U) {
+                printf("[SECURE SAU] REGISTER: bad in[1] size %zu (need 8)\n",
+                       msg->in_size[1]);
+                return PSA_ERROR_INVALID_ARGUMENT;
+            }
+            uint32_t params[2];
+            psa_read(msg->handle, 1, params, 8U);
+            uint32_t base = params[0];
+            uint32_t size = params[1];
+
+            if (size == 0U || (base & 0x1FU) != 0U || (size & 0x1FU) != 0U
+                || base < sau_ns_ram_base
+                || (base + size - 1U) > sau_ns_ram_limit) {
+                printf("[SECURE SAU] REGISTER: invalid range 0x%08X+%u\n",
+                       base, size);
+                return PSA_ERROR_INVALID_ARGUMENT;
+            }
+
+            sau_enclave_base       = base;
+            sau_enclave_size       = size;
+            sau_enclave_registered = true;
+            sau_enclave_open       = true;
+            printf("[SECURE SAU] REGISTER: window 0x%08X..0x%08X (%u B)\n",
+                   base, base + size - 1U, size);
+
+            uint8_t resp = 0xAAU;
+            if (msg->out_size[0] >= 1U) {
+                psa_write(msg->handle, 0, &resp, 1U);
+            }
+            return PSA_SUCCESS;
+        }
+
+    case DP_CMD_SAU_CONTROL:
+        {
+            /* in[1] = 1 byte: 1=CLOSE, 2=OPEN.
+             * out[0] = 1 byte: 0xA1 (after CLOSE) or 0xA2 (after OPEN). */
+            if (msg->in_size[1] < 1U) {
+                return PSA_ERROR_INVALID_ARGUMENT;
+            }
+            uint8_t cmd_byte = 0U;
+            psa_read(msg->handle, 1, &cmd_byte, 1U);
+
+            psa_status_t st;
+            uint8_t resp_byte;
+
+            if (cmd_byte == 1U) {         /* CLOSE */
+                st        = sau_close_enclave();
+                resp_byte = 0xA1U;
+            } else if (cmd_byte == 2U) {  /* OPEN */
+                st        = sau_open_enclave();
+                resp_byte = 0xA2U;
+            } else {
+                printf("[SECURE SAU] SAU_CONTROL: unknown cmd=%u\n", cmd_byte);
+                return PSA_ERROR_INVALID_ARGUMENT;
+            }
+
+            if (st == PSA_SUCCESS && msg->out_size[0] >= 1U) {
+                psa_write(msg->handle, 0, &resp_byte, 1U);
+            }
+            return st;
+        }
+
+    case DP_CMD_GET_SAU_STATE:
+        {
+            /* Response format:
+             *   byte 0   = state code
+             *              0 = unregistered
+             *              1 = registered + OPEN
+             *              2 = registered + CLOSED
+             *   bytes 1-4 = base  (LE uint32)
+             *   bytes 5-8 = size  (LE uint32)
+             */
+            uint8_t resp[9] = {0};
+
+            if (sau_enclave_registered) {
+                resp[0] = sau_enclave_open ? 1U : 2U;
+            }
+            memcpy(&resp[1], &sau_enclave_base, sizeof(sau_enclave_base));
+            memcpy(&resp[5], &sau_enclave_size, sizeof(sau_enclave_size));
+
+            if (msg->out_size[0] < sizeof(resp)) {
+                return PSA_ERROR_INVALID_ARGUMENT;
+            }
+            psa_write(msg->handle, 0, resp, sizeof(resp));
+            return PSA_SUCCESS;
+        }
+
     default:
         return PSA_ERROR_NOT_SUPPORTED;
     }
@@ -852,9 +1080,12 @@ psa_status_t tfm_dp_req_mngr_init(void)
 
     printf("\n[SECURE INIT] Dummy partition init\n");
     print_secure_memory_stats();
-    
+
     /* Initialize Secure benchmark system */
     secure_benchmark_init();
+
+    /* Scan and save TF-M's NS-RAM SAU region limits for runtime splits. */
+    sau_partition_init();
 
 	while (1) {
         signals = psa_wait(PSA_WAIT_ANY, PSA_BLOCK);

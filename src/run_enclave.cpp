@@ -83,9 +83,17 @@ void run_enclave(void)
         if (secure_denied) {
             printk("[ENCLAVE] NS fallback mode active for benchmarking\n");
         }
+        /* Open the SAU enclave window: late weights must be NS-accessible. */
+        printk("[ENCLAVE] Opening SAU enclave window for inference...\n");
+        enclave_sau_open();
+
         printk("[ENCLAVE] Executing split inference...\n");
         run_split_inference();
         g_benchmark_metrics.inference_count++;
+
+        /* Close the SAU enclave window: weights are Secure again. */
+        enclave_sau_close();
+        printk("[ENCLAVE] SAU enclave window closed (weights Secure).\n");
     }
     
     /* Update metrics */

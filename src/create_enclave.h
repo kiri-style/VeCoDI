@@ -18,6 +18,11 @@ size_t get_enclave_region_size(void);
 uint32_t get_max_inferences_per_enclave(void);
 bool is_enclave_created(void);
 
+/* SAU enclave RAM isolation: open/close the window from NS side */
+int enclave_sau_register_window(const uint8_t *base, uint32_t size);
+int enclave_sau_open(void);
+int enclave_sau_close(void);
+
 #ifdef __cplusplus
 }
 #endif

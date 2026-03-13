@@ -2,16 +2,27 @@
 Secure CIFAR-10 Split Inference with TF-M and Encrypted Late Weights
 =============================================================================
 
-**Build Information**
+**Quick Start (Current Validated Flow, March 2026)**
 
 ::
 
-    Zephyr Version:     commit 61a8648c2cc6bbec9af368a96ecae87d6798e7fe (HEAD -> main)
-    TF-M Version:       commit 04aa7243e04946b5422b124bea9c0675ab6b120f (HEAD, manifest-rev)
-    Build Date:         5 March 2026
-    Target Board:       NUCLEO-L552ZE-Q (STM32L552ZE, Cortex-M33 @ 110 MHz)
-    Total Flash Used:   295,692 B (74.6% of 396 KB)
-    Total RAM Used:     174,520 B (88.8% of 192 KB)
+  west build -d build
+  west flash
+  ./.venv/bin/python tools/mac_provider.py /dev/tty.usbmodem11203 115200
+
+**Manual sequence (host menu)**
+
+1. ``1`` ECDH handshake
+2. ``2`` Compute EnclaveInfo
+3. ``3`` Send M_update (**must use c_limit > current max**, anti-replay)
+4. ``9`` Verified inference (requires 1 + successful 3)
+5. ``15`` Deterministic SAU status (UNREGISTERED / OPEN / CLOSED)
+
+**Current protocol notes**
+
+- ``CMD_GET_SAU_STATE (0x0D)`` is available and returns ``state(1) + base(4) + size(4)``.
+- ``M_update`` rejection with ``RESP_ERROR`` is expected if ``c_limit`` is not strictly increasing.
+- SAU can be ``UNREGISTERED`` before enclave creation; after first enclave lifecycle it typically reports ``CLOSED``.
 
 Overview
 ========

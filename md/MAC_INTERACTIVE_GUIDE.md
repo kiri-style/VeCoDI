@@ -1,10 +1,10 @@
-# Mac ↔ STM32 Interactive Protocol
+# Mac ↔ STM32 Interactive Protocol (Guide à jour)
 
-Guide pour utiliser la communication interactive entre votre Mac (Provider/Verifier) et la carte STM32L552 (Device).
+Guide pratique pour piloter le device STM32L552 depuis Mac avec `tools/mac_provider.py`.
 
 ---
 
-## Architecture
+## Architecture (résumé)
 
 ```
 ┌─────────────────────────┐         USB/UART          ┌──────────────────────────┐
@@ -21,14 +21,13 @@ Guide pour utiliser la communication interactive entre votre Mac (Provider/Verif
 
 ## Installation sur Mac
 
-### 1. Installer Python et dépendances
+### 1. Préparer Python et dépendances
 
 ```bash
-# Python 3.8+ requis
 python3 --version
 
-# Installer les dépendances
-pip3 install pyserial cryptography
+# Dépendances dans le venv projet (recommandé)
+./.venv/bin/python -m pip install pyserial cryptography
 ```
 
 ### 2. Vérifier le port série
@@ -45,125 +44,69 @@ ls /dev/tty.usbmodem*
 
 ---
 
-## Préparation du Firmware
-
-### Mode Interactif (Mac ↔ STM32)
-
-Le firmware est configuré pour le mode interactif via la macro dans `src/main.cpp`:
-
-```cpp
-#define MAC_INTERACTIVE_MODE 1  // Mode interactif activé
-```
-
-### Mode Test Auto (Tests locaux)
-
-Pour revenir au mode test automatique (sans Mac):
-
-```cpp
-#define MAC_INTERACTIVE_MODE 0  // Tests automatiques
-```
+## Préparation firmware
 
 ### Compiler et flasher
 
 ```bash
 cd /Users/user/zephyrproject/zephyr/samples/modules/tflite-micro/hello_cifar_clean
 
-# Build
-west build -p auto
-
-# Flash
-west build -t flash
+west build -d build
+west flash
 ```
 
 ---
 
 ## Utilisation
 
-### 1. Démarrer le Device (STM32)
-
-Après flash, le device affiche:
-
-```
-========================================
-=== ENCLAVE AUTHORIZATION PROTOCOL ===
-========================================
-
-╔════════════════════════════════════════════════════════╗
-║          MAC INTERACTIVE MODE ENABLED                  ║
-║                                                        ║
-║  Device ready to receive commands from Mac Provider   ║
-║                                                        ║
-║  On your Mac, run:                                     ║
-║    python3 tools/mac_provider.py /dev/tty.usbmodem*   ║
-║                                                        ║
-║  Available commands:                                   ║
-║    1) Compute EnclaveInfo                              ║
-║    2) Send M_update (c_limit=10)                       ║
-║    3) Send M_update (c_limit=20)                       ║
-║    4) Get max inferences                               ║
-║    5) Run inference                                    ║
-╚════════════════════════════════════════════════════════╝
-
-[UART] Protocol initialized on uart@40004400
-[UART] Ready to receive commands from Mac
-[MAIN] Entering command processing loop...
-```
-
-### 2. Démarrer le Provider (Mac)
+### 1. Démarrer le Provider (Mac)
 
 Dans un nouveau terminal sur votre Mac:
 
 ```bash
 cd /Users/user/zephyrproject/zephyr/samples/modules/tflite-micro/hello_cifar_clean
 
-python3 tools/mac_provider.py /dev/tty.usbmodem14203 115200
+./.venv/bin/python tools/mac_provider.py /dev/tty.usbmodem11203 115200
 ```
 
-Vous verrez le menu interactif:
+Le menu actuel expose:
 
 ```
-============================================================
-  Mac Provider/Verifier - Enclave Authorization Protocol
-============================================================
-
- Available Commands:
-  1) Compute EnclaveInfo on device
-  2) Generate and send M_update (c_limit=10)
-  3) Generate and send M_update (c_limit=20)
-  4) Get max inferences from device
-  5) Run inference on device
-  6) Read device console (2 seconds)
-  7) Get inference count from device
-  8) Get remaining inferences from device
-  q) Quit
+1) ECDH handshake
+2) Compute EnclaveInfo
+3) Send M_update (quota custom)
+4) Get device signing pubkey
+5..8) quota/counters
+9) Verified inference
+10) Legacy inference
+11) Last result
+12/13) NS/Secure benchmark
+14) Console read
+15) SAU state
+16) Raw command
+17) Session status
 
 Enter command: 
 ```
 
 ---
 
-## Scénario de Test Complet
+## Scénario de test recommandé (à jour)
 
-### Étape 1: Vérifier l'état initial
-
-```
-Enter command: 4
-
-[4] Getting max inferences from device...
-[UART] ← Command received: 0x03
-[CMD] Get max inferences
-[CMD] ✓ Current max_inferences: 0
-✓ Current max_inferences: 0
-```
-
-**Résultat**: Le device démarre avec `max_inferences = 0` (aucune inference autorisée).
-
----
-
-### Étape 2: Calculer EnclaveInfo
+### Étape 1: ECDH
 
 ```
 Enter command: 1
+```
+
+**Résultat**: clé de session dynamique dérivée.
+
+---
+
+### Étape 2: EnclaveInfo
+
+```
+Enter command: 2
 
 [1] Computing EnclaveInfo on device...
 → Sent command 0x01 (100 bytes data)
@@ -171,7 +114,7 @@ Enter command: 1
 [UART] ← Command received: 0x01
 [CMD] Compute EnclaveInfo
 [CMD] ✓ EnclaveInfo computed
-← Received status 0x00 (32 bytes data)
+← Received status 0x00 (60 bytes data)
 
 ✓ EnclaveInfo received: 55b3a716bf879bd9cb162de716f84eacf01300cc72d7120619344c7e998f9204
 ```
@@ -180,92 +123,66 @@ Enter command: 1
 
 ---
 
-### Étape 3: Envoyer M_update (c_limit=10)
-
-```
-Enter command: 2
-
-[2] Generating M_update with c_limit=10...
-✓ Got EnclaveInfo: 55b3a716bf879bd9...
-
-[PROVIDER] Generating M_update:
-  - c_limit: 10
-  - plaintext size: 120 bytes
-  - enclave_info: 55b3a716bf879bd9...
-  - nonce: 3fdb8b9a94e3a2324323528012345678
-  - ciphertext size: 120 bytes
-  - tag: 3374e4ddc57b1c6d84be32de768b1628
-
-→ Sent command 0x02 (148 bytes data)
-
-[UART] ← Command received: 0x02
-[CMD] Validate M_update
-[SECURE] DP_CMD_VALIDATE_M_UPDATE received
-[CMD] ✓ M_update validated successfully
-← Received status 0x00 (0 bytes data)
-
-✓ M_update validated successfully!
-  Device should now have max_inferences = 10
-```
-
-**Résultat**: Le device a validé le M_update et mis à jour `max_inferences` de 0 → 10.
-
----
-
-### Étape 4: Vérifier la mise à jour
-
-```
-Enter command: 4
-
-[4] Getting max inferences from device...
-[CMD] ✓ Current max_inferences: 10
-✓ Current max_inferences: 10
-```
-
-**Résultat**: Confirmation que la limite a été mise à jour!
-
----
-
-### Étape 5: Exécuter des inferences
-
-```
-Enter command: 5
-
-[5] Requesting inference on device...
-[CMD] Run inference
-[CMD] ✓ Inference allowed and counter incremented
-✓ Inference executed successfully
-```
-
-Répétez 10 fois, puis à la 11ème tentative:
-
-```
-Enter command: 5
-
-[5] Requesting inference on device...
-[CMD] Run inference
-[CMD] ✗ Inference blocked (limit reached)
-✗ Inference blocked (limit reached or other error)
-```
-
-**Résultat**: Le device bloque après 10 inferences (limite atteinte).
-
----
-
-### Étape 6: Mettre à jour avec nouvelle limite (c_limit=20)
+### Étape 3: M_update (anti-replay)
 
 ```
 Enter command: 3
 
-[3] Generating M_update with c_limit=20...
 [PROVIDER] Generating M_update:
-  - c_limit: 20
-  ...
-✓ M_update validated successfully!
-  Device should now have max_inferences = 20
+  - c_limit: 10
+  - plaintext size: 124 bytes
+  - enclave_info: 55b3a716bf879bd9...
+  - nonce: 3fdb8b9a94e3a2324323528012345678
+  - ciphertext size: 124 bytes
+  - tag: 3374e4ddc57b1c6d84be32de768b1628
+
+→ Sent command 0x02 (152 bytes data)
+
+[UART] ← Command received: 0x02
+[CMD] Validate M_update
+[SECURE] DP_CMD_VALIDATE_M_UPDATE received
+[CMD] anti-replay enforced
+
+Si rejet (`RESP_ERROR`), renvoyer avec `c_limit` plus grand que le max courant.
 ```
 
-**Résultat**: Le compteur max est maintenant 20 (anti-replay vérifié: 20 > 10 ✓).
+**Résultat**: si `c_limit` est strictement supérieur au max courant, le M_update est accepté.
+
+---
+
+### Étape 4: Verified inference
+
+```
+Enter command: 9
+```
+
+**Résultat**: `verified inference OK` si `1` + `3` réussi.
+
+---
+
+### Étape 5: SAU state
+
+```
+Enter command: 15
+```
+
+Réponse:
+
+```
+✓ SAU state = UNREGISTERED/OPEN/CLOSED
+  base = 0x........
+  size = ....
+```
+
+**Résultat**: état mémoire protégé déterministe côté firmware.
+
+---
+
+## Règles essentielles
+
+- `9` requiert une session ECDH active + un M_update accepté.
+- Anti-replay strict: `c_limit` doit toujours augmenter.
+- En cas de rejet M_update, relancer `3` avec valeur plus haute.
 
 ---
 
@@ -283,14 +200,23 @@ Enter command: 3
 [STATUS:1 byte][LENGTH:4 bytes LE][DATA:n bytes]
 ```
 
-### Commandes disponibles
+### Commandes disponibles (firmware actuel)
 
-| CMD  | Nom                      | Input                                | Output              |
-|------|--------------------------|--------------------------------------|---------------------|
-| 0x01 | COMPUTE_ENCLAVE_INFO     | model_pub + model_secret + code + ID | 32 bytes SHA-256    |
-| 0x02 | VALIDATE_M_UPDATE        | nonce + ciphertext + tag (148B)      | status only         |
-| 0x03 | GET_MAX_INFERENCES       | (none)                               | uint32_t            |
-| 0x04 | RUN_INFERENCE            | (none)                               | status only         |
+| CMD  | Nom                      | Input                                 | Output                  |
+|------|--------------------------|---------------------------------------|-------------------------|
+| 0x01 | COMPUTE_ENCLAVE_INFO     | model+secret+code+id                  | enclave_info (encrypted/plain) |
+| 0x02 | VALIDATE_M_UPDATE        | nonce + ciphertext + tag              | status                  |
+| 0x03 | GET_MAX_INFERENCES       | none                                  | uint32                  |
+| 0x04 | RUN_INFERENCE            | `M_inf` chiffré ou vide (legacy)      | status / réponse chiffrée |
+| 0x05 | GET_INFERENCE_COUNT      | none                                  | uint32                  |
+| 0x06 | GET_REMAINING_INFERENCES | none                                  | uint32                  |
+| 0x07 | ECDH_HANDSHAKE           | pubkey P-256 (65B)                    | pubkey device (65B)     |
+| 0x08 | GET_BENCHMARK            | none                                  | NS metrics              |
+| 0x09 | GET_SECURE_BENCHMARK     | none                                  | Secure metrics          |
+| 0x0A | GET_INFERENCE_RESULT     | none                                  | pred + expected         |
+| 0x0B | SET_MAX_INFERENCES       | uint32                                | status                  |
+| 0x0C | GET_DEVICE_PUBKEY        | none                                  | pk_d (65B)              |
+| 0x0D | GET_SAU_STATE            | none                                  | state(1)+base(4)+size(4)|
 
 ### Status codes
 
@@ -353,9 +279,9 @@ pip3 install pyserial
 
 ### M_update validation échoue
 
-1. Vérifiez que les clés correspondent entre Mac et Device
-2. Vérifiez que EnclaveInfo est identique des deux côtés
-3. Anti-replay: assurez-vous que c_limit > dernier c_limit accepté
+1. Vérifiez que ECDH (`1`) a bien été fait dans la session courante
+2. Vérifiez que `c_limit > current max`
+3. Relancez `3` avec une valeur strictement supérieure
 
 ---
 

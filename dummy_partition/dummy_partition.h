@@ -27,6 +27,9 @@ extern "C" {
 #define DP_CMD_VALIDATE_M_UPDATE    11  /* Validate and decrypt M_update */
 #define DP_CMD_SET_MAX_INFERENCES   12  /* Override max inferences and reset counter */
 #define DP_CMD_SET_SESSION_KEY      13  /* Share ECDH session_key with Secure partition */
+#define DP_CMD_SAU_REGISTER         14  /* Register enclave RAM window: in[1]={base(4)+size(4)} */
+#define DP_CMD_SAU_CONTROL          15  /* SAU open/close: in[1]=cmd(1B): 1=CLOSE, 2=OPEN */
+#define DP_CMD_GET_SAU_STATE        16  /* Return SAU state: state(1)+base(4)+size(4) */
 
 /* M_update auth-state response returned to NS after validate:
  * c_limit(4) + pk_v(64) + model_id(4) + cert_len(4) + cert(n, max 128) = 204 bytes */

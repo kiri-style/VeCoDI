@@ -23,6 +23,8 @@
 
 #define DP_CMD_SECRET_DIGEST   0
 #define DP_CMD_DECRYPT_LATE_WEIGHTS 3
+#define DP_CMD_SAU_REGISTER    14U  /* Register enclave RAM window with Secure */
+#define DP_CMD_SAU_CONTROL     15U  /* SAU cmd: 1=CLOSE, 2=OPEN */
 
 /* ============================================================
  *                 GLOBALS
@@ -43,8 +45,74 @@ K_THREAD_STACK_DEFINE(enclave_stack, ENCLAVE_STACK_SIZE);
 static struct k_thread enclave_thread;
 
 /* ============================================================
- *                 SECURE CALLS
+ *                 SAU ENCLAVE RAM ISOLATION (NS SIDE)
  * ============================================================ */
+
+/* Tell the Secure partition where enclave RAM window lives so it can
+ * configure SAU regions.  Can be called by enclave setup and SAU tests. */
+int enclave_sau_register_window(const uint8_t *base, uint32_t size)
+{
+    psa_handle_t h = psa_connect(ENCLAVE_SID, ENCLAVE_VER);
+    if (h <= 0) {
+        printk("[NS SAU] psa_connect failed for REGISTER\n");
+        return -1;
+    }
+    uint32_t cmd = DP_CMD_SAU_REGISTER;
+    uint32_t params[2] = { (uint32_t)(uintptr_t)base, size };
+    psa_invec  in_v[2] = { {&cmd, sizeof(cmd)}, {params, sizeof(params)} };
+    uint8_t    resp    = 0U;
+    psa_outvec out_v   = { &resp, 1U };
+    psa_status_t st = psa_call(h, PSA_IPC_CALL, in_v, 2, &out_v, 1);
+    psa_close(h);
+    if (st != PSA_SUCCESS) {
+        printk("[NS SAU] REGISTER failed: %d\n", (int)st);
+        return -1;
+    }
+    printk("[NS SAU] Enclave registered: base=%p size=%u resp=0x%02X\n",
+           (void *)base, size, resp);
+    return 0;
+}
+
+/* Public helpers called by run_enclave.cpp and sau_test.cpp. */
+int enclave_sau_open(void)
+{
+    psa_handle_t h = psa_connect(ENCLAVE_SID, ENCLAVE_VER);
+    if (h <= 0) { printk("[NS SAU] psa_connect failed for OPEN\n"); return -1; }
+    uint32_t cmd  = DP_CMD_SAU_CONTROL;
+    uint8_t  ctrl = 2U;  /* OPEN */
+    psa_invec  in_v[2] = { {&cmd, sizeof(cmd)}, {&ctrl, 1U} };
+    uint8_t    resp    = 0U;
+    psa_outvec out_v   = { &resp, 1U };
+    psa_status_t st = psa_call(h, PSA_IPC_CALL, in_v, 2, &out_v, 1);
+    psa_close(h);
+    if (st != PSA_SUCCESS) {
+        printk("[NS SAU] OPEN failed: %d\n", (int)st);
+        return -1;
+    }
+    printk("[NS SAU] stage open: status=0, byte=0x%02x\n", resp);
+    return 0;
+}
+
+int enclave_sau_close(void)
+{
+    psa_handle_t h = psa_connect(ENCLAVE_SID, ENCLAVE_VER);
+    if (h <= 0) { printk("[NS SAU] psa_connect failed for CLOSE\n"); return -1; }
+    uint32_t cmd  = DP_CMD_SAU_CONTROL;
+    uint8_t  ctrl = 1U;  /* CLOSE */
+    psa_invec  in_v[2] = { {&cmd, sizeof(cmd)}, {&ctrl, 1U} };
+    uint8_t    resp    = 0U;
+    psa_outvec out_v   = { &resp, 1U };
+    psa_status_t st = psa_call(h, PSA_IPC_CALL, in_v, 2, &out_v, 1);
+    psa_close(h);
+    if (st != PSA_SUCCESS) {
+        printk("[NS SAU] CLOSE failed: %d\n", (int)st);
+        return -1;
+    }
+    printk("[NS SAU] stage close: status=0, byte=0x%02x\n", resp);
+    return 0;
+}
+
+
 
 static int decrypt_late_weights_into_ns(void)
 {
@@ -118,6 +186,14 @@ int create_enclave(void)
         enclave_region_size = ENCLAVE_MEMORY_SIZE;
         printk("[NS] Enclave region reserved: base=%p size=%zu\n",
             (void*)enclave_region_base, enclave_region_size);
+
+    /* Register enclave RAM window with Secure partition so SAU can protect it. */
+    printk("[NS] Registering enclave window with Secure (SAU)...\n");
+    if (enclave_sau_register_window(enclave_region_base,
+                            (uint32_t)enclave_region_size) != 0) {
+        printk("[NS] WARNING: SAU register failed, isolation disabled\n");
+    }
+
     printk("[NS] Configuration:\n");
         printk("      Enclave memory size: %zu bytes\n", enclave_region_size);
         printk("      Enclave memory addr: %p\n", (void*)enclave_region_base);
@@ -131,6 +207,12 @@ int create_enclave(void)
         printk("[NS] \u2717 Late weights decrypt failed\n");
         return -1;
     }
+
+    /* Enclave decryption complete: close the SAU window.
+     * The window will re-open only during inference. */
+    printk("[NS] Closing SAU enclave window (weights now Secure)...\n");
+    enclave_sau_close();
+
     /* Get max inferences policy from secure side */
     printk("[NS] Requesting max inferences policy from secure...\n");
     psa_handle_t handle = psa_connect(ENCLAVE_SID, ENCLAVE_VER);
@@ -260,8 +342,14 @@ int destroy_enclave(void)
 
     printk("[NS] Destroying enclave...\n");
 
+    /* Open SAU window temporarily so NS can zero sensitive model memory. */
+    enclave_sau_open();
+
     /* Zeroize sensitive model memory */
     memset(enclave_region_base, 0, enclave_region_size);
+
+    /* Re-close: weights are gone but keep window Secure as a clean state. */
+    enclave_sau_close();
 
     enclave_created = false;
     max_inferences_per_enclave = 0;

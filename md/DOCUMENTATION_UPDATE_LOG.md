@@ -1,5 +1,27 @@
 # Documentation Update Log
 
+## Latest Updates - 13 March 2026
+
+### Documentation
+- Updated top-level README quick-start and validated manual protocol sequence (`1 -> 2 -> 3 -> 9 -> 15`).
+- Updated `tools/README.md` to match the current interactive menu and anti-replay behavior.
+- Updated `src/README.md` UART command list to current range (`0x01..0x0D`), including `CMD_GET_SAU_STATE`.
+- Updated `VERIFICATION_REPORT.md` with latest hardware re-validation notes.
+
+### Protocol/Validation Notes Added
+- Clarified that verified inference (`9`) requires:
+  - successful ECDH (`1`)
+  - successful M_update (`3`)
+- Clarified anti-replay policy: `c_limit` must be strictly increasing.
+- Added deterministic SAU-state reporting expectations:
+  - possible `UNREGISTERED` before enclave creation
+  - `CLOSED` after enclave lifecycle closes protected window
+
+### Cleanup
+- Removed transient serial capture artifact from project root (`screenlog.0`).
+
+---
+
 ## Latest Updates - 5 March 2026
 
 ### Changes Made

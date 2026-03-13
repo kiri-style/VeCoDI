@@ -1,6 +1,6 @@
 # Enclave Authorization Protocol - Verification Report
 
-**Date**: 5 March 2026  
+**Date**: 13 March 2026  
 **Platform**: STM32L552ZE-Q (NUCLEO-L552ZE-Q)  
 **Status**: ✅ **ALL PHASES VERIFIED ON HARDWARE**
 
@@ -11,6 +11,15 @@
 Complete end-to-end verification of the 3-phase Enclave Authorization Protocol on ARM Cortex-M33 with TrustZone-M. All cryptographic operations, secure validation checks, and dynamic policy mechanisms confirmed working.
 
 **Verification Result**: 🎉 **100% PASS**
+
+---
+
+## Latest Validation Update (13 March 2026)
+
+- ✅ ECDH + EnclaveInfo + M_update flow re-validated on hardware.
+- ✅ Anti-replay behavior confirmed (`c_limit` must be strictly increasing).
+- ✅ Verified inference command (`9`) confirmed working after successful M_update.
+- ✅ Deterministic SAU query (`CMD_GET_SAU_STATE = 0x0D`) confirmed operational.
 
 ---
 

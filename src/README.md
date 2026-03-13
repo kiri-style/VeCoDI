@@ -160,20 +160,26 @@ See [BENCHMARK_RESULTS.md](../BENCHMARK_RESULTS.md) for detailed cycle-by-cycle 
 - **model_encrypted*.h**: legacy encrypted model headers (not used by split flow).
 
 ### UART Protocol (Mac ↔ STM32)
-- **uart_protocol.h**: Protocol command definitions (0x01-0x06)
-- **uart_protocol.cpp**: Binary protocol handlers (407 lines)
-  - CMD_COMPUTE_ENCLAVE_INFO (0x01): Generate EnclaveInfo hash
-  - CMD_VALIDATE_M_UPDATE (0x02): AES-256-GCM decrypt and apply quota
-  - CMD_GET_MAX_INFERENCES (0x03): Return total authorized quota
-  - CMD_RUN_INFERENCE (0x04): Execute inference (consumes quota)
-  - CMD_GET_INFERENCE_COUNT (0x05): Return consumed quota
-  - CMD_GET_REMAINING_INFERENCES (0x06): Return available quota
+- **uart_protocol.h**: Protocol command definitions (0x01-0x0D)
+- **uart_protocol.cpp**: Binary protocol handlers
+   - CMD_COMPUTE_ENCLAVE_INFO (0x01): Generate EnclaveInfo hash
+   - CMD_VALIDATE_M_UPDATE (0x02): AES-256-GCM decrypt and apply quota
+   - CMD_GET_MAX_INFERENCES (0x03): Return total authorized quota
+   - CMD_RUN_INFERENCE (0x04): Execute inference (consumes quota)
+   - CMD_GET_INFERENCE_COUNT (0x05): Return consumed quota
+   - CMD_GET_REMAINING_INFERENCES (0x06): Return available quota
+   - CMD_ECDH_HANDSHAKE (0x07): Derive dynamic session key
+   - CMD_GET_BENCHMARK (0x08): Return NS benchmark structure
+   - CMD_GET_SECURE_BENCHMARK (0x09): Return Secure benchmark structure
+   - CMD_GET_INFERENCE_RESULT (0x0A): Return last prediction/expected
+   - CMD_SET_MAX_INFERENCES (0x0B): Manual max setting
+   - CMD_GET_DEVICE_PUBKEY (0x0C): Return device public key `pk_d`
+   - CMD_GET_SAU_STATE (0x0D): Return SAU state (`state+base+size`)
 
 ### Provider/Verifier Simulation
 - **provider_sim.h/cpp**: Model Provider simulation for local testing
-  - Generate M_update packets with configurable c_limit
-  - ECDSA P-256 signature simulation
-  - Session key derivation (hardcoded for prototype)
+   - Generate M_update packets with configurable c_limit
+   - Session key derivation via ECDH/HKDF in UART flow
 
 ### Protocol Testing
 - **test_enclave_auth.c**: Test harness for authorization protocol

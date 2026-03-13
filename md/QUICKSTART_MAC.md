@@ -1,76 +1,46 @@
-# Quick Start: Mac ↔ STM32 Interactive Mode
+# Quick Start: Mac ↔ STM32 (flow validé)
 
-## Étape 1: Le firmware est déjà flashé! ✅
-
-Vous venez de flasher le firmware en mode interactif.
-
-## Étape 2: Trouver le port série
+## 1) Build + flash
 
 ```bash
-ls /dev/tty.usbmodem*
+west build -d build
+west flash
 ```
 
-Vous devriez voir quelque chose comme `/dev/tty.usbmodem14203`
-
-## Étape 3: Installer les dépendances Python (une seule fois)
-
-```bash
-pip3 install pyserial cryptography
-```
-
-## Étape 4: Lancer le script Python sur votre Mac
+## 2) Lancer l’outil Mac
 
 ```bash
 cd /Users/user/zephyrproject/zephyr/samples/modules/tflite-micro/hello_cifar_clean
-
-python3 tools/mac_provider.py /dev/tty.usbmodem14203 115200
+./.venv/bin/python tools/mac_provider.py /dev/tty.usbmodem11203 115200
 ```
 
-*(Remplacez `/dev/tty.usbmodem14203` par votre port série)*
+## 3) Séquence recommandée
 
-## Menu Interactif
+1. `1` → ECDH handshake
+2. `2` → Compute EnclaveInfo
+3. `3` → Send M_update
+   - utiliser `c_limit > current max` (anti-replay)
+4. `9` → Verified inference
+5. `15` → SAU state (deterministic)
 
-Vous verrez:
+## Règles importantes
 
+- `9` ne marche que si:
+  - `1` a réussi
+  - `3` a été **accepté**
+- Si `3` est rejeté (`RESP_ERROR`), augmenter `c_limit` et renvoyer.
+
+## Interpréter le SAU state (option 15)
+
+- `UNREGISTERED`: fenêtre non encore enregistrée
+- `OPEN`: fenêtre enclave ouverte côté NS
+- `CLOSED`: fenêtre enclavée/protégée côté NS
+
+La réponse binaire de `CMD_GET_SAU_STATE (0x0D)` est:
+- `state(1)` + `base(4)` + `size(4)`
+
+## Commande utile pour vérif rapide
+
+```bash
+printf '1\n2\n3\n\n9\n15\nq\n' | ./.venv/bin/python tools/mac_provider.py /dev/tty.usbmodem11203 115200
 ```
-============================================================
-  Mac Provider/Verifier - Enclave Authorization Protocol
-============================================================
-
- Available Commands:
-  1) Compute EnclaveInfo on device
-  2) Generate and send M_update (c_limit=10)
-  3) Generate and send M_update (c_limit=20)
-  4) Get max inferences from device
-  5) Run inference on device
-  6) Read device console (2 seconds)
-  q) Quit
-
-Enter command: 
-```
-
-## Scénario de Test Recommandé
-
-1. **Commande 4**: Vérifier max_inferences initial (devrait être 0)
-2. **Commande 1**: Calculer EnclaveInfo
-3. **Commande 2**: Envoyer M_update avec c_limit=10
-4. **Commande 4**: Vérifier max_inferences (devrait être 10 maintenant!)
-5. **Commande 5**: Exécuter une inference (répéter 10 fois)
-6. **Commande 5**: La 11ème tentative devrait être bloquée
-
-## Documentation Complète
-
-Voir [MAC_INTERACTIVE_GUIDE.md](MAC_INTERACTIVE_GUIDE.md) pour tous les détails.
-
-## Revenir au Mode Test Auto
-
-1. Dans `src/main.cpp`, changer:
-   ```cpp
-   #define MAC_INTERACTIVE_MODE 0  // Au lieu de 1
-   ```
-
-2. Recompiler et flasher:
-   ```bash
-   west build
-   west build -t flash
-   ```
