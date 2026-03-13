@@ -265,8 +265,6 @@ Architecture
 - ``enclave_create_cycles``: Enclave lifecycle (134 ms)
 - ``enclave_destroy_cycles``: Cleanup (4 ms)
 - ``aes_decrypt_cycles``: AES decrypt via PSA call (82 ms)
-- ``late_hash_cycles``: Late weights hash (8 ms)
-- ``inference_hash_cycles``: Integrity hash (11 ms)
 - ``early_layers_cycles``: Early inference (405 ms)
 - ``late_layers_cycles``: Late inference (74 ms)
 - ``total_inference_cycles``: End-to-end (518 ms)
@@ -347,16 +345,11 @@ Architecture
    - Weights: Decrypted late weights from enclave RAM
    - Output: Class prediction (0-9)
 
-5. **Integrity Hash Computation** (``compute_integrity_hash()``)
-   
-   - Algorithm: SHA-256 via PSA Crypto API
-   - Hash inputs:
-     - Input data (CIFAR-10 image, 3072 bytes)
-     - Early weight pointers (code integrity proxy)
-     - All 7 early weight arrays (wt_conv2d through wt_conv2d_6)
-     - All 3 late weight arrays (wt_conv2d_7, wt_conv2d_8, wt_fc) in 4KB chunks
-   - Output: 32-byte SHA-256 hash displayed at end of inference
-   - Purpose: Control Flow and Data Integrity (CNT) verification
+5. **Inference Execution and Result Reporting**
+
+  - Runs split inference (early + late stages)
+  - Produces class prediction output (CIFAR-10)
+  - Reports timing/cycle metrics for profiling
 
 PSA IPC Protocol
 ================
@@ -979,12 +972,6 @@ Runtime Issues
 - Missing PSA Crypto configuration
 - Add ``CONFIG_MBEDTLS_PSA_CRYPTO_C=y`` to ``prj.conf``
 - Rebuild from clean: ``west build -p always``
-
-**Hash fails with PSA_ERROR_INVALID_ARGUMENT (-141)**
-
-- Buffer size exceeds PSA crypto limits
-- Late weights are hashed in 4096-byte chunks (already implemented)
-- Verify chunking logic in ``compute_integrity_hash()``
 
 **Prediction incorrect**
 

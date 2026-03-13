@@ -71,9 +71,8 @@ Defined in [dummy_partition.c](dummy_partition.c):
 Via `DP_CMD_GET_BENCHMARK` command:
 
 1. **AES-CTR Decryption**: Cycles to decrypt late weights
-2. **SHA-256 Digest**: Cycles for integrity hash computation
-3. **Counter Management**: Cycles for atomic check+increment operation
-4. **Memory Usage**: RAM and Flash consumption in Secure partition
+2. **Counter Management**: Cycles for atomic check+increment operation
+3. **Memory Usage**: RAM and Flash consumption in Secure partition
 
 ### ARM Cortex-M33 DWT Integration
 Both NS and Secure worlds use ARM's Data Watchpoint and Trace (DWT) cycle counter:
@@ -92,7 +91,7 @@ Both NS and Secure worlds use ARM's Data Watchpoint and Trace (DWT) cycle counte
 - **Start/Stop Pattern**: Save DWT_CYCCNT at operation start, read at end, compute difference
 - **All Timing**: Includes PSA call overhead (minimal in Secure world)
 
-## Current Flow (Late Weights + Counter + Hash + Benchmark)
+## Current Flow (Late Weights + Counter + Benchmark)
 
 ### 1. Decryption Flow (cmd=3)
 NS calls `psa_call()` with:
@@ -109,12 +108,6 @@ The secure partition:
 2. Applies the IV from `in_vec[2]`
 3. Decrypts in chunks using `psa_cipher_update()`
 4. Writes plaintext into the NS output buffer
-
-**Post-decryption (NS side):**
-5. NS calls `precompute_late_weights_hash()` to compute SHA-256 of:
-   - Code pointers (early weight addresses)
-   - Decrypted late weights (wt_conv2d_7, wt_conv2d_8, wt_fc)
-6. Stores 32-byte hash for reuse in per-inference integrity verification
 
 ### 2. Counter Management Flow (cmd=4,5,6,7)
 
@@ -154,47 +147,9 @@ Secure logic: `inference_counter_secure = 0` (called during enclave creation)
 2. NS packages `{cmd, encrypted_weights, iv}` and calls PSA IPC.
 3. TF-M routes the request to `dummy_partition.c` (this file).
 4. AES-CTR decrypts encrypted weights and writes plaintext to the NS buffer.
-5. **[NEW]** NS calls `precompute_late_weights_hash()` to compute SHA-256(code_ptrs || late_weights) → stores 32-byte hash.
-6. NS runs `run_split_inference()` in `src/split_inference.cpp` using the decrypted weights.
-7. **[NEW]** For each test image, `compute_integrity_hash()` computes SHA-256(input || early_wt || late_hash).
+5. NS runs `run_split_inference()` in `src/split_inference.cpp` using the decrypted weights.
 
-### Integrity Hash Architecture Integration
-
-**Phase 1: Setup (after decryption)**
-```
-Secure World (TF-M)                NS World (Zephyr)
-─────────────────                  ────────────────
-                                   create_enclave()
-                                     │
-AES-CTR decrypt ◄────PSA IPC────────┤
-writes to NS RAM                     │
-                                     ├─► set_late_weights_buffer()
-                                     │
-                                     └─► precompute_late_weights_hash()
-                                          SHA-256(code_ptrs || late_wt)
-                                          → late_weights_hash[32]
-```
-
-**Phase 2: Inference (per image)**
-```
-NS World (Zephyr)
-────────────────
-run_split_inference()
-  │
-  ├─► compute_integrity_hash()
-  │     SHA-256(input || early_wt || late_hash)
-  │     → inference_hash[32]
-  │
-  ├─► early layers (CMSIS-NN)
-  └─► late layers (CMSIS-NN, using decrypted weights)
-```
-
-**Security benefit:** Late weights (40KB) are hashed once after secure decryption, then the 32-byte hash is reused for all subsequent inferences. This ensures:
-- Complete coverage: input + code + early weights + late weights
-- Performance: 49% hash time reduction vs. naive approach
-- Tamper detection: Any modification to decrypted weights changes the hash
-
-## Architecture (Current with Hash Integration)
+## Architecture (Current)
 ```
 Non-Secure app                              Secure world (TF-M)
 ┌────────────────────────────┐             ┌────────────────────────────┐
@@ -204,24 +159,13 @@ Non-Secure app                              Secure world (TF-M)
 │  in_vec[2]=payload #2       │             │     └─ AES-CTR decrypt     │
 │  out_vec[0]=output buffer   │◄────────────┤        (writes to out_vec) │
 │                            │             └────────────────────────────┘
-│ [After decryption]          │
-│ precompute_late_weights_hash() → Phase 1: SHA-256(code+late) → 32 bytes│
-│                            │
 │ run_split_inference()      │
-│  └─ compute_integrity_hash() → Phase 2: SHA-256(input+early+late_hash) │
+│  └─ early + late layers    │
 └────────────────────────────┘
 ```
 
 The partition only waits on `TFM_DP_SECRET_DIGEST_SIGNAL` and routes all
-commands through `tfm_dp_secret_digest_ipc()`. 
-
-After secure decryption, the NS side computes a **two-phase integrity hash**:
-- **Phase 1 (once):** Hash code addresses and decrypted late weights
-- **Phase 2 (per inference):** Hash input, early weights, and pre-computed late hash 
-
-After secure decryption, the NS side computes a **two-phase integrity hash**:
-- **Phase 1 (once):** Hash code addresses and decrypted late weights
-- **Phase 2 (per inference):** Hash input, early weights, and pre-computed late hash
+commands through `tfm_dp_secret_digest_ipc()`.
 
 ## IPC Protocol (Current)
 
@@ -300,24 +244,6 @@ After secure decryption, the NS side computes a **two-phase integrity hash**:
 
 ## Notes
 - Legacy model decryption is removed; `DP_CMD_DECRYPT_MODEL` returns `PSA_ERROR_NOT_SUPPORTED`.
-- The secure partition focuses on **decryption only**; integrity verification is handled by NS hash computation.
+- The secure partition focuses on **decryption and policy checks**; it does not execute NS-side integrity-hash functions.
 - For production: Consider adding **HMAC verification** in secure partition before decryption to ensure encrypted weights haven't been tampered with.
-
-## Hash System Integration
-
-The dummy partition's decryption service is **phase 0** in the complete integrity verification flow:
-
-**Phase 0 (Secure):** Decrypt late weights via AES-CTR (this partition)  
-**Phase 1 (NS):** Hash code + decrypted late weights → `late_weights_hash[32]`  
-**Phase 2 (NS):** Hash input + early weights + late_hash → `inference_hash[32]`
-
-This architecture ensures:
-1. **Separation of concerns:** Secure world handles decryption, NS handles hash measurement
-2. **Performance:** Large weights (40KB) hashed once after decryption
-3. **Flexibility:** NS can implement different hash policies without secure partition changes
-
-For complete hash architecture details, see [HASH_ARCHITECTURE.md](../HASH_ARCHITECTURE.md).
-
-## Notes
-Legacy model decryption is removed; `DP_CMD_DECRYPT_MODEL` returns `PSA_ERROR_NOT_SUPPORTED`.
 

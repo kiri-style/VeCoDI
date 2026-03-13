@@ -23,7 +23,6 @@ This folder contains the Non-Secure (NS) application that drives the split infer
 - Creates the enclave environment.
 - Requests **secure decryption of late-layer weights** into NS RAM.
 - Runs CMSIS-NN split inference (early + late) using the decrypted weights.
-- **Computes integrity hash (CNT)** using PSA Crypto SHA-256 to verify input data, code, and all weights (early + late).
 
 ## Architecture (NS + Secure Interaction)
 ```
@@ -33,11 +32,9 @@ This folder contains the Non-Secure (NS) application that drives the split infer
 │  └─ create_enclave()              │            │  └─ AES-CTR decrypt        │
 │     ├─ set_late_weights_buffer()  │   PSA IPC  │     (PSA Crypto)          │
 │     └─ psa_call(DECRYPT_LATE) ────┼──────────► │  └─ write to NS outvec     │
-│     └─ precompute_late_weights_hash() (Phase 1: hash code+late)            │
 │  └─ enter_enclave()               │            └───────────────────────────┘
 │     └─ run_enclave()              │
 │        └─ run_split_inference()   │
-│            ├─ compute_integrity_hash() (Phase 2: hash input+early+late_hash)
 │            ├─ early layers (CMSIS-NN)
 │            └─ late layers (CMSIS-NN)
 └──────────────────────────────────┘
@@ -133,23 +130,21 @@ Memory Usage (ELF Binary Analysis):
 9. `early_output`: 4,096 bytes (output buffer)
 10. `late_ctx_buf`: 4,096 bytes (context for late layers)
 
-### Benchmark Data Points (15 NS metrics)
+### Benchmark Data Points (NS metrics)
 1. `enclave_create_cycles`: Enclave creation overhead
 2. `enclave_destroy_cycles`: Enclave teardown
 3. `aes_decrypt_cycles`: AES-CTR decryption for late weights
-4. `late_hash_cycles`: SHA-256 hash of late-layer weights
-5. `inference_hash_cycles`: Integrity hash computation
-6. `early_layers_cycles`: CIFAR-10 early layers execution
-7. `late_layers_cycles`: CMSIS-NN late layers execution
-8. `total_inference_cycles`: Sum of inference phases
-9. `run_enclave_cycles`: Total enclave execution
-10. `inference_count`: Counter tracking inferences run
-11. `ns_ram_used`: Non-Secure RAM in bytes
-12. `ns_ram_total`: Total NS RAM available
-13. `ns_flash_used`: Non-Secure Flash consumed
-14. `ns_flash_total`: Total NS Flash available
-15. `heap_free`: Remaining heap memory
-16. `stack_used`: Stack depth during execution
+4. `early_layers_cycles`: CIFAR-10 early layers execution
+5. `late_layers_cycles`: CMSIS-NN late layers execution
+6. `total_inference_cycles`: Sum of inference phases
+7. `run_enclave_cycles`: Total enclave execution
+8. `inference_count`: Counter tracking inferences run
+9. `ns_ram_used`: Non-Secure RAM in bytes
+10. `ns_ram_total`: Total NS RAM available
+11. `ns_flash_used`: Non-Secure Flash consumed
+12. `ns_flash_total`: Total NS Flash available
+13. `heap_free`: Remaining heap memory
+14. `stack_used`: Stack depth during execution
 
 See [BENCHMARK_RESULTS.md](../md/BENCHMARK_RESULTS.md) for detailed cycle-by-cycle analysis.
 - **test_images.c / test_images.h**: CIFAR-10 sample inputs and labels.
