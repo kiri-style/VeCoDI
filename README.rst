@@ -1009,10 +1009,11 @@ Documentation Files
 ====================
 
 - **README.rst**: Main project documentation (this file)
-- **VERIFICATION_REPORT.md**: ✅ **Complete hardware verification report (27 Feb 2026)** - All 3 phases of Enclave Authorization Protocol verified on STM32L552
-- **ENCLAVE_AUTH_IMPL.md**: Enclave Authorization Protocol implementation details
-- **INFERENCE_PROTOCOL_IMPL.md**: Inference Protocol (Phase 2) implementation details
-- **BENCHMARK_RESULTS.md**: Detailed cycle-by-cycle analysis of all measurements
+- **md/VERIFICATION_REPORT.md**: ✅ **Complete hardware verification report (27 Feb 2026)** - All 3 phases of Enclave Authorization Protocol verified on STM32L552
+- **md/ENCLAVE_AUTH_IMPL.md**: Enclave Authorization Protocol implementation details
+- **md/INFERENCE_PROTOCOL_IMPL.md**: Inference Protocol (Phase 2) implementation details
+- **md/PROTOCOL_DETAILED_ARCHITECTURE.md**: End-to-end protocol architecture with exchange diagrams and sequence flows
+- **md/BENCHMARK_RESULTS.md**: Detailed cycle-by-cycle analysis of all measurements
 - **src/README.md**: Non-Secure application architecture and components
 - **dummy_partition/README.md**: Secure partition implementation details
 - **split_inference/README.md**: CIFAR-10 model and split inference details
@@ -1036,7 +1037,7 @@ Notes
 - **Phase 3: M_update Validation** ✅ **VERIFIED 27 Feb 2026** - Secure decryption, EnclaveInfo verification, anti-replay protection, and dynamic policy updates.
 - **Phase 4: CIFAR-10 Inference** ✅ - Split inference with encrypted late weights, PSA-backed counter management, and cycle-accurate benchmarking.
 
-**See [VERIFICATION_REPORT.md](VERIFICATION_REPORT.md) for complete hardware verification details.**
+**See [md/VERIFICATION_REPORT.md](md/VERIFICATION_REPORT.md) for complete hardware verification details.**
 
 **Security Highlights**:
 

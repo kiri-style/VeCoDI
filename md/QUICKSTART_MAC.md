@@ -1,52 +1,68 @@
-# Quick Start: Mac ↔ STM32 (flow validé)
+# Quick Start: Mac ↔ STM32 Interactive Mode
 
-## 1) Build + flash
+## Étape 1: Le firmware est déjà flashé! ✅
+
+Vous venez de flasher le firmware en mode interactif.
+
+## Étape 2: Trouver le port série
 
 ```bash
-west build -d build
-west flash
+ls /dev/tty.usbmodem*
 ```
 
-## 2) Lancer l’outil Mac
+Vous devriez voir quelque chose comme `/dev/tty.usbmodem14203`
+
+## Étape 3: Installer les dépendances Python (une seule fois)
+
+```bash
+pip3 install pyserial cryptography
+```
+
+## Étape 4: Lancer le script Python sur votre Mac
 
 ```bash
 cd /Users/user/zephyrproject/zephyr/samples/modules/tflite-micro/hello_cifar_clean
-./.venv/bin/python tools/mac_provider.py /dev/tty.usbmodem11203 115200
+
+python3 tools/mac_provider.py /dev/tty.usbmodem14203 115200
 ```
 
-## 3) Séquence recommandée
+*(Remplacez `/dev/tty.usbmodem14203` par votre port série)*
 
-1. `1` → ECDH handshake
-2. `2` → Compute EnclaveInfo
-3. `3` → Send M_update
-   - utiliser `c_limit > current max` (anti-replay)
-4. `9` → Verified inference
-5. `15` → SAU state (deterministic)
-6. `18` → Tests sécurité unitaires/combinables (ex: `1,4,5`)
+## Menu Interactif
 
-## Règles importantes
+Le menu courant inclut notamment:
 
-- `9` ne marche que si:
-  - `1` a réussi
-  - `3` a été **accepté**
-- Si `3` est rejeté (`RESP_ERROR`), augmenter `c_limit` et renvoyer.
+- `1` ECDH handshake
+- `2` Compute EnclaveInfo (attesté)
+- `3` Send M_update (quota custom)
+- `9` Verified inference
+- `15` SAU state
+- `18` Security tests (unitaires / combinables)
+- `19` DANGER: inference sans SAU open
+- `20` DANGER: lecture mémoire protégée
 
-## Interpréter le SAU state (option 15)
+## Scénario de Test Recommandé
 
-- `UNREGISTERED`: fenêtre non encore enregistrée
-- `OPEN`: fenêtre enclave ouverte côté NS
-- `CLOSED`: fenêtre enclavée/protégée côté NS
+1. **Commande 1**: ECDH handshake
+2. **Commande 2**: Compute EnclaveInfo (attestation)
+3. **Commande 3**: Envoyer M_update (`c_limit` > max courant)
+4. **Commande 9**: Exécuter une inference vérifiée
+5. **Commande 15**: Vérifier SAU state = `CLOSED`
+6. **Commande 18**: Lancer tests sécurité (ex: `1,4,5`)
 
-La réponse binaire de `CMD_GET_SAU_STATE (0x0D)` est:
-- `state(1)` + `base(4)` + `size(4)`
+## Documentation Complète
 
-## Tests danger (optionnels)
+Voir [MAC_INTERACTIVE_GUIDE.md](MAC_INTERACTIVE_GUIDE.md) pour tous les détails.
 
-- `19`: tentative d’inference sans ouvrir SAU
-- `20`: tentative de lecture directe mémoire protégée (peut provoquer HardFault/reset)
+## Revenir au Mode Test Auto
 
-## Commande utile pour vérif rapide
+1. Dans `src/main.cpp`, changer:
+   ```cpp
+   #define MAC_INTERACTIVE_MODE 0  // Au lieu de 1
+   ```
 
-```bash
-printf '1\n2\n3\n\n9\n15\nq\n' | ./.venv/bin/python tools/mac_provider.py /dev/tty.usbmodem11203 115200
-```
+2. Recompiler et flasher:
+   ```bash
+   west build
+   west build -t flash
+   ```

@@ -5,7 +5,13 @@
 **Configuration:** TrustZone-M, TF-M Secure partition, CMSIS-NN optimized  
 **Test:** Single inference with ECDH handshake and M_update (quota=10)
 
-> **📝 Note (5 March 2026):** ELF section analysis parsing has been corrected. `.text` and `.rodata` sections now display accurate values (34.3 KB and 135.0 KB respectively). Verification confirms max_inferences quota enforcement occurs atomically in Secure partition.
+## Latest Protocol Validation Note (13 March 2026)
+
+- Benchmark numbers in this file remain the reference performance snapshot.
+- Additional runtime validation confirmed:
+   - anti-replay enforcement for `M_update` (`c_limit` strictly increasing)
+   - verified inference path (`CMD_RUN_INFERENCE` encrypted mode) functioning end-to-end
+   - deterministic SAU state command (`CMD_GET_SAU_STATE = 0x0D`) operational
 
 ## Complete Results
 

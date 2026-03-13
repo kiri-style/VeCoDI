@@ -16,12 +16,29 @@ Complete end-to-end verification of the 3-phase Enclave Authorization Protocol o
 
 ## Latest Validation Update (13 March 2026)
 
-- ✅ ECDH + EnclaveInfo + M_update flow re-validated on hardware.
-- ✅ Anti-replay behavior confirmed (`c_limit` must be strictly increasing).
-- ✅ Verified inference command (`9`) confirmed working after successful M_update.
-- ✅ Deterministic SAU query (`CMD_GET_SAU_STATE = 0x0D`) confirmed operational.
-- ✅ `CMD_RUN_INFERENCE_NO_SAU (0x0E)` rejected cleanly when preconditions are not met.
-- ✅ `CMD_READ_PROTECTED_MEM (0x0F)` validated no-response reset path (HardFault expected with SAU closed).
+### What was re-validated
+
+- ✅ Interactive Mac flow (`tools/mac_provider.py`) end-to-end on hardware.
+- ✅ ECDH handshake and dynamic session key derivation.
+- ✅ EnclaveInfo computation and response decoding.
+- ✅ M_update anti-replay behavior: rejected when `c_limit <= current max`, accepted when strictly greater.
+- ✅ Verified inference command (`9`) works after successful M_update.
+- ✅ Deterministic SAU query via `CMD_GET_SAU_STATE (0x0D)`.
+- ✅ Dangerous test `CMD_RUN_INFERENCE_NO_SAU (0x0E)` rejected cleanly when policy preconditions are not met.
+- ✅ Dangerous test `CMD_READ_PROTECTED_MEM (0x0F)` can trigger no-response reset path (HardFault expected when SAU is closed).
+
+### Practical outcomes observed
+
+- Before enclave lifecycle: SAU can return `UNREGISTERED`.
+- After inference path creates/closes enclave window: SAU returns `CLOSED` with valid base/size.
+- Example validated SAU window: `base=0x20000FC0`, `size=39552`.
+- During direct protected read test, host observed timeout/no response followed by device reset-state behavior.
+
+### Host-tool robustness fixes validated
+
+- Added deterministic SAU feedback path in interactive menu (`option 15`).
+- Fixed verifier key/session handling so failed M_update does not desynchronize host/device state.
+- Added explicit anti-replay guidance in interactive prompt for `c_limit`.
 
 ---
 
@@ -265,23 +282,23 @@ Complete end-to-end verification of the 3-phase Enclave Authorization Protocol o
   - Fix: Update `printk()` format specifiers in secure partition
 
 ### 📋 Future Enhancements
-1. **Anti-replay stress testing**: Expand long-run and randomized replay campaigns
-2. **Production hardening**: 
+1. **Anti-replay stress testing**: Test multiple M_update with same/decreasing c_limit
+2. **Integration with inference protocol**: Enforce counter during M_inf validation
+3. **Production hardening**: 
    - Replace simulated provider with real key management
    - Implement certificate chain validation
    - Add secure key provisioning flow
-3. **Coverage expansion**:
-  - Add persistent fault-injection campaigns around SAU transitions
-  - Extend PoX negative vectors beyond message tamper (key mismatch, cert mismatch)
 
 ---
 
 ## Conclusion
 
-The complete 3-phase Enclave Authorization Protocol has been **successfully implemented and verified** on STM32L552 hardware. Inference protocol integration (`M_inf`/PoX), host-side verification, and negative tests are now active in the interactive workflow.
+The complete 3-phase Enclave Authorization Protocol has been **successfully implemented and verified** on STM32L552 hardware. All cryptographic operations, security checks, and dynamic policy mechanisms are functioning as designed.
+
+**Next Milestone**: Integration with the Inference Protocol (M_inf/PoX) to enforce authorization limits during inference execution.
 
 ---
 
 **Verified by**: GitHub Copilot AI Agent  
-**Date**: 13 March 2026  
+**Date**: 27 February 2026  
 **Build**: west v1.5.0+, Zephyr SDK 0.17.4, TF-M

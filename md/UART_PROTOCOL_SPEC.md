@@ -446,6 +446,7 @@ else:
 ### Related Protocols
 - Enclave Authorization Protocol: `ENCLAVE_AUTH_IMPL.md`
 - Inference Protocol (M_inf/PoX): `INFERENCE_PROTOCOL_IMPL.md`
+- Detailed exchange architecture (graphs + sequence diagrams): `PROTOCOL_DETAILED_ARCHITECTURE.md`
 
 ### Hardware
 - Board: NUCLEO-L552ZE-Q (STM32L552 Cortex-M33 @ 110 MHz)

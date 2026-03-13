@@ -14,7 +14,7 @@ NS RAM:     121,788 / 131,072 bytes (92.9%)
 ## ✅ VERIFICATION STATUS: **COMPLETE END-TO-END PROTOCOL VERIFIED**
 
 **Date**: 27 February 2026  
-**See**: [../VERIFICATION_REPORT.md](../VERIFICATION_REPORT.md)
+**See**: [../md/VERIFICATION_REPORT.md](../md/VERIFICATION_REPORT.md)
 
 ---
 
@@ -151,7 +151,7 @@ Memory Usage (ELF Binary Analysis):
 15. `heap_free`: Remaining heap memory
 16. `stack_used`: Stack depth during execution
 
-See [BENCHMARK_RESULTS.md](../BENCHMARK_RESULTS.md) for detailed cycle-by-cycle analysis.
+See [BENCHMARK_RESULTS.md](../md/BENCHMARK_RESULTS.md) for detailed cycle-by-cycle analysis.
 - **test_images.c / test_images.h**: CIFAR-10 sample inputs and labels.
 
 ### Model + artifacts
@@ -230,14 +230,14 @@ The UART protocol enables **Mac-side authorization** of device inferences via en
 - Data: `nonce[32]` (attested mode)
 
 **Device Processing**:
-- EnclaveInfo est calculé/cache côté Secure uniquement (`dummy_partition`).
+- EnclaveInfo is computed and cached in Secure world only (`dummy_partition`).
 - Signature device-side: `sig_d = Sign(sk_d, SHA256(nonce || enclave_info))`.
 
 **Device → Mac**:
 - Status: `0x00` (OK)
-- Data: `enclave_info[32] || sig_d[64]` (chiffré si session active)
+- Data: `enclave_info[32] || sig_d[64]` (encrypted if a session is active)
 
-**Usage**: le Mac vérifie l’attestation avec `pk_d`, puis insère `enclave_info` dans `M_update`.
+**Usage**: the host verifies the attestation with `pk_d`, then embeds `enclave_info` in `M_update`.
 
 ---
 
@@ -353,364 +353,43 @@ return RESP_OK;
 
 ### Session Key Management
 
-**Current (Prototype)**:
-```c
-// Hardcoded in uart_protocol.cpp (Device)
-static const uint8_t session_key[32] = {
-    0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7,
-    0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE, 0xAF,
-    0xB0, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7,
-    0xB8, 0xB9, 0xBA, 0xBB, 0xBC, 0xBD, 0xBE, 0xBF
-};
-
-# Matching key in tools/mac_provider.py (Mac)
-SESSION_KEY = bytes([0xA0, 0xA1, ..., 0xBF])
-```
-
-**Production**: Should use **ECDH key exchange** to derive session key dynamically.
+- Session establishment is done through `CMD_ECDH_HANDSHAKE` (`0x07`).
+- Command and response payloads are encrypted with AES-GCM when session mode is active.
+- Host-side PoX verification uses `CMD_GET_DEVICE_PUBKEY` (`0x0C`) to obtain `pk_d`.
 
 ---
 
 ### UART Configuration
 
-**Device Side**:
-- **UART**: lpuart1 (ST-LINK VCP)
-- **Baud Rate**: 115200 8N1
-- **Polling**: k_yield() tight loop (no sleep, no overruns)
-- **Device Tree**: `boards/nucleo_l552ze_q.overlay`
-  ```dts
-  chosen {
-      zephyr,console = &lpuart1;
-  };
-  ```
+**Device side**:
+- UART: `lpuart1` (ST-LINK VCP)
+- Baud rate: `115200` (8N1)
+- Polling loop in interactive mode
 
-**Mac Side**:
-- **Port**: `/dev/tty.usbmodem*` (auto-detect)
-- **Timeout**: 10 seconds for response
-- **Library**: pyserial
+**Host side**:
+- Port: `/dev/tty.usbmodem*`
+- Python dependencies: `pyserial`, `cryptography`
 
 ---
 
-### Performance Metrics
+### Performance Notes
 
-| Operation | Latency | Notes |
-|-----------|---------|-------|
-| **CMD_COMPUTE_ENCLAVE_INFO** | ~5 ms | XOR-based placeholder |
-| **CMD_VALIDATE_M_UPDATE** | ~70 ms | PSA AEAD decrypt |
-| **CMD_GET_MAX_INFERENCES** | <1 ms | Read variable |
-| **CMD_RUN_INFERENCE** | <1 ms | Increment counter (mock) |
-| **CMD_GET_INFERENCE_COUNT** | <1 ms | Read variable |
-| **CMD_GET_REMAINING_INFERENCES** | <1 ms | Subtraction |
+Latency depends on command type:
+- Metadata and counter commands are typically sub-millisecond.
+- Cryptographic paths (`M_update` decrypt/validate, secure inference request processing, PoX flow) are higher and depend on payload size and platform state.
+
+Refer to `../BENCHMARK_RESULTS.md` for measured values.
 
 ---
 
 ### Testing Tools
 
-**Mac-side Scripts** (`tools/`):
-- **mac_provider.py**: Interactive protocol client (385 lines)
-  - Menu-driven interface for all 6 commands
-  - AES-GCM encryption/decryption
-  - Quota monitoring (max, count, remaining)
-  - Usage: `python3 tools/mac_provider.py /dev/tty.usbmodem* 115200`
-
-- **step1_protocol_test.py**: Smoke test for CMD_COMPUTE_ENCLAVE_INFO
-- **test_uart.py**: Quick test for CMD_GET_MAX_INFERENCES
-
-**Automated Test Sequence**:
-```bash
-# Authorization → 3 inferences → quota check
-printf '3\n5\n5\n5\n4\n7\n8\nq\n' | python3 tools/mac_provider.py /dev/tty.usbmodem* 115200
-```
-
-**Expected Output**:
-```
-[3] M_update validated (c_limit=20) → max=20
-[5] Inference 1 → count=1
-[5] Inference 2 → count=2
-[5] Inference 3 → count=3
-[4] max_inferences = 20
-[7] inference_count = 3
-[8] remaining = 17
-```
+- `tools/mac_provider.py`: main interactive Provider/Verifier workflow (including T1..T6 security tests and danger options 19/20).
+- `tools/step1_protocol_test.py`: basic protocol smoke checks.
+- `tools/test_uart.py`: quick UART command validation helper.
 
 ---
 
-### Integration with Main Flow
-
-**MAC_INTERACTIVE_MODE** (`src/main.cpp`):
-```cpp
-#define MAC_INTERACTIVE_MODE 1  // Enable UART protocol
-
-int main() {
-    uart_protocol_init();  // Initialize UART handler
-    
-    while (1) {
-        uart_protocol_process();  // Poll for commands
-        k_yield();                // Cooperative multitasking
-    }
-}
-```
-
-**Protocol-only Mode**:
-- No inference execution (mock handlers)
-- Quota management only
-- EnclaveInfo computed via XOR (not real hash)
-
-**Real Inference Integration** (TODO):
-- Replace `mock_inference_count++` with actual `run_split_inference()`
-- Gate inference in `run_enclave.cpp` based on `mock_max_inferences`
-- Integrate with TFM secure counter (DP_CMD_RUN_INFERENCE)
-
----
-
-### Documentation
-
-- **Complete Protocol Spec**: [UART_PROTOCOL_SPEC.md](../UART_PROTOCOL_SPEC.md)
-- **Mac Interactive Guide**: [MAC_INTERACTIVE_GUIDE.md](../MAC_INTERACTIVE_GUIDE.md)
-- **Tools Documentation**: [tools/README.md](../tools/README.md)
-
----
-
-## Runtime Flow (Dynamic Secure Counter)
-1. **First run_enclave() call:**
-   - NS detects no enclave exists (`is_enclave_created() == false`)
-   - `create_enclave()`: allocate memory, PSA decrypt, reset Secure counter (cmd=7)
-   - `set_late_weights_buffer()`: configure split inference pointers
-
-2. **Subsequent run_enclave() calls:**
-   - **PSA call `CHECK_INFERENCE_ALLOWED` (cmd=5)** → Secure returns allowed (1/0)
-   - If allowed=1: `run_split_inference()` → PSA `INCREMENT_COUNTER` (cmd=6)
-   - If allowed=0: `destroy_enclave()` → `create_enclave()` → reconfigure → run
-
-3. **Enclave lifecycle:** Dynamic max inferences (starts at 0, updated by M_update)
-
-4. **Secure partition operations:**
-   - Decrypt AES-CTR into NS buffer (cmd=3)
-   - Manage inference counter (cmd=4,5,6,7)
-   - Log all counter operations to Secure console
-
-## Traceable Call Chain
-`main.cpp` → `create_enclave.cpp` → PSA IPC → `dummy_partition/dummy_partition.c` → back to `split_inference.cpp`.
-
-## Notes
-- The legacy full-model decryption path exists for reference, but split inference uses **late weights only**.
-- Buffer sizes are tuned for STM32L552 RAM limits.
-
-## Secure Inference Counter Management
-
-### Purpose
-The system implements **Secure-side inference counter** to enforce enclave lifecycle limits and prevent tampering:
-
-**Security Model:**
-- Counter stored in Secure world (TF-M partition): `inference_counter_secure`
-- Maximum inferences per enclave: **dynamic** (`max_inferences_per_enclave`), starts at 0 and is updated by valid M_update
-- NS side cannot manipulate counter directly
-- All counter operations via PSA IPC secure channel
-
-**PSA Commands for Counter Management:**
-- `DP_CMD_GET_MAX_INFERENCES (4)`: Returns dynamic max policy
-- `DP_CMD_CHECK_INFERENCE_ALLOWED (5)`: Returns 1 if allowed, 0 if limit reached
-- `DP_CMD_INCREMENT_COUNTER (6)`: Increments secure counter after successful inference
-- `DP_CMD_RESET_COUNTER (7)`: Resets counter to 0 during enclave creation
-
-### Execution Flow with Counter Verification
-
-**Enclave Creation:**
-1. `create_enclave()` decrypts late weights via PSA
-2. PSA call to `DP_CMD_GET_MAX_INFERENCES` → stores local copy (dynamic)
-3. PSA call to `DP_CMD_RESET_COUNTER` → Secure counter = 0
-4. Precomputes late weights hash (Phase 1)
-5. Sets `enclave_created = true`
-
-**Enclave Execution (per run_enclave call):**
-1. Check if enclave exists → if not: `create_enclave()`
-2. **PSA call to `DP_CMD_CHECK_INFERENCE_ALLOWED`** (Secure returns 1/0)
-3. If allowed = 0 (limit reached):
-   - `destroy_enclave()` → zero memory, set flag = false
-   - `create_enclave()` → decrypt, reset counter, precompute hash
-   - `set_late_weights_buffer()` → reconfigure split inference
-4. If allowed = 1: proceed with inference
-5. `run_split_inference()` → 1 image, compute hash, early+late layers
-6. **PSA call to `DP_CMD_INCREMENT_COUNTER`** → Secure counter++
-
-**Dynamic Limit Pattern:**
-```
-Before M_update: max=0 → allowed=0 → no inference
-After valid M_update: max=c_limit → allowed for 1..c_limit
-```
-
-**Security Benefits:**
-- Counter tamper-proof (Secure world only)
-- Pre-execution verification (no wasted work)
-- Limit is controlled by M_update (secure policy)
-- Secure logging of counter operations
-- NS cannot bypass limit checks
-
-## Integrity Hash (CNT) Implementation
-
-### Purpose
-The hash system provides **Control Flow and Data Integrity** (CNT) measurement for secure inference using a **2-phase architecture**:
-
-**Phase 1 (Setup - Once):** `precompute_late_weights_hash()` in `main.cpp`
-- Computes SHA-256 of code addresses + late weights (40KB)
-- Called once after decryption in `create_enclave()`
-- Result: 32-byte hash stored in static variable
-
-**Phase 2 (Inference - Per Image):** `compute_integrity_hash()` in `split_inference.cpp`
-- Computes SHA-256 of input data + early weights + pre-computed late hash
-- Called for each test image
-- Result: 32-byte inference hash covering everything
-
-### Coverage
-The final inference hash covers:
-1. **Input data** (CIFAR-10 image, 3072 bytes) - changes per image
-2. **Code addresses** (early weight pointers, 28 bytes) - via late_hash
-3. **Early weights** (7 layers: wt_conv2d through wt_conv2d_6, ~35KB ROM) - direct
-4. **Late weights** (3 layers: wt_conv2d_7, wt_conv2d_8, wt_fc, ~40KB RAM) - via late_hash
-
-### Optimization Benefits
-**Without optimization:** Hash ~80KB per inference (input + early + late weights)
-**With optimization:** Hash ~41KB per inference (input + early + 32-byte late_hash)
-**Gain:** 49% reduction, late weights hashed once instead of N times
-
-### Key Implementation Details
-
-#### 1. PSA Crypto Configuration
-**Required in `prj.conf`:**
-```
-CONFIG_MBEDTLS_PSA_CRYPTO_C=y
-CONFIG_TFM_PARTITION_CRYPTO=y
-```
-
-- `CONFIG_MBEDTLS_PSA_CRYPTO_C=y` enables PSA Crypto API on non-secure side via mbedTLS
-- Without this, `psa_crypto_init()` and hash operations will fail silently
-
-#### 2. Early Weights Structure
-The early layer weights are defined in `split_inference/early/E_nn_wt.h` with **7 convolutional layers**:
-- `wt_conv2d[432]` - Layer 0
-- `wt_conv2d_1[2304]` - Layer 1
-- `wt_conv2d_2[2304]` - Layer 2
-- `wt_conv2d_3[4608]` - Layer 3
-- `wt_conv2d_4[9216]` - Layer 4 (largest early layer)
-- `wt_conv2d_5[512]` - Layer 5
-- `wt_conv2d_6[18432]` - Layer 6 (largest overall early layer)
-
-All early weights are hashed directly using `psa_hash_update()` with `sizeof()`.
-
-#### 3. Late Weights Chunking
-Late weights are decrypted into NS RAM and are much larger:
-- `wt_conv2d_7`: 36,864 bytes
-- `wt_conv2d_8`: 2,048 bytes
-- `wt_fc`: 640 bytes
+Last updated: 13 March 2026
 
 
-**Phase 1: Late Weights Hash (once, in `main.cpp` after decryption)**
-1. Initialize PSA crypto: `psa_crypto_init()`
-2. Setup SHA-256 operation: `psa_hash_setup(&operation, PSA_ALG_SHA_256)`
-3. Hash code pointers (28 bytes: wt_conv2d through wt_conv2d_6 addresses)
-4. Hash wt_conv2d_7 (36864 bytes in 9 chunks of 4KB)
-5. Hash wt_conv2d_8 (2048 bytes in 1 chunk)
-6. Hash wt_fc (640 bytes in 1 chunk)
-7. Finalize: `psa_hash_finish(&operation, late_weights_hash, 32, &hash_len)`
-8. Store result in static `late_weights_hash[32]`
-
-**Phase 2: Inference Hash (per image, in `split_inference.cpp`)**
-1. Initialize PSA crypto: `psa_crypto_init()`
-2. Setup SHA-256 operation: `psa_hash_setup(&operation, PSA_ALG_SHA_256)`
-3. Hash input data (3072 bytes)
-4. Hash wt_conv2d (432 bytes)
-5. Hash wt_conv2d_1 (2304 bytes)
-6. Hash wt_conv2d_2 (2304 bytes)
-7. Hash wt_conv2d_3 (4608 bytes in 2 chunks)
-8. Hash wt_conv2d_4 (9216 bytes in 3 chunks)
-9. Hash wt_conv2d_5 (512 bytes)
-10. Hash wt_conv2d_6 (18432 bytes in 5 chunks)
-11. Hash pre-computed late_weights_hash (32 bytes)
-12. Finalize: `psa_hash_finish(&operation, hash_output, 32, &hash_len)`
-
-#### 5. Output
-The system prints two hashes:
-
-**Late weights hash (Phase 1, once):**
-```
-[CNT] ✓ Late weights hash (code_ptrs + late_wt): 2c8bb3f00e9d15fbf815ec8a12aff636d7f0026bb0bef4028065828aa2003eb5
-```
-
-**Inference hash (Phase 2, per image):**
-```
-[CNT] ✓ Inference hash (input + early_wt + late_hash): 9c64e02237b58a7a6f38284f2eb29c10040942d50fbfb25953180010c03d5293
-```
-
-Each test image produces a **different inference hash** due to different input data (SHA-256 avalanche effect). The late weights hash remains **constant** across all tests.
-
-### Troubleshooting
-
-**Symptom:** Hash output is all zeros
-- **Cause:** PSA Crypto not enabled
-- **Fix:** Add `CONFIG_MBEDTLS_PSA_CRYPTO_C=y` to `prj.conf`
-
-**Symptom:** `PSA_ERROR_INVALID_ARGUMENT` (-141) when hashing large weights
-- **Cause:** Buffer size exceeds PSA limit (~4-8KB)
-- **Fix:** Already implemented via `hash_buffer_chunked()` with 4KB chunks
-
-**Symptom:** Late weights hash changes between runs
-- **Cause:** Decryption produces different output (unlikely if IV is fixed)
-- **Debug:** Print first 32 bytes of decrypted late weights to verify consistency
-
-### Performance
-- **Phase 1 (once):** ~10-15ms (39580 bytes in ~10 chunks)
-- **Phase 2 (per image):** ~10-15ms (40912 bytes in ~11 chunks)
-- **Total per inference:** ~10-15ms (Phase 1 amortized across N inferences)
-- **Without optimization:** ~20-30ms per inference (80KB hashed each time)
-
-### Security Properties
-- **Input integrity:** Any change to input image changes final hash
-- **Code integrity:** Code pointer addresses included in late_hash
-- **Early weights integrity:** Direct inclusion in inference hash
-- **Late weights integrity:** Included via pre-computed late_hash
-- **Tamper detection:** SHA-256 avalanche effect ensures 1-bit change → completely different hash
-
-### References
-For complete architecture details, see [HASH_ARCHITECTURE.md](../HASH_ARCHITECTURE.md) in the project root.
-
-**Late weights hash (Phase 1, once):**
-```
-[CNT] ✓ Late weights hash (code_ptrs + late_wt): 2c8bb3f00e9d15fbf815ec8a12aff636d7f0026bb0bef4028065828aa2003eb5
-```
-
-**Inference hash (Phase 2, per image):**
-```
-[CNT] ✓ Inference hash (input + early_wt + late_hash): 9c64e02237b58a7a6f38284f2eb29c10040942d50fbfb25953180010c03d5293
-```
-
-Each test image produces a **different inference hash** due to different input data (SHA-256 avalanche effect). The late weights hash remains **constant** across all tests
-#### 4. Hash Computation Flow
-1. Initialize PSA crypto: `psa_crypto_init()`
-2. Setup SHA-256 operation: `psa_hash_setup(&operation, PSA_ALG_SHA_256)`
-3. Hash input data (3072 bytes)
-4. Hash early weight pointers (code integrity proxy)
-5. Hash all 7 early weight arrays
-6. Hash all 3 late weight arrays (in chunks)
-7. Finalize: `psa_hash_finish(&operation, hash_output, 32, &hash_len)`
-
-#### 5. Output
-The final 32-byte SHA-256 hash is printed at the end of inference:
-```
-[CNT] Final Hash: 2acf215c0e5f4659d4d2052380ba8c3c82b8a20b0308ae43f429e12134a87686
-```
-
-Each test image produces a different hash since it includes the input data. The hash stored is from the last inference iteration.
-
-### Troubleshooting
-
-**Symptom:** Hash output is all zeros
-- **Cause:** PSA Crypto not enabled
-- **Fix:** Add `CONFIG_MBEDTLS_PSA_CRYPTO_C=y` to `prj.conf`
-
-**Symptom:** `Hash wt_conv2d_7 failed: -141` (PSA_ERROR_INVALID_ARGUMENT)
-- **Cause:** Buffer too large for single `psa_hash_update()` call
-- **Fix:** Already implemented with chunking mechanism (4096-byte chunks)
-
-**Symptom:** Hash computation succeeds but predictions fail
-- **Cause:** Chunking pointer arithmetic error
-- **Fix:** Verify pointer increments and remaining size calculations

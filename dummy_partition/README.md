@@ -13,7 +13,7 @@ Platform:   STM32L552ZE-Q with ARM Cortex-M33 TrustZone
 
 **Date**: 27 February 2026  
 **Platform**: STM32L552ZE-Q  
-**See**: [../VERIFICATION_REPORT.md](../VERIFICATION_REPORT.md) for complete test results
+**See**: [../md/VERIFICATION_REPORT.md](../md/VERIFICATION_REPORT.md) for complete test results
 
 ---
 
