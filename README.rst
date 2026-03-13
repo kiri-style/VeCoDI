@@ -2,7 +2,7 @@
 Secure CIFAR-10 Split Inference with TF-M and Encrypted Late Weights
 =============================================================================
 
-**Quick Start (Current Validated Flow, March 2026)**
+**Quick Start (Current Validated Flow)**
 
 ::
 
@@ -38,6 +38,8 @@ Host (Mac) → NS (Zephyr) → S (TF-M) split:
 1. **Session/Auth setup**
 
    - ``CMD_ECDH_HANDSHAKE (0x07)``: derive dynamic session key (Mac + device).
+   - At first connection, fresh key material is created for the session/auth flow
+     (ECDH ephemeral keys and verifier-side request signing keypair).
    - ``CMD_COMPUTE_ENCLAVE_INFO (0x01)`` in attested mode: Mac sends nonce(32), device returns
      ``enclave_info(32) || sig_d(64)``.
    - Mac verifies ``sig_d`` with ``pk_d`` from ``CMD_GET_DEVICE_PUBKEY (0x0C)``.
@@ -446,23 +448,23 @@ Configuration
 Enclave Authorization Protocol
 ===============================
 
-**New Feature (Phase A)**: Cryptographic Authorization with Provider Simulation
+**Current implementation**: Cryptographic host-device authorization over the real UART protocol
 
 Overview
 --------
 
-This phase implements a **Provider-Device Enclave Authorization Protocol** ensuring that only authorized updates can modify enclave execution parameters. The protocol uses:
+This section describes the active **Provider-Device Enclave Authorization Protocol** ensuring that only authorized updates can modify enclave execution parameters. The protocol uses:
 
 - **EnclaveInfo Computation**: SHA-256 hash of model identity (``H(Model_pub || Model_secret || code || model_ID)``)
-- **M_update Message Generation**: Provider generates cryptographically signed update messages
+- **M_update Message Generation**: Host generates cryptographically authenticated update messages
 - **AES-256-GCM Encryption**: Secure encryption of M_update payload with authentication
-- **Predefined Session Key**: AES-256 key stored in Secure Flash for M_update decryption
+- **ECDH Session Setup**: Session key derived at first connection from fresh key material
 
 **Security Flow**
 
 ::
 
-    Provider (Simulation)
+    Host (Provider/Verifier)
     ├─ Generate M_update payload (c_limit, verifier_pk, enclave_info, cert)
     ├─ Serialize to binary format (120 bytes)
     ├─ Encrypt with AES-256-GCM (session_key, random nonce)
@@ -475,20 +477,20 @@ This phase implements a **Provider-Device Enclave Authorization Protocol** ensur
     │   ├─ Operation: SHA-256 hash (100-byte input)
     │   └─ Output: enclave_info(32 bytes)
     │
-    ├─ PHASE 2: Generate M_update in Non-Secure (simulated Provider)
-    │   ├─ Input: c_limit(10), enclave_info(from Phase 1), cert(16 bytes)
+    ├─ PHASE 2: Generate M_update on host
+    │   ├─ Input: c_limit, enclave_info(from Phase 1), cert
     │   ├─ Encrypt payload with session_key (AES-256-GCM)
     │   └─ Output: Message structure (ciphertext + nonce + tag)
     │
-    └─ Future: Device-side M_update validation & counter limit update
+    └─ Device validates/decrypts M_update and updates dynamic policy
 
 **Cryptographic Artifacts**
 
-- **AES-256 Session Key**: Predefined in Secure Flash (32 bytes)
-  
-  * Value: 0xA0, 0xA1, ..., 0xBF (hardcoded for simulation)
-  * Purpose: Encrypt M_update messages from Provider
-  * Storage: Immutable ROM in secure partition
+- **Session Key**: Derived during first connection via ECDH + HKDF
+
+  * Ephemeral key agreement between host and device
+  * Purpose: Protect M_update and secure inference payloads
+  * Rotation: New session on reconnect/handshake
 
 - **EnclaveInfo Formula** (Exact):
   
@@ -546,7 +548,7 @@ This phase implements a **Provider-Device Enclave Authorization Protocol** ensur
 
 - ``dummy_partition/dummy_partition.c``: Secure partition
   
-  * ``m_update_aes256_key[32]``: Predefined session key
+  * ECDH/HKDF session-key handling for secure command flows
   * ``compute_enclave_info()``: SHA-256 hash function
   * ``DP_CMD_COMPUTE_ENCLAVE_INFO`` handler (lines ~478-521)
 
@@ -571,7 +573,7 @@ This phase implements a **Provider-Device Enclave Authorization Protocol** ensur
     Nonce:    B8 36 45 BF 14 E8 40 71 3F 18 78 3C
     Auth Tag: 34 1D C3 1A 2C 9D 5C 0E 47 68 06 BD 70 07 98 03
 
-⏳ **Planned (Phase B)**:
+✅ **Implemented**:
 
 - Device-side M_update validation (decrypt, verify tag, extract c_limit)
 - Atomic counter limit update from M_update
@@ -584,7 +586,7 @@ This phase implements a **Provider-Device Enclave Authorization Protocol** ensur
   * Solution: Pack model_pub, model_secret, code into 96-byte combined_data buffer
   * Result: 3 input vectors + 1 output vector = within limit
 
-- Provider simulation uses hardcoded keys (not real cryptography for this phase)
+- Runtime session key and verifier key material are established dynamically on connection
 - Single inference per test (as configured for clarity)
 
 Inference Protocol (M_inf / PoX)
@@ -1000,7 +1002,7 @@ Documentation Files
 ====================
 
 - **README.rst**: Main project documentation (this file)
-- **md/VERIFICATION_REPORT.md**: ✅ **Complete hardware verification report (27 Feb 2026)** - All 3 phases of Enclave Authorization Protocol verified on STM32L552
+- **md/VERIFICATION_REPORT.md**: ✅ Complete hardware verification report for the protocol and security flows on STM32L552
 - **md/ENCLAVE_AUTH_IMPL.md**: Enclave Authorization Protocol implementation details
 - **md/INFERENCE_PROTOCOL_IMPL.md**: Inference Protocol (Phase 2) implementation details
 - **md/PROTOCOL_DETAILED_ARCHITECTURE.md**: End-to-end protocol architecture with exchange diagrams and sequence flows
@@ -1023,9 +1025,9 @@ Notes
 
 **Features Implemented**:
 
-- **Phase 1: Enclave Authorization Protocol (EnclaveInfo + M_update generation)** ✅ **VERIFIED 27 Feb 2026** - Provider simulation with SHA-256 hash computation and AES-256-GCM encrypted messages. 
-- **Phase 2: Inference Protocol (M_inf / PoX)** ✅ **VERIFIED 25 Feb 2026** - Verifier-signed inference requests and device-signed proof of execution with ECDSA P-256.
-- **Phase 3: M_update Validation** ✅ **VERIFIED 27 Feb 2026** - Secure decryption, EnclaveInfo verification, anti-replay protection, and dynamic policy updates.
+- **Phase 1: Enclave Authorization Protocol (EnclaveInfo + M_update generation)** ✅ - SHA-256 enclave identity, AES-256-GCM protected updates.
+- **Phase 2: Inference Protocol (M_inf / PoX)** ✅ - Verifier-signed requests and device-signed proof of execution (ECDSA P-256).
+- **Phase 3: M_update Validation** ✅ - Secure decryption, EnclaveInfo verification, anti-replay protection, and dynamic policy update.
 - **Phase 4: CIFAR-10 Inference** ✅ - Split inference with encrypted late weights, PSA-backed counter management, and cycle-accurate benchmarking.
 
 **See [md/VERIFICATION_REPORT.md](md/VERIFICATION_REPORT.md) for complete hardware verification details.**
@@ -1040,14 +1042,14 @@ Notes
 
 **Cryptographic Artifacts**:
 
-- **Phase 1 (Authorization Protocol - Verified 27 Feb 2026)**: 
+- **Phase 1 (Authorization Protocol)**: 
   
   * AES-256 session key (32 bytes) in Secure Flash
   * EnclaveInfo = device-side SHA-256 digest, returned in attested flow as ``enclave_info || sig_d``
   * M_update = AES-256-GCM(c_limit || pk_v || EnclaveInfo || cert) + nonce + tag
   * Dynamic policy: max_inferences starts at 0, updated to c_limit after validation
 
-- **Phase 2 (Inference Protocol - Verified 25 Feb 2026)**:
+- **Phase 2 (Inference Protocol)**:
   
   * M_inf = ECDSA_sign(SHA-256(nonce || model_id), sk_verifier)
   * PoX = ECDSA_sign(SHA-256(model_id || cert || nonce || output), sk_device)

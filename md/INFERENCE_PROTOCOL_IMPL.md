@@ -10,7 +10,7 @@ Implementation of cryptographic inference protocol enabling **Verifier-to-Device
 
 ### M_inf: Verifier Request Message
 
-**Sender**: Verifier (Simulation in Non-Secure)  
+**Sender**: Host Verifier  
 **Recipient**: Device (Physical Device)
 
 ```
@@ -32,7 +32,7 @@ Total: 80 bytes
 ### PoX: Device Proof of Execution
 
 **Sender**: Device (Physical Device)  
-**Recipient**: Verifier (Simulation in Non-Secure)
+**Recipient**: Host Verifier
 
 ```
 Structure:
@@ -142,14 +142,14 @@ Total: 97 bytes
 - **SHA-256**: Cryptographically secure hash function
 - **Random Nonce**: Generated fresh per request (prevents replay attacks)
 - **PSA Crypto**: Uses Zephyr/TF-M's standardized PSA Crypto API
-- **Key Management**: Keys generated and managed by PSA, never exposed in plaintext
+- **Key Management**: Session and verifier-side key material is established at connection time; secure operations use PSA/ECDSA paths
 
 ## Integration with Existing Features
 
 1. **Phase 1: Enclave Authorization Protocol** (Previously implemented)
    - EnclaveInfo computation
    - M_update generation with AES-256-GCM
-   - Provider simulation
+   - Real host/device flow over UART with ECDH session setup
 
 2. **Phase 2: Inference Protocol** (This implementation)
    - M_inf: Verifier-signed inference request
