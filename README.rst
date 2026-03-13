@@ -8,6 +8,12 @@ Secure CIFAR-10 Split Inference with TF-M and Encrypted Late Weights
 
   west build -d build
   west flash
+  ./.venv/bin/python tools/get_device_benchmark.py /dev/tty.usbmodem11203
+
+For interactive manual testing, use:
+
+::
+
   ./.venv/bin/python tools/mac_provider.py /dev/tty.usbmodem11203 115200
 
 **Manual sequence (host menu)**
@@ -231,7 +237,7 @@ Inference Phase
 
 5. **Benchmark Reporting** (``benchmark_print_report()``)
    
-   - NS metrics: 15 different timing measurements
+  - NS metrics: 16 fields (64-byte payload)
    - Secure metrics: Crypto operations + counter management
    - Memory usage: RAM/Flash percentages for both worlds
    - Formatted output: Box-drawing characters for readability
@@ -609,12 +615,12 @@ This phase implements a **Verifier-to-Device Inference Protocol** with cryptogra
         │  - Input data (64B test)    ├─ Execute inference → result=6
         │  - Model ID (4B)            │
         │  - ECDSA sig over above      └─ Generate PoX:
-        │  - Total: 144 bytes            - Echo nonce
+        │  - Total: 80 bytes             - Echo nonce
         │                                - Echo input
         └─ Verify PoX signature ←────    - Output (1B)
            ✓ Execution verified          - Cert (16B)
                                          - ECDSA sig over above
-                                         - Total: 161 bytes
+                                         - Total: 97 bytes
 
 **Message Formats**
 
@@ -622,21 +628,19 @@ M_inf (Verifier Request):
 
 ::
 
-    Structure (144 bytes total):
+    Structure (80 bytes total):
       nonce       [12 bytes]  - Random nonce per request
-      input       [64 bytes]  - Inference input (test size, scalable to 3072)
       model_id    [4 bytes]   - Model identifier
-      signature   [64 bytes]  - ECDSA P-256: Sign(sk_v, nonce || input || model_id)
+      signature   [64 bytes]  - ECDSA P-256: Sign(sk_v, nonce || model_id)
 
 PoX (Device Proof of Execution):
 
 ::
 
-    Structure (161 bytes total):
+    Structure (97 bytes total):
       model_id    [4 bytes]   - Model identifier
       cert        [16 bytes]  - Provider certificate
       nonce       [12 bytes]  - Nonce echoed from M_inf
-      input       [64 bytes]  - Input echoed from M_inf
       output      [1 byte]    - Inference result (0-9 for CIFAR-10)
       signature   [64 bytes]  - ECDSA P-256: Sign(sk_d, above fields)
 
@@ -687,7 +691,7 @@ PoX (Device Proof of Execution):
     [TEST] ✓ Device keypair generated
     
     [TEST] ===== STEP 3: VERIFIER GENERATES M_INF =====
-    [TEST] ✓ M_inf generated and signed (144 bytes total)
+    [TEST] ✓ M_inf generated and signed (80 bytes total)
     [PROTO] Nonce: E5 C7 F7 21 44 A7 B5 49 FF 99 D4 6F
     [PROTO] Signature (first 16B): FD 01 5F 14 47 7C 55 09 A4 E6 D4 4C 63 70 44 2E
     
@@ -695,7 +699,7 @@ PoX (Device Proof of Execution):
     [DEVICE] Inference result: 6
     
     [TEST] ===== STEP 5: DEVICE GENERATES PoX =====
-    [TEST] ✓ PoX generated and signed (161 bytes total)
+    [TEST] ✓ PoX generated and signed (97 bytes total)
     [PROTO] Output: 6
     [PROTO] Signature (first 16B): 59 84 E7 7A AD EA 03 55 43 67 85 42 F0 88 8F 30
     
@@ -721,7 +725,7 @@ PoX (Device Proof of Execution):
 
 **Known Constraints**
 
-- Input size reduced to 64 bytes for testing (can scale to 3072 bytes for full CIFAR-10 images)
+- Protocol payload no longer includes inference input image in ``M_inf``
 - Current RAM usage: 97.67% (128 KB total) - suitable for embedded devices
 - Keys generated fresh per test (not persistence across resets)
 
@@ -838,7 +842,7 @@ Expected Serial Output
     [TEST] ✓ Device keypair generated
     
     [TEST] ===== STEP 3: VERIFIER GENERATES M_INF =====
-    [TEST] ✓ M_inf generated and signed (144 bytes total)
+    [TEST] ✓ M_inf generated and signed (80 bytes total)
     [PROTO] Nonce: E5 C7 F7 21 44 A7 B5 49 FF 99 D4 6F
     [PROTO] Signature (first 16B): FD 01 5F 14 47 7C 55 09 A4 E6 D4 4C 63 70 44 2E
     
@@ -846,7 +850,7 @@ Expected Serial Output
     [DEVICE] Inference result: 6
     
     [TEST] ===== STEP 5: DEVICE GENERATES PoX =====
-    [TEST] ✓ PoX generated and signed (161 bytes total)
+    [TEST] ✓ PoX generated and signed (97 bytes total)
     [PROTO] Output: 6
     [PROTO] Signature (first 16B): 59 84 E7 7A AD EA 03 55 43 67 85 42 F0 88 8F 30
     
@@ -1039,25 +1043,25 @@ Notes
 - **Phase 1 (Authorization Protocol - Verified 27 Feb 2026)**: 
   
   * AES-256 session key (32 bytes) in Secure Flash
-  * EnclaveInfo = SHA-256(Model_pub || Model_secret || code || model_ID)
+  * EnclaveInfo = device-side SHA-256 digest, returned in attested flow as ``enclave_info || sig_d``
   * M_update = AES-256-GCM(c_limit || pk_v || EnclaveInfo || cert) + nonce + tag
   * Dynamic policy: max_inferences starts at 0, updated to c_limit after validation
 
 - **Phase 2 (Inference Protocol - Verified 25 Feb 2026)**:
   
-  * M_inf = ECDSA_sign(SHA-256(test_image || nonce || model_id), sk_verifier)
-  * PoX = ECDSA_sign(SHA-256(prediction || nonce || model_id), sk_device)
+  * M_inf = ECDSA_sign(SHA-256(nonce || model_id), sk_verifier)
+  * PoX = ECDSA_sign(SHA-256(model_id || cert || nonce || output), sk_device)
 
 - **Phase 2**: ECDSA P-256 keypairs for Verifier and Device
   
-  * M_inf = Verifier-signed (nonce || input || model_id) - 144 bytes
-  * PoX = Device-signed (model_id || cert || nonce || input || output) - 161 bytes
+  * M_inf = Verifier-signed (nonce || model_id) - 80 bytes
+  * PoX = Device-signed (model_id || cert || nonce || output) - 97 bytes
 
 - **Anti-replay**: Fresh random nonce (12 bytes) per M_inf request
 
 **Constraints & Optimization**:
 
 - PSA_MAX_IOVEC=4 limit requires buffer packing (Phase 1 solution: combined_data buffer)
-- Input size optimized to 64 bytes for testing (scalable to 3072 bytes for production)
+- Protocol-side messages are reduced by removing image payload from ``M_inf``
 - RAM usage: 97.67% on STM32L552 (128 KB total) - suitable for embedded devices
 - All cryptographic operations via PSA API (portable across ARM platforms)

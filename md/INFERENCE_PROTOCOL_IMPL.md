@@ -177,9 +177,9 @@ Total: 97 bytes
 
 ## Memory Optimization
 
-- Input size reduced from 3072 bytes (32x32x3 image) to 64 bytes for testing
-- Avoids RAM saturation on STM32L552 (128 KB total)
-- Current usage: 97.67% RAM (128 KB), can be restored to full size when memory available
+- Protocol payload no longer carries image input (`M_inf` is nonce + model_id + signature)
+- This reduces protocol-side message size and host/device transfer overhead
+- Runtime RAM pressure is now dominated by model/tensor buffers, not protocol input payload
 
 ## API Usage Example
 

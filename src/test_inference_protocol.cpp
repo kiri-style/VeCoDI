@@ -58,7 +58,7 @@ static const uint8_t test_provider_pk[64] = {
     0xB9, 0xBA, 0xBB, 0xBC, 0xBD, 0xBE, 0xBF, 0xC0
 };
 
-// Small test input (64 bytes) -- kept for reference, not transmitted in M_inf
+// Test protocol data (model_id and cert)
 static uint8_t test_model_id[MODEL_ID_SIZE] = {0x12, 0x34, 0x56, 0x78};
 static uint8_t test_cert[CERT_SIZE] = {
     0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,

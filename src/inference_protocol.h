@@ -56,7 +56,7 @@ int verify_m_inf(const m_inf_t *m_inf, const uint8_t verifier_pk[64]);
 /**
  * Generate PoX (Proof of Execution)
  * 
- * @param m_inf: Original M_inf (for nonce, input echo)
+ * @param m_inf: Original M_inf (for nonce echo)
  * @param inference_output: CIFAR-10 prediction (0-9)
  * @param device_sk: Device's ECDSA P-256 private key (32 bytes)
  * @param cert: Provider's certificate (16 bytes)
