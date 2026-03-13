@@ -1,24 +1,24 @@
 # Quick Start: Mac ↔ STM32 Interactive Mode
 
-## Étape 1: Le firmware est déjà flashé! ✅
+## Step 1: Firmware is already flashed ✅
 
-Vous venez de flasher le firmware en mode interactif.
+You have already flashed the firmware in interactive mode.
 
-## Étape 2: Trouver le port série
+## Step 2: Find the serial port
 
 ```bash
 ls /dev/tty.usbmodem*
 ```
 
-Vous devriez voir quelque chose comme `/dev/tty.usbmodem14203`
+You should see something like `/dev/tty.usbmodem14203`.
 
-## Étape 3: Installer les dépendances Python (une seule fois)
+## Step 3: Install Python dependencies (one-time)
 
 ```bash
 pip3 install pyserial cryptography
 ```
 
-## Étape 4: Lancer le script Python sur votre Mac
+## Step 4: Run the Python script on your Mac
 
 ```bash
 cd /Users/user/zephyrproject/zephyr/samples/modules/tflite-micro/hello_cifar_clean
@@ -26,42 +26,42 @@ cd /Users/user/zephyrproject/zephyr/samples/modules/tflite-micro/hello_cifar_cle
 python3 tools/mac_provider.py /dev/tty.usbmodem14203 115200
 ```
 
-*(Remplacez `/dev/tty.usbmodem14203` par votre port série)*
+*(Replace `/dev/tty.usbmodem14203` with your serial port.)*
 
-## Menu Interactif
+## Interactive Menu
 
-Le menu courant inclut notamment:
+The current menu includes:
 
 - `1` ECDH handshake
-- `2` Compute EnclaveInfo (attesté)
+- `2` Compute EnclaveInfo (attested)
 - `3` Send M_update (quota custom)
 - `9` Verified inference
 - `15` SAU state
-- `18` Security tests (unitaires / combinables)
-- `19` DANGER: inference sans SAU open
-- `20` DANGER: lecture mémoire protégée
+- `18` Security tests (single or combined)
+- `19` DANGER: inference without SAU open
+- `20` DANGER: direct protected-memory read
 
-## Scénario de Test Recommandé
+## Recommended Test Scenario
 
-1. **Commande 1**: ECDH handshake
-2. **Commande 2**: Compute EnclaveInfo (attestation)
-3. **Commande 3**: Envoyer M_update (`c_limit` > max courant)
-4. **Commande 9**: Exécuter une inference vérifiée
-5. **Commande 15**: Vérifier SAU state = `CLOSED`
-6. **Commande 18**: Lancer tests sécurité (ex: `1,4,5`)
+1. **Command 1**: ECDH handshake
+2. **Command 2**: Compute EnclaveInfo (attestation)
+3. **Command 3**: Send M_update (`c_limit` > current max)
+4. **Command 9**: Run verified inference
+5. **Command 15**: Check SAU state = `CLOSED`
+6. **Command 18**: Run security tests (example: `1,4,5`)
 
-## Documentation Complète
+## Full Documentation
 
-Voir [MAC_INTERACTIVE_GUIDE.md](MAC_INTERACTIVE_GUIDE.md) pour tous les détails.
+See [MAC_INTERACTIVE_GUIDE.md](MAC_INTERACTIVE_GUIDE.md) for full details.
 
-## Revenir au Mode Test Auto
+## Return to Auto-Test Mode
 
-1. Dans `src/main.cpp`, changer:
+1. In `src/main.cpp`, change:
    ```cpp
-   #define MAC_INTERACTIVE_MODE 0  // Au lieu de 1
+   #define MAC_INTERACTIVE_MODE 0  // Instead of 1
    ```
 
-2. Recompiler et flasher:
+2. Rebuild and flash:
    ```bash
    west build
    west build -t flash

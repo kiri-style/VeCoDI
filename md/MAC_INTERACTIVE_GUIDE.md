@@ -1,341 +1,247 @@
-# Mac ↔ STM32 Interactive Protocol (Guide à jour)
+# Mac ↔ STM32 Interactive Protocol (Updated Guide)
 
-Guide pratique pour piloter le device STM32L552 depuis Mac avec `tools/mac_provider.py`.
+Practical guide to control the STM32L552 device from macOS using `tools/mac_provider.py`.
 
 ---
 
-## Architecture (résumé)
+## Architecture (summary)
 
 ```
 ┌─────────────────────────┐         USB/UART          ┌──────────────────────────┐
 │   Mac (Provider)        │ ◄─────────────────────►  │  STM32L552 (Device)      │
 │                         │                           │                          │
-│  - Python script        │   Commands binaires       │  - Firmware TF-M         │
-│  - Génère M_update      │   ─────────────────►      │  - Valide M_update       │
-│  - Cryptographie AES    │   ◄─────────────────      │  - Execute inferences    │
-│  - Interface menu       │      Réponses             │  - Sécurité TrustZone    │
+│  - Python script        │   Binary commands         │  - TF-M firmware         │
+│  - Builds M_update      │   ─────────────────►      │  - Validates M_update    │
+│  - AES/ECDH crypto      │   ◄─────────────────      │  - Runs inference        │
+│  - Interactive menu     │      Responses            │  - TrustZone security    │
 └─────────────────────────┘                           └──────────────────────────┘
 ```
 
 ---
 
-## Installation sur Mac
+## macOS setup
 
-### 1. Préparer Python et dépendances
+### 1) Prepare Python dependencies
 
 ```bash
 python3 --version
-
-# Dépendances dans le venv projet (recommandé)
 ./.venv/bin/python -m pip install pyserial cryptography
 ```
 
-### 2. Vérifier le port série
-
-Connectez votre STM32L552 via USB, puis:
+### 2) Detect the serial port
 
 ```bash
-# Trouver le port série
 ls /dev/tty.usbmodem*
+```
 
-# Exemple de résultat:
-# /dev/tty.usbmodem14203
+Example:
+
+```bash
+/dev/tty.usbmodem14203
 ```
 
 ---
 
-## Préparation firmware
-
-### Compiler et flasher
+## Firmware preparation
 
 ```bash
 cd /Users/user/zephyrproject/zephyr/samples/modules/tflite-micro/hello_cifar_clean
-
 west build -d build
 west flash
 ```
 
 ---
 
-## Utilisation
-
-### 1. Démarrer le Provider (Mac)
-
-Dans un nouveau terminal sur votre Mac:
+## Run the interactive provider
 
 ```bash
 cd /Users/user/zephyrproject/zephyr/samples/modules/tflite-micro/hello_cifar_clean
-
 ./.venv/bin/python tools/mac_provider.py /dev/tty.usbmodem11203 115200
 ```
 
-Le menu actuel expose:
-
-```
-1) ECDH handshake
-2) Compute EnclaveInfo
-3) Send M_update (quota custom)
-4) Get device signing pubkey
-5..8) quota/counters
-9) Verified inference
-10) Legacy inference
-11) Last result
-12/13) NS/Secure benchmark
-14) Console read
-15) SAU state
-16) Raw command
-17) Session status
-18) Security tests (unitaires/combinables)
-19) DANGER: inference sans SAU open
-20) DANGER: lecture mémoire protégée
-
-Enter command: 
-```
+Replace `/dev/tty.usbmodem11203` with your actual port.
 
 ---
 
-## Scénario de test recommandé (à jour)
+## Current menu (high level)
 
-### Étape 1: ECDH
-
-```
-Enter command: 1
-```
-
-**Résultat**: clé de session dynamique dérivée.
-
----
-
-### Étape 2: EnclaveInfo
-
-```
-Enter command: 2
-
-[2] Computing EnclaveInfo...
-→ Sent command 0x01 (32 bytes data)
-
-[UART] ← Command received: 0x01
-[CMD] Compute EnclaveInfo
-[CMD] ✓ EnclaveInfo attested
-← Received status 0x00 (124 bytes data)
-
-✓ EnclaveInfo attestation verified with pk_d
-✓ EnclaveInfo: 55b3a716bf879bd9cb162de716f84eacf01300cc72d7120619344c7e998f9204
-```
-
-**Résultat**: le Secure World renvoie `enclave_info(32) || sig_d(64)` attesté (nonce challenge côté Mac).
+- `1`) ECDH handshake
+- `2`) Compute EnclaveInfo (attested)
+- `3`) Send M_update (custom quota)
+- `4`) Get device signing public key
+- `5..8`) Quota/counters
+- `9`) Verified inference
+- `10`) Legacy inference
+- `11`) Last result
+- `12/13`) NS/Secure benchmark
+- `14`) Console read
+- `15`) SAU state
+ - `16`) Raw command
+ - `17`) Session status
+ - `18`) Security tests (single or combined)
+ - `19`) DANGER: inference without SAU open
+ - `20`) DANGER: direct protected-memory read
 
 ---
 
-### Étape 3: M_update (anti-replay)
+## Recommended validation flow
 
-```
-Enter command: 3
+### Step 1: ECDH
 
-[PROVIDER] Generating M_update:
-  - c_limit: 10
-  - plaintext size: 124 bytes
-  - enclave_info: 55b3a716bf879bd9...
-  - nonce: 3fdb8b9a94e3a2324323528012345678
-  - ciphertext size: 124 bytes
-  - tag: 3374e4ddc57b1c6d84be32de768b1628
+Enter command `1`.
 
-→ Sent command 0x02 (152 bytes data)
+Expected: dynamic session key established.
 
-[UART] ← Command received: 0x02
-[CMD] Validate M_update
-[SECURE] DP_CMD_VALIDATE_M_UPDATE received
-[CMD] anti-replay enforced
+### Step 2: EnclaveInfo
 
-Si rejet (`RESP_ERROR`), renvoyer avec `c_limit` plus grand que le max courant.
-```
+Enter command `2`.
 
-**Résultat**: si `c_limit` est strictement supérieur au max courant, le M_update est accepté.
+Expected: Secure world returns attested `enclave_info(32) || sig_d(64)`, verified on host side.
 
----
+### Step 3: M_update (anti-replay)
 
-### Étape 4: Verified inference
+Enter command `3`.
 
-```
-Enter command: 9
-```
+Expected:
+- M_update accepted when `c_limit` is strictly greater than current max.
+- Rejected otherwise (anti-replay behavior).
 
-**Résultat**: `verified inference OK` si `1` + `3` réussi.
+### Step 4: Verified inference
 
----
+Enter command `9`.
 
-### Étape 5: SAU state
+Expected: verified inference succeeds when steps 1 and 3 succeeded.
 
-```
-Enter command: 15
-```
+### Step 5: SAU state
 
-Réponse:
+Enter command `15`.
 
-```
-✓ SAU state = UNREGISTERED/OPEN/CLOSED
-  base = 0x........
-  size = ....
-```
-
-**Résultat**: état mémoire protégé déterministe côté firmware.
+Expected: deterministic memory protection status.
 
 ---
 
-## Règles essentielles
+## Protocol format
 
-- `9` requiert une session ECDH active + un M_update accepté.
-- Anti-replay strict: `c_limit` doit toujours augmenter.
-- En cas de rejet M_update, relancer `3` avec valeur plus haute.
+### Request (Mac → Device)
 
----
-
-## Protocole de Communication
-
-### Format des paquets
-
-**Requête (Mac → Device)**:
-```
+```text
 [CMD:1 byte][LENGTH:4 bytes LE][DATA:n bytes]
 ```
 
-**Réponse (Device → Mac)**:
-```
+### Response (Device → Mac)
+
+```text
 [STATUS:1 byte][LENGTH:4 bytes LE][DATA:n bytes]
 ```
 
-### Commandes disponibles (firmware actuel)
+---
 
-| CMD  | Nom                      | Input                                 | Output                  |
-|------|--------------------------|---------------------------------------|-------------------------|
-| 0x01 | COMPUTE_ENCLAVE_INFO     | model+secret+code+id                  | enclave_info (encrypted/plain) |
-| 0x02 | VALIDATE_M_UPDATE        | nonce + ciphertext + tag              | status                  |
-| 0x03 | GET_MAX_INFERENCES       | none                                  | uint32                  |
-| 0x04 | RUN_INFERENCE            | `M_inf` chiffré ou vide (legacy)      | status / réponse chiffrée |
-| 0x05 | GET_INFERENCE_COUNT      | none                                  | uint32                  |
-| 0x06 | GET_REMAINING_INFERENCES | none                                  | uint32                  |
-| 0x07 | ECDH_HANDSHAKE           | pubkey P-256 (65B)                    | pubkey device (65B)     |
-| 0x08 | GET_BENCHMARK            | none                                  | NS metrics              |
-| 0x09 | GET_SECURE_BENCHMARK     | none                                  | Secure metrics          |
-| 0x0A | GET_INFERENCE_RESULT     | none                                  | pred + expected         |
-| 0x0B | SET_MAX_INFERENCES       | uint32                                | status                  |
-| 0x0C | GET_DEVICE_PUBKEY        | none                                  | pk_d (65B)              |
-| 0x0D | GET_SAU_STATE            | none                                  | state(1)+base(4)+size(4)|
-| 0x0E | RUN_INFERENCE_NO_SAU     | none                                  | status/pred (test danger) |
-| 0x0F | READ_PROTECTED_MEM       | none                                  | no response (fault) ou 1 octet |
+## Command reference (current firmware)
 
-### Option 18 (tests unitaires / combinés)
-
-- `18` puis `a` : lance toute la suite
-- `18` puis `4` : lance uniquement T4
-- `18` puis `1,4,5` : combine plusieurs tests
-
-### Options danger
-
-- **19**: tente une inference sans `enclave_sau_open()`
-- **20**: tente une lecture directe de mémoire protégée (peut provoquer HardFault/reset)
-
-### Status codes
-
-- `0x00` (RESP_OK): Commande exécutée avec succès
-- `0xFF` (RESP_ERROR): Erreur lors de l'exécution
+| CMD  | Name                     | Input                                   | Output |
+|------|--------------------------|-----------------------------------------|--------|
+| 0x01 | COMPUTE_ENCLAVE_INFO     | nonce(32) or empty payload              | encrypted/attested response |
+| 0x02 | VALIDATE_M_UPDATE        | nonce + ciphertext + tag                | status |
+| 0x03 | GET_MAX_INFERENCES       | none                                    | uint32 |
+| 0x04 | RUN_INFERENCE            | encrypted `M_inf` or empty (legacy)     | status / encrypted response |
+| 0x05 | GET_INFERENCE_COUNT      | none                                    | uint32 |
+| 0x06 | GET_REMAINING_INFERENCES | none                                    | uint32 |
+| 0x07 | ECDH_HANDSHAKE           | P-256 public key (65B)                  | device public key (65B) |
+| 0x08 | GET_BENCHMARK            | none                                    | NS metrics |
+| 0x09 | GET_SECURE_BENCHMARK     | none                                    | Secure metrics |
+| 0x0A | GET_INFERENCE_RESULT     | none                                    | prediction + expected |
+| 0x0B | SET_MAX_INFERENCES       | uint32                                  | status |
+| 0x0C | GET_DEVICE_PUBKEY        | none                                    | `pk_d` (65B) |
+| 0x0D | GET_SAU_STATE            | none                                    | state(1)+base(4)+size(4) |
+| 0x0E | RUN_INFERENCE_NO_SAU     | none                                    | test status/prediction |
+| 0x0F | READ_PROTECTED_MEM       | none                                    | no response or error/fault path |
 
 ---
 
-## Sécurité
+## Security notes
 
-### Clés cryptographiques
+⚠️ Current keys are hardcoded for testing.
 
-⚠️ **IMPORTANT**: Les clés actuelles sont hardcodées pour les tests.
+Consistency must be preserved across:
+- Host side: `tools/mac_provider.py`
+- Device side: `src/uart_protocol.cpp` and `dummy_partition/dummy_partition.c`
 
-Les éléments cryptographiques doivent rester cohérents entre:
-- **Mac**: `tools/mac_provider.py`
-- **Device**: `src/uart_protocol.cpp` et `dummy_partition/dummy_partition.c`
-
-Pour la production:
-1. Générer des clés aléatoires sécurisées
-2. Utiliser un HSM pour stocker les clés du Provider
-3. Provisionner les clés device via mécanisme sécurisé
-
-### Propriétés vérifiées
-
-✅ **AES-256-GCM**: Chiffrement authentifié avec tag 128-bit  
-✅ **EnclaveInfo**: Vérification constant-time dans Secure World  
-✅ **Anti-replay**: c_limit doit être strictement croissant  
-✅ **Atomic update**: max_inferences mis à jour atomiquement  
-✅ **Zero-knowledge**: La clé de session reste dans Secure World
+For production:
+1. Generate secure random keys
+2. Store provider keys in an HSM
+3. Provision device keys through a secure mechanism
 
 ---
 
-## Dépannage
+## Troubleshooting
 
-### "Permission denied" sur /dev/tty.usbmodem*
+### Permission denied on `/dev/tty.usbmodem*`
 
 ```bash
 sudo chmod 666 /dev/tty.usbmodem14203
 ```
 
-### Device ne répond pas
+### Device not responding
 
-1. Vérifiez que le firmware est en mode interactif (`MAC_INTERACTIVE_MODE = 1`)
-2. Vérifiez la connexion USB
-3. Essayez de débrancher/rebrancher
-4. Vérifiez le port série avec `ls /dev/tty.usbmodem*`
+1. Confirm firmware is in interactive mode (`MAC_INTERACTIVE_MODE = 1`)
+2. Check USB connection
+3. Replug the device
+4. Re-check the serial device with `ls /dev/tty.usbmodem*`
 
-### "Module 'serial' not found"
+### Module `serial` not found
 
 ```bash
-pip3 install pyserial
+./.venv/bin/python -m pip install pyserial
 ```
 
-### Timeout lors des commandes
+### Command timeout
 
-1. Vérifiez que le baudrate est correct (115200)
-2. Augmentez le timeout dans `mac_provider.py` (ligne `timeout=5.0`)
-3. Vérifiez les logs device pour les erreurs
+1. Verify baudrate is 115200
+2. Increase timeout in `mac_provider.py` if needed
+3. Inspect device logs for protocol errors
 
-### M_update validation échoue
+### M_update validation fails
 
-1. Vérifiez que ECDH (`1`) a bien été fait dans la session courante
-2. Vérifiez que `c_limit > current max`
-3. Relancez `3` avec une valeur strictement supérieure
-
----
-
-## Tests sécurité (option 18)
-
-La suite intégrée dans `mac_provider.py` couvre les cas négatifs suivants:
-
-- **T1**: Rejeu de `M_update` (anti-replay, `c_limit` identique)
-- **T2**: `M_update` avec tag AES-GCM falsifié
-- **T3**: `M_update` avec `EnclaveInfo` incorrect
-- **T4**: Inference sans session ECDH active
-- **T5**: Vérification qu'un échec ne force pas la SAU en OPEN
-- **T6**: Vérification négative PoX (message altéré doit échouer)
-
-Exemples:
-
-- `18` puis `a` → lance T1..T6
-- `18` puis `4` → lance uniquement T4
-- `18` puis `1,4,6` → lance un sous-ensemble combiné
-
-## Validation danger (options 19/20)
-
-- **19** (`CMD_RUN_INFERENCE_NO_SAU`, `0x0E`) : tente une inference sans ouvrir SAU.
-- **20** (`CMD_READ_PROTECTED_MEM`, `0x0F`) : tente une lecture directe mémoire protégée (comportement attendu: erreur, no-response, ou reset selon protection active).
-
-Ces options sont destinées aux tests de robustesse et demandent confirmation explicite.
+1. Ensure ECDH (command `1`) was completed in the same session
+2. Ensure `c_limit > current max`
+3. Retry command `3` with a larger `c_limit`
 
 ---
 
-## Ressources
+## Security test suite (menu option 18)
 
-- **Script Python**: `tools/mac_provider.py`
-- **Protocol handler**: `src/uart_protocol.cpp`
-- **Main interactif**: `src/main.cpp`
-- **Verification report**: `VERIFICATION_REPORT.md`
+Included negative tests:
+- T1: `M_update` replay (same `c_limit`)
+- T2: `M_update` with tampered AES-GCM tag
+- T3: `M_update` with invalid `EnclaveInfo`
+- T4: Inference without active ECDH session
+- T5: Verify failure does not force SAU to OPEN
+- T6: Negative PoX verification (tampered message must fail)
+
+Examples:
+- `18` then `a` → run T1..T6
+- `18` then `4` → run only T4
+- `18` then `1,4,6` → run a selected subset
 
 ---
 
-**Dernière mise à jour**: 13 mars 2026  
-**Testé sur**: macOS + STM32L552ZE-Q
+## Danger options (19/20)
+
+- `19` (`CMD_RUN_INFERENCE_NO_SAU`, `0x0E`): attempt inference without opening SAU
+- `20` (`CMD_READ_PROTECTED_MEM`, `0x0F`): direct protected-memory read attempt
+
+These are robustness tests and require explicit confirmation.
+
+---
+
+## Resources
+
+- Python script: `tools/mac_provider.py`
+- Protocol handler: `src/uart_protocol.cpp`
+- Interactive main flow: `src/main.cpp`
+- Verification report: `md/VERIFICATION_REPORT.md`
+
+---
+
+Last updated: 13 March 2026  
+Tested on: macOS + STM32L552ZE-Q

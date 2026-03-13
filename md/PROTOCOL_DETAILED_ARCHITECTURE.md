@@ -1,10 +1,10 @@
 # Protocol Detailed Architecture (Mac ↔ STM32 ↔ Secure Partition)
 
-Ce document décrit en détail le protocole d’échange entre le host (Mac), le firmware Non-Secure (Zephyr), et la partition Secure (TF-M).
+This document describes the end-to-end protocol between the host (Mac), the Non-Secure firmware (Zephyr), and the Secure partition (TF-M).
 
 ---
 
-## 1) Vue d’ensemble
+## 1) Overview
 
 ```mermaid
 flowchart LR
@@ -20,16 +20,16 @@ flowchart LR
     classDef sec fill:#fff5f5,stroke:#c53030,stroke-width:1px;
 ```
 
-### Rôles
-- **Mac**: Provider/Verifier, construit les messages (`M_update`, `M_inf`), vérifie PoX.
-- **NS**: parser UART, routage des commandes, orchestration inference.
-- **Secure**: validations sensibles, gestion de politique et protection mémoire (SAU/TrustZone).
+### Roles
+- **Mac**: Provider/Verifier, builds messages (`M_update`, `M_inf`), verifies PoX.
+- **NS**: UART parser, command routing, inference orchestration.
+- **Secure**: sensitive validation, policy management, and memory protection (SAU/TrustZone).
 
 ---
 
-## 2) Format binaire des paquets
+## 2) Binary packet format
 
-### Requête (Host → Device)
+### Request (Host → Device)
 
 ```text
 +---------+-------------------+-----------+
@@ -37,7 +37,7 @@ flowchart LR
 +---------+-------------------+-----------+
 ```
 
-### Réponse (Device → Host)
+### Response (Device → Host)
 
 ```text
 +------------+-------------------+-----------+
@@ -51,29 +51,29 @@ flowchart LR
 
 ---
 
-## 3) Carte des commandes (`0x01..0x0F`)
+## 3) Command map (`0x01..0x0F`)
 
-| CMD | Nom | Objet |
+| CMD | Name | Purpose |
 |---|---|---|
-| `0x01` | `CMD_COMPUTE_ENCLAVE_INFO` | EnclaveInfo (option attestation) |
-| `0x02` | `CMD_VALIDATE_M_UPDATE` | Appliquer quota après déchiffrement AES-GCM |
-| `0x03` | `CMD_GET_MAX_INFERENCES` | Lire quota max |
-| `0x04` | `CMD_RUN_INFERENCE` | Inference (legacy ou secure path) |
-| `0x05` | `CMD_GET_INFERENCE_COUNT` | Lire quota consommé |
-| `0x06` | `CMD_GET_REMAINING_INFERENCES` | Lire quota restant |
-| `0x07` | `CMD_ECDH_HANDSHAKE` | Initialiser contexte de session |
-| `0x08` | `CMD_GET_BENCHMARK` | Bench NS |
-| `0x09` | `CMD_GET_SECURE_BENCHMARK` | Bench Secure |
-| `0x0A` | `CMD_GET_INFERENCE_RESULT` | Dernier résultat |
-| `0x0B` | `CMD_SET_MAX_INFERENCES` | Override quota (test) |
-| `0x0C` | `CMD_GET_DEVICE_PUBKEY` | Export `pk_d` (vérif PoX côté host) |
-| `0x0D` | `CMD_GET_SAU_STATE` | État SAU (`state/base/size`) |
-| `0x0E` | `CMD_RUN_INFERENCE_NO_SAU` | Test danger: inference sans SAU open |
-| `0x0F` | `CMD_READ_PROTECTED_MEM` | Test danger: lecture mémoire protégée |
+| `0x01` | `CMD_COMPUTE_ENCLAVE_INFO` | EnclaveInfo computation (optional attestation) |
+| `0x02` | `CMD_VALIDATE_M_UPDATE` | Apply quota after AES-GCM decryption |
+| `0x03` | `CMD_GET_MAX_INFERENCES` | Read max quota |
+| `0x04` | `CMD_RUN_INFERENCE` | Inference execution (legacy or secure path) |
+| `0x05` | `CMD_GET_INFERENCE_COUNT` | Read consumed quota |
+| `0x06` | `CMD_GET_REMAINING_INFERENCES` | Read remaining quota |
+| `0x07` | `CMD_ECDH_HANDSHAKE` | Initialize session context |
+| `0x08` | `CMD_GET_BENCHMARK` | NS benchmark |
+| `0x09` | `CMD_GET_SECURE_BENCHMARK` | Secure benchmark |
+| `0x0A` | `CMD_GET_INFERENCE_RESULT` | Last result |
+| `0x0B` | `CMD_SET_MAX_INFERENCES` | Quota override (test only) |
+| `0x0C` | `CMD_GET_DEVICE_PUBKEY` | Export `pk_d` (host PoX verification) |
+| `0x0D` | `CMD_GET_SAU_STATE` | SAU state (`state/base/size`) |
+| `0x0E` | `CMD_RUN_INFERENCE_NO_SAU` | Danger test: inference without SAU open |
+| `0x0F` | `CMD_READ_PROTECTED_MEM` | Danger test: direct protected memory read |
 
 ---
 
-## 4) Architecture d’échange (séquences)
+## 4) Exchange architecture (sequences)
 
 ## 4.1 Handshake + Attestation + Policy
 
@@ -98,20 +98,20 @@ sequenceDiagram
     N-->>H: RESP_OK / RESP_ERROR
 ```
 
-### `M_update` (plaintext logique)
+### `M_update` (logical plaintext)
 
 ```text
 c_limit (4) || pk_v (64) || enclave_info (32) || cert_len (4) || cert (n)
 ```
 
-### Propriétés
-- Anti-replay: `c_limit` doit **strictement augmenter**.
-- Intégrité/authentification: AES-GCM tag.
-- Policy dynamique: `max_inferences` vient de `c_limit` validé.
+### Properties
+- Anti-replay: `c_limit` must **strictly increase**.
+- Integrity/authentication: AES-GCM tag.
+- Dynamic policy: `max_inferences` comes from validated `c_limit`.
 
 ---
 
-## 4.2 Inference vérifiée (`M_inf` + PoX)
+## 4.2 Verified inference (`M_inf` + PoX)
 
 ```mermaid
 sequenceDiagram
@@ -132,19 +132,19 @@ sequenceDiagram
     H->>H: Verify PoX with pk_d
 ```
 
-### `M_inf` (forme utilisée)
+### `M_inf` (active format)
 
 ```text
 nonce_inf || model_id || signature_v
 ```
 
-### Réponse secure inference
+### Secure inference response
 
 ```text
 output_class (1) || pox_sig (64)
 ```
 
-### Message PoX signé (logique)
+### Signed PoX message (logical)
 
 ```text
 model_id || cert || nonce_inf || output_class
@@ -152,7 +152,7 @@ model_id || cert || nonce_inf || output_class
 
 ---
 
-## 5) Machine d’états simplifiée
+## 5) Simplified state machine
 
 ```mermaid
 stateDiagram-v2
@@ -167,20 +167,20 @@ stateDiagram-v2
 
 ---
 
-## 6) Flux de sécurité (tests négatifs)
+## 6) Security flow (negative tests)
 
-Les tests sont pilotés côté host via `tools/mac_provider.py` (menu sécurité):
+Tests are triggered from the host side through `tools/mac_provider.py` (security menu):
 
-- **T1** replay `M_update` → rejet attendu.
-- **T2** tag AES-GCM altéré → rejet attendu.
-- **T3** `EnclaveInfo` invalide → rejet attendu.
-- **T4** requête inference/signature invalide → rejet attendu.
-- **T5** un rejet ne doit pas ouvrir la SAU par effet de bord.
-- **T6** PoX négatif: mauvais message = échec, bon message = succès.
+- **T1** `M_update` replay → expected rejection.
+- **T2** tampered AES-GCM tag → expected rejection.
+- **T3** invalid `EnclaveInfo` → expected rejection.
+- **T4** invalid inference request/signature → expected rejection.
+- **T5** rejection must not force SAU open as a side effect.
+- **T6** negative PoX verification: wrong message fails, correct message succeeds.
 
 ---
 
-## 7) Tests danger (`0x0E`, `0x0F`)
+## 7) Danger tests (`0x0E`, `0x0F`)
 
 ```mermaid
 flowchart TD
@@ -190,32 +190,32 @@ flowchart TD
     C -- No --> E[Test returns data/status]
 ```
 
-Ces commandes servent à valider la robustesse mémoire/protection, pas le chemin nominal.
+These commands are for memory/protection robustness validation, not the nominal flow.
 
 ---
 
-## 8) Observabilité / diagnostics
+## 8) Observability / diagnostics
 
-Commandes utiles:
-- `0x03/0x05/0x06` pour suivre quota max/consommé/restant.
-- `0x0D` pour vérifier état SAU (`UNREGISTERED/OPEN/CLOSED` + base + size).
-- `0x08/0x09` pour comparer coûts NS vs Secure.
+Useful commands:
+- `0x03/0x05/0x06` to track max/consumed/remaining quota.
+- `0x0D` to inspect SAU state (`UNREGISTERED/OPEN/CLOSED` + base + size).
+- `0x08/0x09` to compare NS vs Secure cost.
 
 ---
 
-## 9) Résumé de l’architecture d’échange
+## 9) Exchange architecture summary
 
 1. **Session** (`0x07`)  
-2. **Attestation enclave** (`0x01`)  
-3. **Policy provisioning** via `M_update` chiffré (`0x02`)  
-4. **Inference vérifiée** (`0x04`) + **PoX**  
-5. **Vérification host** avec `pk_d` (`0x0C`)  
-6. **Audit** via quota/bench/SAU (`0x03..0x0D`)  
-7. **Robustesse** via tests danger (`0x0E`, `0x0F`)  
+2. **Enclave attestation** (`0x01`)  
+3. **Policy provisioning** through encrypted `M_update` (`0x02`)  
+4. **Verified inference** (`0x04`) + **PoX**  
+5. **Host-side verification** with `pk_d` (`0x0C`)  
+6. **Audit** through quota/benchmark/SAU (`0x03..0x0D`)  
+7. **Robustness checks** through danger tests (`0x0E`, `0x0F`)  
 
 ---
 
-## 10) Références dans le repo
+## 10) References in this repository
 
 - `src/uart_protocol.h`
 - `src/uart_protocol.cpp`
