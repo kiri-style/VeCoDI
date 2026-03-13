@@ -89,6 +89,7 @@ sequenceDiagram
 
     H->>N: 0x01 COMPUTE_ENCLAVE_INFO (+nonce attestation)
     N->>S: Compute EnclaveInfo + sign challenge
+    Note over S: Computed from stored metadata\nNo enclave creation required
     S-->>N: enclave_info (+sig_d)
     N-->>H: RESP_OK + enclave_info (+sig_d)
 
@@ -108,6 +109,7 @@ c_limit (4) || pk_v (64) || enclave_info (32) || cert_len (4) || cert (n)
 - Anti-replay: `c_limit` must **strictly increase**.
 - Integrity/authentication: AES-GCM tag.
 - Dynamic policy: `max_inferences` comes from validated `c_limit`.
+- `EnclaveInfo` is computed before runtime enclave creation; it hashes device-side metadata (`pub || secret || code || model_id`) and does not require the enclave execution window to be open.
 
 ---
 
@@ -158,8 +160,9 @@ model_id || cert || nonce_inf || output_class
 stateDiagram-v2
     [*] --> NoSession
     NoSession --> SessionReady: 0x07 ECDH
-    SessionReady --> Attested: 0x01 EnclaveInfo (+attestation)
-    Attested --> PolicySet: 0x02 M_update valid
+    SessionReady --> MetadataAttested: 0x01 EnclaveInfo (+attestation)
+    MetadataAttested: metadata measured\nenclave not yet created
+    MetadataAttested --> PolicySet: 0x02 M_update valid
     PolicySet --> PolicySet: 0x04 run inference (count++)
     PolicySet --> Blocked: quota exhausted or invalid request
     Blocked --> PolicySet: new valid 0x02 with higher c_limit

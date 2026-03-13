@@ -646,6 +646,8 @@ static void handle_compute_enclave_info(const uint8_t *data, uint32_t len)
     /* Modes:
      *   len=32  => attested mode: host provides nonce, device returns enclave_info||sig_d
      *   len=0   => secure-internal compute, returns enclave_info
+    * EnclaveInfo is derived from secure cached model metadata and does not
+    * require runtime enclave creation or an open SAU execution window.
      */
     if ((len != 0U && len != 32U) || (len > 0U && data == NULL)) {
         uart_send_encrypted_response(RESP_ERROR, NULL, 0);

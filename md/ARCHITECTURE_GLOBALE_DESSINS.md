@@ -1,6 +1,6 @@
-# Architecture globale — version propre (dessins + échanges détaillés)
+# Global Architecture — clean version (diagrams + detailed exchanges)
 
-## 1) Vue d’ensemble
+## 1) Overview
 
 ```mermaid
 flowchart LR
@@ -14,7 +14,7 @@ flowchart LR
 
 ---
 
-## 2) Trame UART (Host ↔ Device)
+## 2) UART frame (Host ↔ Device)
 
 ```text
 Host -> Device
@@ -34,7 +34,7 @@ STATUS:
 
 ---
 
-## 3) Handshake de session (ECDH)
+## 3) Session handshake (ECDH)
 
 ```mermaid
 sequenceDiagram
@@ -44,15 +44,15 @@ sequenceDiagram
     participant S as Secure Partition
 
     H->>N: 0x07 ECDH_HANDSHAKE + pk_h_ephemeral
-    N->>S: ECDH + HKDF (côté device)
-    S-->>N: pk_d_ephemeral + contexte session
+    N->>S: ECDH + HKDF (device side)
+    S-->>N: pk_d_ephemeral + session context
     N-->>H: STATUS OK + pk_d_ephemeral
-    H->>H: ECDH + HKDF -> session_key identique
+    H->>H: ECDH + HKDF -> identical session_key
 ```
 
 ---
 
-## 4) Attestation enclave + `M_update`
+## 4) Enclave attestation + `M_update`
 
 ```mermaid
 sequenceDiagram
@@ -63,23 +63,54 @@ sequenceDiagram
 
     H->>N: 0x01 COMPUTE_ENCLAVE_INFO (+nonce)
     N->>S: compute_enclave_info(pub||secret||code||model_id)
+    Note over S: computed from stored metadata\nno runtime enclave creation required
     S-->>N: enclave_info (+attestation)
     N-->>H: STATUS OK + enclave_info (+attestation)
 
-    Note over H: Host calcule M_update
+    Note over H: Host computes M_update
     Note over H: plaintext = c_limit||pk_v||enclave_info||cert_len||cert
     Note over H: transport = nonce||AES-GCM(ciphertext)||tag
 
     H->>N: 0x02 VALIDATE_M_UPDATE + nonce||ciphertext||tag
     N->>S: validate_m_update (decrypt + checks)
-    S->>S: anti-replay (c_limit strictement croissant)
-    S->>S: update atomique max_inferences = c_limit
+    S->>S: anti-replay (c_limit strictly increasing)
+    S->>S: atomic update max_inferences = c_limit
     S-->>N: accept / reject
     N-->>H: STATUS OK / ERROR
 ```
 
+### Exact `EnclaveInfo` contents
+
 ```text
-M_update (plaintext logique)
+EnclaveInfo (32 bytes) = SHA-256(
+    model_pub    (32 bytes) ||
+    model_secret (32 bytes) ||
+    code_hash    (32 bytes) ||
+    model_id     (4 bytes, little-endian)
+)
+```
+
+```text
+Concatenated binary input for the hash:
++----------------------+--------+
+| model_pub            | 32 B   |
+| model_secret         | 32 B   |
+| code_hash            | 32 B   |
+| model_id (little)    | 4 B    |
++----------------------+--------+
+Total hash input: 100 B
+SHA-256 output: 32 B (enclave_info)
+```
+
+```text
+Important:
+- EnclaveInfo is computed even if the runtime enclave has not been created yet.
+- The computation uses protected metadata already stored on the device.
+- Opening the SAU window for inference execution is not required at this stage.
+```
+
+```text
+M_update (logical plaintext)
 +-------------+----------+------------------+--------------+----------+
 | c_limit (4) | pk_v(64) | enclave_info(32) | cert_len (4) | cert (n) |
 +-------------+----------+------------------+--------------+----------+
@@ -92,7 +123,7 @@ M_update (transport)
 
 ---
 
-## 5) Inférence vérifiée + PoX
+## 5) Verified inference + PoX
 
 ```mermaid
 sequenceDiagram
@@ -102,29 +133,29 @@ sequenceDiagram
     participant S as Secure + Inference
 
     H->>N: 0x04 RUN_INFERENCE + M_inf
-    N->>S: vérification signature/policy + traitement secure
-    S->>S: inference si quota autorisé
-    S->>S: signature PoX avec sk_d
+    N->>S: signature/policy verification + secure processing
+    S->>S: run inference if quota allows
+    S->>S: PoX signature with sk_d
     S-->>N: output_class + pox_sig
-    N-->>H: STATUS OK + réponse
+    N-->>H: STATUS OK + response
 
-    H->>N: 0x0C GET_DEVICE_PUBKEY (si nécessaire)
+    H->>N: 0x0C GET_DEVICE_PUBKEY (if needed)
     N-->>H: STATUS OK + pk_d
-    H->>H: vérification PoX avec pk_d
+    H->>H: verify PoX with pk_d
 ```
 
 ```text
-M_inf (format actif)
+M_inf (active format)
 +------------+--------------+-----------------+
 | nonce (12) | model_id (4) | signature_v (64)|
 +------------+--------------+-----------------+
 
-Réponse inférence sécurisée
+Secure inference response
 +-----------------+-------------+
 | output_class (1)| pox_sig (64)|
 +-----------------+-------------+
 
-Message logique signé PoX
+Logical PoX-signed message
 +----------+---------+------------+---------------+
 | model_id | cert(n) | nonce_inf  | output_class  |
 +----------+---------+------------+---------------+
@@ -132,7 +163,7 @@ Message logique signé PoX
 
 ---
 
-## 6) Focus interne device (NS ↔ Secure ↔ Enclave)
+## 6) Internal device focus (NS ↔ Secure ↔ Enclave)
 
 ```mermaid
 flowchart LR
@@ -156,15 +187,15 @@ flowchart LR
 ```
 
 ```text
-Règle d’exécution:
+Execution rule:
 Host CMD -> NS handler -> PSA IPC -> Secure validation/crypto ->
-si autorisé: Secure ouvre SAU, lit l'enclave, calcule, referme SAU ->
-retour status/résultat vers NS -> Host
+if authorized: Secure opens SAU, reads enclave data, computes, closes SAU ->
+status/result returned to NS -> Host
 ```
 
 ---
 
-## 7) Pipeline interne `0x04` (inférence)
+## 7) Internal `0x04` pipeline (inference)
 
 ```mermaid
 sequenceDiagram
@@ -177,7 +208,7 @@ sequenceDiagram
     N->>S: secure inference request (PSA IPC)
 
     S->>S: verify session + format + signature + policy
-    alt message valide + quota OK
+    alt valid message + quota OK
         S->>S: open SAU
         S->>E: read protected data
         E-->>S: protected blocks
@@ -194,7 +225,7 @@ sequenceDiagram
 
 ---
 
-## 8) Pipeline interne `0x02` (`M_update`)
+## 8) Internal `0x02` pipeline (`M_update`)
 
 ```mermaid
 sequenceDiagram
@@ -218,33 +249,34 @@ sequenceDiagram
 
 ---
 
-## 9) Machine d’états
+## 9) State machine
 
 ```mermaid
 stateDiagram-v2
     [*] --> NoSession
     NoSession --> SessionReady: 0x07 ECDH
-    SessionReady --> Attested: 0x01 EnclaveInfo
-    Attested --> PolicyReady: 0x02 M_update validé
+    SessionReady --> MetadataAttested: 0x01 EnclaveInfo
+    MetadataAttested: measurement complete\nruntime enclave not yet created
+    MetadataAttested --> PolicyReady: 0x02 M_update validated
     PolicyReady --> PolicyReady: 0x04 inference (count++)
-    PolicyReady --> Blocked: quota atteint / requête invalide
-    Blocked --> PolicyReady: nouveau 0x02 valide
+    PolicyReady --> Blocked: quota exhausted / invalid request
+    Blocked --> PolicyReady: new valid 0x02
 ```
 
 ---
 
-## 10) Sécurité + observabilité
+## 10) Security + observability
 
 ```mermaid
 flowchart TD
-    A[Tests sécurité côté host] --> B[T1 replay M_update]
-    A --> C[T2 tag AES-GCM falsifié]
-    A --> D[T3 enclave_info invalide]
-    A --> E[T4 requête inférence invalide]
-    A --> F[T5 SAU ne reste pas OPEN après rejet]
-    A --> G[T6 PoX: mauvais message échoue]
+    A[Host-side security tests] --> B[T1 replay M_update]
+    A --> C[T2 forged AES-GCM tag]
+    A --> D[T3 invalid enclave_info]
+    A --> E[T4 invalid inference request]
+    A --> F[T5 SAU does not remain OPEN after rejection]
+    A --> G[T6 PoX: wrong message fails]
 
-    H[Observabilité runtime] --> I[0x03 max_inferences]
+    H[Runtime observability] --> I[0x03 max_inferences]
     H --> J[0x05 inference_count]
     H --> K[0x06 remaining]
     H --> L[0x0D SAU state]

@@ -118,6 +118,9 @@ static void init_secure_model_identity(void)
     current_model_id = default_model_id;
     current_model_info_valid = true;
 
+    /* Cache EnclaveInfo from secure stored metadata at init time.
+     * This is independent from runtime enclave creation/SAU opening.
+     */
     psa_status_t st = compute_enclave_info(current_model_pub,
                                            current_model_secret,
                                            current_code_hash,
@@ -893,6 +896,8 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
             /* Compute EnclaveInfo = SHA-256(Model_pub || Model_secret || code || model_ID)
              * Secure-only mode:
              *   in[0] = cmd only (host never provides model details)
+             * The value is returned from secure metadata/cache and does not require
+             * runtime enclave creation or an open SAU execution region.
              * Output:
              *  out[0] = enclave_info (32 bytes)
              */
