@@ -156,12 +156,6 @@ void benchmark_print_report(const benchmark_metrics_t *metrics)
     printk("║ AES Decrypt: %8u cycles  (%6u ms)                   ║\n",
            metrics->aes_decrypt_cycles,
            benchmark_cycles_to_ms(metrics->aes_decrypt_cycles));
-    printk("║ Late Hash:   %8u cycles  (%6u ms)                   ║\n",
-           metrics->late_hash_cycles,
-           benchmark_cycles_to_ms(metrics->late_hash_cycles));
-    printk("║ Inf Hash:    %8u cycles  (%6u ms)                   ║\n",
-           metrics->inference_hash_cycles,
-           benchmark_cycles_to_ms(metrics->inference_hash_cycles));
     printk("╟──────────────────────────────────────────────────────────────╢\n");
     
     // Inference Performance

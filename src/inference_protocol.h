@@ -12,7 +12,6 @@ extern "C" {
  * Inference Protocol Structures (M_inf / PoX)
  *=============================================================================*/
 
-#define CIFAR10_INPUT_SIZE      64      // Reduced for testing (was 3072)
 #define MODEL_ID_SIZE           4       // uint32_t
 #define NONCE_SIZE              12      // 12 bytes for nonce
 #define ECDSA_SIG_SIZE          64      // ECDSA P-256 signature (r||s)
@@ -25,9 +24,8 @@ extern "C" {
 
 typedef struct {
     uint8_t nonce[NONCE_SIZE];                          // Random 12 bytes
-    uint8_t input[CIFAR10_INPUT_SIZE];                  // CIFAR-10 input
     uint8_t model_id[MODEL_ID_SIZE];                    // Model identifier
-    uint8_t signature[ECDSA_SIG_SIZE];                  // Sign(sk_v, nonce||input||model_id)
+    uint8_t signature[ECDSA_SIG_SIZE];                  // Sign(sk_v, nonce||model_id)
 } m_inf_t;
 
 /*=============================================================================
@@ -38,7 +36,6 @@ typedef struct {
     uint8_t model_id[MODEL_ID_SIZE];                    // Model identifier
     uint8_t cert[CERT_SIZE];                            // Cert(sk_p, model_id)
     uint8_t nonce[NONCE_SIZE];                          // Echo from M_inf
-    uint8_t input[CIFAR10_INPUT_SIZE];                  // Echo from M_inf
     uint8_t output;                                     // Inference result (0-9)
     uint8_t signature[ECDSA_SIG_SIZE];                  // Sign(sk_d, above fields)
 } proof_of_execution_t;
@@ -80,15 +77,14 @@ int generate_proof_of_execution(
 
 /**
  * Generate M_inf (Verifier creates request)
- * 
- * @param input: CIFAR-10 input image (3072 bytes)
+ * The input image is not transmitted; the device uses its own stored test image.
+ *
  * @param model_id: Model identifier (4 bytes)
  * @param verifier_sk: Verifier's ECDSA P-256 private key (32 bytes)
  * @param m_inf: Output message
  * @return 0 on success, -1 on failure
  */
 int generate_m_inf(
-    const uint8_t input[CIFAR10_INPUT_SIZE],
     const uint8_t model_id[MODEL_ID_SIZE],
     const uint8_t verifier_sk[32],
     m_inf_t *m_inf

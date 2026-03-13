@@ -16,12 +16,13 @@ Implementation of cryptographic inference protocol enabling **Verifier-to-Device
 ```
 Structure:
   nonce       [12 bytes]  - Random nonce per request
-  input       [64 bytes]  - Inference input (test reduced from 3072)
   model_id    [4 bytes]   - Model identifier
-  signature   [64 bytes]  - ECDSA P-256 sig: Sign(sk_v, nonce || input || model_id)
+  signature   [64 bytes]  - ECDSA P-256 sig: Sign(sk_v, nonce || model_id)
   
-Total: 144 bytes
+Total: 80 bytes
 ```
+
+**Note**: Input image is **not** transmitted — the device uses its own stored test image.
 
 **Cryptography**:
 - Algorithm: ECDSA P-256 (secp256r1)
@@ -38,11 +39,10 @@ Structure:
   model_id    [4 bytes]   - Model identifier
   cert        [16 bytes]  - Provider certificate
   nonce       [12 bytes]  - Nonce echoed from M_inf
-  input       [64 bytes]  - Input echoed from M_inf
   output      [1 byte]    - Inference result (0-9 for CIFAR-10)
   signature   [64 bytes]  - ECDSA P-256 sig: Sign(sk_d, above fields)
   
-Total: 161 bytes
+Total: 97 bytes
 ```
 
 **Cryptography**:
@@ -56,7 +56,7 @@ Total: 161 bytes
 
 1. **src/inference_protocol.h** (~250 lines)
    - Structure definitions: `m_inf_t`, `proof_of_execution_t`
-   - Constants: `CIFAR10_INPUT_SIZE`, `NONCE_SIZE`, `ECDSA_SIG_SIZE`, etc.
+   - Constants: `NONCE_SIZE`, `ECDSA_SIG_SIZE`, `MODEL_ID_SIZE`, etc.
    - Public API:
      - `generate_m_inf()`: Verifier creates signed request
      - `verify_m_inf()`: Device verifies request
@@ -113,7 +113,7 @@ Total: 161 bytes
 [TEST] ✓ Device keypair generated
 
 [TEST] ===== STEP 3: VERIFIER GENERATES M_INF =====
-[TEST] ✓ M_inf generated and signed (144 bytes total)
+[TEST] ✓ M_inf generated and signed (80 bytes total)
 [PROTO] Nonce: E5 C7 F7 21 44 A7 B5 49 FF 99 D4 6F
 [PROTO] Signature (first 16B): FD 01 5F 14 47 7C 55 09 A4 E6 D4 4C 63 70 44 2E
 
@@ -121,7 +121,7 @@ Total: 161 bytes
 [DEVICE] Inference result: 6
 
 [TEST] ===== STEP 5: DEVICE GENERATES PoX =====
-[TEST] ✓ PoX generated and signed (161 bytes total)
+[TEST] ✓ PoX generated and signed (97 bytes total)
 [PROTO] Output: 6
 [PROTO] Signature (first 16B): 59 84 E7 7A AD EA 03 55 43 67 85 42 F0 88 8F 30
 
@@ -186,12 +186,12 @@ Total: 161 bytes
 ```cpp
 // Verifier: Generate M_inf
 m_inf_t m_inf = {};
-generate_m_inf(input, model_id, verifier_sk, &m_inf);
+generate_m_inf(model_id, verifier_sk, &m_inf);
 
 // Device: Verify M_inf signature
 if (verify_m_inf(&m_inf, verifier_pk)) {
     // Execute inference
-    uint8_t result = execute_inference(m_inf.input);
+   uint8_t result = execute_inference();
     
     // Generate PoX
     proof_of_execution_t pox = {};

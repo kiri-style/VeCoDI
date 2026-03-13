@@ -131,8 +131,6 @@ static psa_status_t hash_buffer_chunked(psa_hash_operation_t *operation,
 /* Pre-compute hash of code pointers and late weights (called once after decryption) */
 int precompute_late_weights_hash(void)
 {
-    BENCHMARK_START(late_hash);
-    
     psa_status_t status;
     psa_hash_operation_t operation = PSA_HASH_OPERATION_INIT;
     size_t hash_len;
@@ -194,15 +192,12 @@ int precompute_late_weights_hash(void)
     }
 
     late_hash_computed = true;
-    BENCHMARK_END(late_hash, g_benchmark_metrics.late_hash_cycles);
-    
+
     printk("[CNT] ✓ Late weights hash (code_ptrs + late_wt): ");
     for (int i = 0; i < 32; i++) {
         printk("%02x", late_weights_hash[i]);
     }
-    printk(" (%u cycles, %u ms)\n",
-           g_benchmark_metrics.late_hash_cycles,
-           benchmark_cycles_to_ms(g_benchmark_metrics.late_hash_cycles));
+    printk("\n");
 
     return 0;
 }
@@ -210,8 +205,6 @@ int precompute_late_weights_hash(void)
 static int compute_integrity_hash(const int8_t *input_data, 
                                    uint8_t hash_output[32])
 {
-    BENCHMARK_START(inf_hash);
-    
     psa_status_t status;
     psa_hash_operation_t operation = PSA_HASH_OPERATION_INIT;
     size_t hash_len = 0;
@@ -292,15 +285,11 @@ static int compute_integrity_hash(const int8_t *input_data,
         return -1;
     }
 
-    BENCHMARK_END(inf_hash, g_benchmark_metrics.inference_hash_cycles);
-    
     printk("[CNT] ✓ Inference hash (input + early_wt + late_hash): ");
     for (int i = 0; i < 32; i++) {
         printk("%02x", hash_output[i]);
     }
-    printk(" (%u cycles, %u ms)\n",
-           g_benchmark_metrics.inference_hash_cycles,
-           benchmark_cycles_to_ms(g_benchmark_metrics.inference_hash_cycles));
+    printk("\n");
 
     return 0;
 }

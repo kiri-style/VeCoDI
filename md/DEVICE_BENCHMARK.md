@@ -9,12 +9,13 @@ The device benchmark system measures performance metrics directly on the STM32L5
 - Memory usage during inference
 - Quota management operations
 - Counter state transitions
+- Host-side UART round-trip benchmark for all major protocol commands
 
 ## Collected Metrics
 
-### Non-Secure (NS) Metrics - 72 bytes total
+### Non-Secure (NS) Metrics - 64 bytes total
 - Enclave lifecycle: create, destroy cycles
-- Cryptographic operations: AES decrypt, hash timing
+- Cryptographic operations: AES decrypt cycles
 - Inference performance: early/late layers, total
 - End-to-end: run_enclave() timing
 - Memory usage: RAM used/total, Flash used/total
@@ -29,11 +30,11 @@ The device benchmark system measures performance metrics directly on the STM32L5
 
 ## Quick Start
 
-### Using test_benchmark.py (Recommended)
+### Using get_device_benchmark.py (Recommended)
 The full benchmark script collects all metrics including ECDH handshake:
 
 ```bash
-python3 test_benchmark.py
+python3 tools/get_device_benchmark.py [/dev/ttyXXX]
 ```
 
 This will:
@@ -42,7 +43,8 @@ This will:
 3. Send M_update with encrypted quota (AES-256-GCM)
 4. Execute split inference
 5. Collect both NS and S metrics
-6. Save all results to benchmark_results.txt
+6. Benchmark all main UART operations (avg/min/max latency)
+7. Save full report to `build/DEVICE_BENCHMARK_RESULTS.md`
 
 ### Output Example
 
@@ -104,10 +106,6 @@ Largest Symbols (Top 20):
  ...
 ```
 
-```bash
-python3 tools/get_device_benchmark.py [/dev/ttyXXX]
-```
-
 Defaults to auto-detected `/dev/tty.usbmodem*` if port not specified.
 
 ## Benchmark Workflow
@@ -122,24 +120,25 @@ Result: Session key derived via HKDF-SHA256 with identical salt/info on both sid
 
 ### Step 2: Compute EnclaveInfo  
 ```
-Mac → Device: CMD_COMPUTE_ENCLAVE_INFO (0x01) + model_pub(32) + model_secret(32) + code_hash(32) + model_id(4)
-Device → Mac: SHA-256 hash (32 bytes)
+Mac → Device: CMD_COMPUTE_ENCLAVE_INFO (0x01) + nonce(32)
+Device → Mac: Encrypted response
+             decrypts to enclave_info(32) || sig_d(64)
 ```
 
 ### Step 3: Send M_update
 ```
 Mac encrypts plaintext: c_limit(4) || pk_v(64) || enclave_info(32) || cert_len(4) || cert(n)
-Total plaintext: 120 bytes
+Total plaintext: 104 + n bytes (n = cert_len)
 Encryption: AES-256-GCM with ECDH-derived session key
-Packet format: nonce(12) || ciphertext(120) || tag(16) = 148 bytes total
+Packet format: nonce(12) || ciphertext(104+n) || tag(16) = (132+n) bytes total
 
-Mac → Device: CMD_VALIDATE_M_UPDATE (0x02) + packet(148 bytes)
+Mac → Device: CMD_VALIDATE_M_UPDATE (0x02) + encrypted packet
 Device → Mac: Status (0x00=OK, 0xFF=Error)
 ```
 
 ### Step 4: Run Split Inference
 ```
-Mac → Device: CMD_RUN_INFERENCE (0x04)
+Mac → Device: CMD_RUN_INFERENCE (0x04) + encrypted M_inf
 Device:
   1. Check quota (NS)
   2. Call Secure partition to verify and manage quota
@@ -149,6 +148,23 @@ Device:
   6. Execute late layers with decrypted weights (NS)
 Mac → Device: Status (0x00=OK, 0xFF=Error)
 ```
+
+### Step 6: Host UART Operation Benchmark
+The script also benchmarks round-trip latency for all key operations:
+
+- `CMD_GET_DEVICE_PUBKEY`
+- `CMD_GET_MAX_INFERENCES`
+- `CMD_GET_INFERENCE_COUNT`
+- `CMD_GET_REMAINING_INFERENCES`
+- `CMD_GET_INFERENCE_RESULT`
+- `CMD_GET_BENCHMARK`
+- `CMD_GET_SECURE_BENCHMARK`
+- `CMD_COMPUTE_ENCLAVE_INFO`
+- `CMD_VALIDATE_M_UPDATE`
+- `CMD_SET_MAX_INFERENCES`
+- `CMD_RUN_INFERENCE`
+
+Report output includes per-operation: runs, OK/fail count, avg/min/max latency.
 
 ### Step 5: Retrieve Metrics
 ```
@@ -191,8 +207,7 @@ Device → Mac: Remaining quota (4 bytes LE)
 ### Automatic Report Generation
 Test scripts automatically save reports:
 ```bash
-build/device_benchmark.txt  # Performance metrics
-build/memory_analysis.txt   # Flash/RAM breakdown
+build/DEVICE_BENCHMARK_RESULTS.md  # Full benchmark report (NS/S + operation benchmark)
 ```
 
 ### Manual Metric Extraction
@@ -236,6 +251,7 @@ python3 tools/get_device_benchmark.py /dev/ttyACM0
 ```
 
 ## References
-- Protocol definition: [tools/README.md](README.md)
-- Test script: [test_split_inference.py](test_split_inference.py)
-- Device code: [src/uart_protocol.cpp](src/uart_protocol.cpp)
+- Protocol definition: [tools/README.md](../tools/README.md)
+- Benchmark script: [tools/get_device_benchmark.py](../tools/get_device_benchmark.py)
+- Interactive host verifier: [tools/mac_provider.py](../tools/mac_provider.py)
+- Device code: [src/uart_protocol.cpp](../src/uart_protocol.cpp)

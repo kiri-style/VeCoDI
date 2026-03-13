@@ -28,7 +28,6 @@ int verify_m_inf(const m_inf_t *m_inf, const uint8_t verifier_pk[64]) {
 
     printf("[DEVICE] ========== VERIFY M_INF ==========\n");
     print_hex("Nonce", m_inf->nonce, NONCE_SIZE);
-    print_hex("Input (first 16B)", m_inf->input, 16);
     print_hex("Model ID", m_inf->model_id, MODEL_ID_SIZE);
     print_hex("Signature", m_inf->signature, ECDSA_SIG_SIZE);
 
@@ -53,13 +52,12 @@ int verify_m_inf(const m_inf_t *m_inf, const uint8_t verifier_pk[64]) {
         return 0;
     }
 
-    // Prepare message to verify: nonce || input || model_id
-    uint8_t message_to_verify[NONCE_SIZE + CIFAR10_INPUT_SIZE + MODEL_ID_SIZE];
+    // Prepare message to verify: nonce || model_id
+    uint8_t message_to_verify[NONCE_SIZE + MODEL_ID_SIZE];
     memcpy(&message_to_verify[0], m_inf->nonce, NONCE_SIZE);
-    memcpy(&message_to_verify[NONCE_SIZE], m_inf->input, CIFAR10_INPUT_SIZE);
-    memcpy(&message_to_verify[NONCE_SIZE + CIFAR10_INPUT_SIZE], m_inf->model_id, MODEL_ID_SIZE);
+    memcpy(&message_to_verify[NONCE_SIZE], m_inf->model_id, MODEL_ID_SIZE);
 
-    size_t message_len = NONCE_SIZE + CIFAR10_INPUT_SIZE + MODEL_ID_SIZE;
+    size_t message_len = NONCE_SIZE + MODEL_ID_SIZE;
     printf("[DEVICE] Message to verify: %zu bytes\n", message_len);
 
     // Verify signature
@@ -108,12 +106,10 @@ int generate_proof_of_execution(
     memcpy(pox->model_id, m_inf->model_id, MODEL_ID_SIZE);
     memcpy(pox->cert, cert, CERT_SIZE);
     memcpy(pox->nonce, m_inf->nonce, NONCE_SIZE);
-    memcpy(pox->input, m_inf->input, CIFAR10_INPUT_SIZE);
     pox->output = inference_output;
 
-    // Message to sign: model_id || cert || nonce || input || output
-    uint8_t message_to_sign[MODEL_ID_SIZE + CERT_SIZE + NONCE_SIZE + 
-                            CIFAR10_INPUT_SIZE + CIFAR10_OUTPUT_SIZE];
+    // Message to sign: model_id || cert || nonce || output
+    uint8_t message_to_sign[MODEL_ID_SIZE + CERT_SIZE + NONCE_SIZE + CIFAR10_OUTPUT_SIZE];
     size_t offset = 0;
 
     memcpy(&message_to_sign[offset], pox->model_id, MODEL_ID_SIZE);
@@ -122,13 +118,11 @@ int generate_proof_of_execution(
     offset += CERT_SIZE;
     memcpy(&message_to_sign[offset], pox->nonce, NONCE_SIZE);
     offset += NONCE_SIZE;
-    memcpy(&message_to_sign[offset], pox->input, CIFAR10_INPUT_SIZE);
-    offset += CIFAR10_INPUT_SIZE;
     message_to_sign[offset] = pox->output;
 
-    size_t message_len = MODEL_ID_SIZE + CERT_SIZE + NONCE_SIZE + CIFAR10_INPUT_SIZE + 1;
+    size_t message_len = MODEL_ID_SIZE + CERT_SIZE + NONCE_SIZE + 1;
     printf("[DEVICE] Message to sign: %zu bytes\n", message_len);
-    printf("[DEVICE]   Structure: model_id(4) || cert(16) || nonce(12) || input(3072) || output(1)\n");
+    printf("[DEVICE]   Structure: model_id(4) || cert(16) || nonce(12) || output(1)\n");
 
     // Import device private key for signing
     psa_key_attributes_t attributes = PSA_KEY_ATTRIBUTES_INIT;
@@ -172,12 +166,11 @@ int generate_proof_of_execution(
  *=============================================================================*/
 
 int generate_m_inf(
-    const uint8_t input[CIFAR10_INPUT_SIZE],
     const uint8_t model_id[MODEL_ID_SIZE],
     const uint8_t verifier_sk[32],
     m_inf_t *m_inf) {
 
-    if (!input || !model_id || !verifier_sk || !m_inf) {
+    if (!model_id || !verifier_sk || !m_inf) {
         printf("[ERROR] Invalid input to generate_m_inf\n");
         return -1;
     }
@@ -199,19 +192,17 @@ int generate_m_inf(
     }
     print_hex("Generated nonce", m_inf->nonce, NONCE_SIZE);
 
-    // Copy input and model_id
-    memcpy(m_inf->input, input, CIFAR10_INPUT_SIZE);
+    // Copy model_id (input image is NOT transmitted)
     memcpy(m_inf->model_id, model_id, MODEL_ID_SIZE);
 
-    // Message to sign: nonce || input || model_id
-    uint8_t message_to_sign[NONCE_SIZE + CIFAR10_INPUT_SIZE + MODEL_ID_SIZE];
+    // Message to sign: nonce || model_id
+    uint8_t message_to_sign[NONCE_SIZE + MODEL_ID_SIZE];
     memcpy(&message_to_sign[0], m_inf->nonce, NONCE_SIZE);
-    memcpy(&message_to_sign[NONCE_SIZE], input, CIFAR10_INPUT_SIZE);
-    memcpy(&message_to_sign[NONCE_SIZE + CIFAR10_INPUT_SIZE], model_id, MODEL_ID_SIZE);
+    memcpy(&message_to_sign[NONCE_SIZE], model_id, MODEL_ID_SIZE);
 
-    size_t message_len = NONCE_SIZE + CIFAR10_INPUT_SIZE + MODEL_ID_SIZE;
+    size_t message_len = NONCE_SIZE + MODEL_ID_SIZE;
     printf("[VERIFIER] Message to sign: %zu bytes\n", message_len);
-    printf("[VERIFIER]   Structure: nonce(12) || input(3072) || model_id(4)\n");
+    printf("[VERIFIER]   Structure: nonce(12) || model_id(4)\n");
 
     // Import verifier private key for signing
     psa_key_attributes_t attributes = PSA_KEY_ATTRIBUTES_INIT;
@@ -292,9 +283,8 @@ int verify_proof_of_execution(
         return 0;
     }
 
-    // Message that should have been signed: model_id || cert || nonce || input || output
-    uint8_t message_to_verify[MODEL_ID_SIZE + CERT_SIZE + NONCE_SIZE + 
-                              CIFAR10_INPUT_SIZE + CIFAR10_OUTPUT_SIZE];
+    // Message that should have been signed: model_id || cert || nonce || output
+    uint8_t message_to_verify[MODEL_ID_SIZE + CERT_SIZE + NONCE_SIZE + CIFAR10_OUTPUT_SIZE];
     size_t offset = 0;
 
     memcpy(&message_to_verify[offset], pox->model_id, MODEL_ID_SIZE);
@@ -303,11 +293,9 @@ int verify_proof_of_execution(
     offset += CERT_SIZE;
     memcpy(&message_to_verify[offset], pox->nonce, NONCE_SIZE);
     offset += NONCE_SIZE;
-    memcpy(&message_to_verify[offset], pox->input, CIFAR10_INPUT_SIZE);
-    offset += CIFAR10_INPUT_SIZE;
     message_to_verify[offset] = pox->output;
 
-    size_t message_len = MODEL_ID_SIZE + CERT_SIZE + NONCE_SIZE + CIFAR10_INPUT_SIZE + 1;
+    size_t message_len = MODEL_ID_SIZE + CERT_SIZE + NONCE_SIZE + 1;
 
     // Verify device's PoX signature
     status = psa_verify_message(device_key_id, PSA_ALG_ECDSA(PSA_ALG_SHA_256),

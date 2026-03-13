@@ -343,19 +343,29 @@ def print_menu():
 
 
 def parse_ns_benchmark(data: bytes):
-    if len(data) < 72:
+    if len(data) < 64:
         print(f"  ✗ NS benchmark payload too short: {len(data)} B")
         return
-    vals = struct.unpack('<18I', data[:72])
+    # benchmark_metrics_t: 16 x uint32_t (64 bytes)
+    # [0] enclave_create  [1] enclave_destroy  [2] aes_decrypt
+    # [3] early_layers    [4] late_layers       [5] total_inference
+    # [6] run_enclave     [7] heap_used         [8] heap_free
+    # [9] stack_used      [10] ram_used         [11] ram_total
+    # [12] flash_used     [13] flash_total      [14] inference_count
+    # [15] enclave_recreations
+    vals = struct.unpack('<16I', data[:64])
     print("  NS metrics:")
     print(f"    enclave_create_cycles:   {vals[0]}")
     print(f"    enclave_destroy_cycles:  {vals[1]}")
     print(f"    aes_decrypt_cycles:      {vals[2]}")
-    print(f"    run_enclave_cycles:      {vals[8]}")
-    print(f"    total_inference_cycles:  {vals[7]}")
-    print(f"    inference_count:         {vals[16]}")
-    print(f"    RAM used/total:          {vals[12]}/{vals[13]} B")
-    print(f"    Flash used/total:        {vals[14]}/{vals[15]} B")
+    print(f"    early_layers_cycles:     {vals[3]}")
+    print(f"    late_layers_cycles:      {vals[4]}")
+    print(f"    total_inference_cycles:  {vals[5]}")
+    print(f"    run_enclave_cycles:      {vals[6]}")
+    print(f"    inference_count:         {vals[14]}")
+    print(f"    enclave_recreations:     {vals[15]}")
+    print(f"    RAM used/total:          {vals[10]}/{vals[11]} B")
+    print(f"    Flash used/total:        {vals[12]}/{vals[13]} B")
 
 
 def parse_secure_benchmark(data: bytes):

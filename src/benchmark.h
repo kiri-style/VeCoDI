@@ -82,10 +82,6 @@ typedef struct {
     // Decryption (Secure world)
     uint32_t aes_decrypt_cycles;
     
-    // Hash computation
-    uint32_t late_hash_cycles;      // Phase 1: code + late weights
-    uint32_t inference_hash_cycles; // Phase 2: input + early + late_hash
-    
     // Inference
     uint32_t early_layers_cycles;
     uint32_t late_layers_cycles;

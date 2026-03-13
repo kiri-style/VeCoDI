@@ -249,6 +249,40 @@ def send_command(ser: serial.Serial, cmd: int, data: bytes = b'') -> tuple:
 
     return status, response_data
 
+
+def build_m_update_packet(
+    session_key: bytes,
+    c_limit: int,
+    pk_v_raw: bytes,
+    enclave_info: bytes,
+    cert: bytes,
+) -> bytes:
+    """Build encrypted M_update payload: nonce(12) || ciphertext || tag(16)."""
+    plaintext  = struct.pack('<I', c_limit)
+    plaintext += pk_v_raw
+    plaintext += enclave_info
+    plaintext += struct.pack('<I', len(cert))
+    plaintext += cert
+    nonce = os.urandom(12)
+    ciphertext_with_tag = AESGCM(session_key).encrypt(nonce, plaintext, None)
+    return nonce + ciphertext_with_tag
+
+
+def build_verified_m_inf_packet(
+    session_key: bytes,
+    verifier_key,
+    model_id: int,
+) -> bytes:
+    """Build encrypted M_inf payload: nonce(12) || ciphertext || tag(16)."""
+    nonce_inf = os.urandom(32)
+    model_id_bytes = struct.pack('<I', model_id)
+    msg_to_sign = nonce_inf + model_id_bytes
+    sig_der = verifier_key.sign(msg_to_sign, ec.ECDSA(hashes.SHA256()))
+    r_v, s_v = decode_dss_signature(sig_der)
+    sig_v_raw = r_v.to_bytes(32, 'big') + s_v.to_bytes(32, 'big')
+    minf_plain = nonce_inf + model_id_bytes + sig_v_raw
+    return encrypt_command(session_key, minf_plain)
+
 def run_benchmark_on_device(port: str, baudrate: int = 115200) -> dict:
     """
     Run full benchmark sequence on device:
@@ -351,26 +385,23 @@ def run_benchmark_on_device(port: str, baudrate: int = 115200) -> dict:
         pk_v_raw = vk_full[1:]  # 64 bytes raw x||y (no 0x04 prefix)
         vprint(f"    pk_v (raw 64B):   {pk_v_raw.hex()}")
         print(f"    ✓ Verifier key pair generated  (pk_v={len(pk_v_raw)}B raw x||y)")        
-        # Step 2: Compute enclave info
+        # Step 2: Compute enclave info (attested mode: send 32-byte nonce)
         print("\n" + "─"*60)
-        print("[2] EnclaveInfo = SHA256(Model_pub || Model_secret || code || model_id)")
+        print("[2] EnclaveInfo (attested) — device computes SHA256 of model params internally")
         print("─"*60)
-        model_pub    = bytes([0xC0 + i for i in range(32)])
-        model_secret = bytes([0xE0 + i for i in range(32)])
-        code_hash    = bytes([0x01 + i for i in range(32)])
         model_id     = 0x00000001
-        test_data    = model_pub + model_secret + code_hash + struct.pack('<I', model_id)
-        vprint(f"    model_pub:    {model_pub.hex()}")
-        vprint(f"    model_secret: {model_secret.hex()}")
-        vprint(f"    code_hash:    {code_hash.hex()}")
-        vprint(f"    model_id:     0x{model_id:08X}")
-        vprint(f"    input total:  {len(test_data)}B sent to device")
+        nonce_ei     = os.urandom(32)
+        vprint(f"    nonce (32B): {nonce_ei.hex()}")
+        vprint(f"    input total: 32B sent to device")
 
-        status, enc_data = send_command(ser, CMD_COMPUTE_ENCLAVE_INFO, test_data)
+        status, enc_data = send_command(ser, CMD_COMPUTE_ENCLAVE_INFO, nonce_ei)
         enclave_info = None
         if status == RESP_OK and enc_data:
             vprint(f"    encrypted resp: {len(enc_data)}B  [{enc_data[:16].hex()}...]")
-            enclave_info = decrypt_response(session_key, enc_data) if session_key else enc_data
+            plain = decrypt_response(session_key, enc_data) if session_key else enc_data
+            # Attested response: enclave_info(32) || sig_d(64)
+            if plain and len(plain) >= 32:
+                enclave_info = plain[:32]
 
         if enclave_info:
             vprint(f"    EnclaveInfo (decrypted 32B): {enclave_info.hex()}")
@@ -403,12 +434,13 @@ def run_benchmark_on_device(port: str, baudrate: int = 115200) -> dict:
             # Total plaintext: 4+64+32+4+20 = 124 bytes
             
             # Encrypt with AES-256-GCM
-            nonce = os.urandom(12)
-            cipher = AESGCM(session_key)
-            ciphertext_with_tag = cipher.encrypt(nonce, plaintext, None)
-            
-            # Split: nonce(12) + ciphertext(120) + tag(16)
-            m_update_packet = nonce + ciphertext_with_tag
+            m_update_packet = build_m_update_packet(
+                session_key=session_key,
+                c_limit=c_limit,
+                pk_v_raw=pk_v_raw,
+                enclave_info=enclave_info,
+                cert=cert,
+            )
             
             status, _ = send_command(ser, CMD_VALIDATE_M_UPDATE, m_update_packet)
             
@@ -557,30 +589,34 @@ def run_benchmark_on_device(port: str, baudrate: int = 115200) -> dict:
         status, data = send_command(ser, CMD_GET_BENCHMARK)
         _cy2ms = lambda c: c / 110_000.0  # 110 MHz → ms
 
-        if status == RESP_OK and data and len(data) >= 72:  # 18 x uint32_t = 72 bytes
+        if status == RESP_OK and data and len(data) >= 64:  # 16 x uint32_t = 64 bytes
             vprint(f"    raw ({len(data)}B): [{data[:16].hex()}...]")
 
-            # Parse benchmark_metrics_t structure (18 x uint32_t)
-            values = struct.unpack('<18I', data[:72])
+            # Parse benchmark_metrics_t structure (16 x uint32_t)
+            # [0] enclave_create  [1] enclave_destroy  [2] aes_decrypt
+            # [3] early_layers    [4] late_layers       [5] total_inference
+            # [6] run_enclave     [7] heap_used         [8] heap_free
+            # [9] stack_used      [10] ram_used         [11] ram_total
+            # [12] flash_used     [13] flash_total      [14] inference_count
+            # [15] enclave_recreations
+            values = struct.unpack('<16I', data[:64])
 
             metrics['enclave_create_cycles']  = values[0]
             metrics['enclave_destroy_cycles'] = values[1]
             metrics['aes_decrypt_cycles']     = values[2]
-            metrics['late_hash_cycles']       = values[3]
-            metrics['inference_hash_cycles']  = values[4]
-            metrics['early_layers_cycles']    = values[5]
-            metrics['late_layers_cycles']     = values[6]
-            metrics['total_inference_cycles'] = values[7]
-            metrics['run_enclave_cycles']     = values[8]
-            metrics['heap_used_bytes']        = values[9]
-            metrics['heap_free_bytes']        = values[10]
-            metrics['stack_used_bytes']       = values[11]
-            metrics['ram_used_bytes']         = values[12]
-            metrics['ram_total_bytes']        = values[13]
-            metrics['flash_used_bytes']       = values[14]
-            metrics['flash_total_bytes']      = values[15]
-            metrics['inference_count']        = values[16]
-            metrics['enclave_recreations']    = values[17]
+            metrics['early_layers_cycles']    = values[3]
+            metrics['late_layers_cycles']     = values[4]
+            metrics['total_inference_cycles'] = values[5]
+            metrics['run_enclave_cycles']     = values[6]
+            metrics['heap_used_bytes']        = values[7]
+            metrics['heap_free_bytes']        = values[8]
+            metrics['stack_used_bytes']       = values[9]
+            metrics['ram_used_bytes']         = values[10]
+            metrics['ram_total_bytes']        = values[11]
+            metrics['flash_used_bytes']       = values[12]
+            metrics['flash_total_bytes']      = values[13]
+            metrics['inference_count']        = values[14]
+            metrics['enclave_recreations']    = values[15]
 
             # Convert cycles to ms @ 110 MHz
             cpu_freq_mhz = 110
@@ -592,19 +628,17 @@ def run_benchmark_on_device(port: str, baudrate: int = 115200) -> dict:
             vprint(f"    enclave_create:    {values[0]:>12,} cy  ({_cy2ms(values[0]):.2f} ms)")
             vprint(f"    enclave_destroy:   {values[1]:>12,} cy  ({_cy2ms(values[1]):.2f} ms)")
             vprint(f"    aes_decrypt:       {values[2]:>12,} cy  ({_cy2ms(values[2]):.2f} ms)")
-            vprint(f"    late_hash:         {values[3]:>12,} cy  ({_cy2ms(values[3]):.2f} ms)")
-            vprint(f"    inference_hash:    {values[4]:>12,} cy  ({_cy2ms(values[4]):.2f} ms)")
-            vprint(f"    early_layers:      {values[5]:>12,} cy  ({_cy2ms(values[5]):.2f} ms)")
-            vprint(f"    late_layers:       {values[6]:>12,} cy  ({_cy2ms(values[6]):.2f} ms)")
-            vprint(f"    total_inference:   {values[7]:>12,} cy  ({_cy2ms(values[7]):.2f} ms)")
-            vprint(f"    run_enclave:       {values[8]:>12,} cy  ({_cy2ms(values[8]):.2f} ms)")
-            vprint(f"    heap_used:         {values[9]:>12,} B")
-            vprint(f"    heap_free:         {values[10]:>12,} B")
-            vprint(f"    stack_used:        {values[11]:>12,} B")
-            vprint(f"    ram_used:          {values[12]:>12,} / {values[13]:,} B  ({values[12]/values[13]*100:.1f}%)")
-            vprint(f"    flash_used:        {values[14]:>12,} / {values[15]:,} B  ({values[14]/values[15]*100:.1f}%)")
-            vprint(f"    inference_count:   {values[16]:>12,}")
-            vprint(f"    enclave_recr:      {values[17]:>12,}")
+            vprint(f"    early_layers:      {values[3]:>12,} cy  ({_cy2ms(values[3]):.2f} ms)")
+            vprint(f"    late_layers:       {values[4]:>12,} cy  ({_cy2ms(values[4]):.2f} ms)")
+            vprint(f"    total_inference:   {values[5]:>12,} cy  ({_cy2ms(values[5]):.2f} ms)")
+            vprint(f"    run_enclave:       {values[6]:>12,} cy  ({_cy2ms(values[6]):.2f} ms)")
+            vprint(f"    heap_used:         {values[7]:>12,} B")
+            vprint(f"    heap_free:         {values[8]:>12,} B")
+            vprint(f"    stack_used:        {values[9]:>12,} B")
+            vprint(f"    ram_used:          {values[10]:>12,} / {values[11]:,} B  ({values[10]/values[11]*100:.1f}%)")
+            vprint(f"    flash_used:        {values[12]:>12,} / {values[13]:,} B  ({values[12]/values[13]*100:.1f}%)")
+            vprint(f"    inference_count:   {values[14]:>12,}")
+            vprint(f"    enclave_recr:      {values[15]:>12,}")
             print(f"    ✓ early={metrics['early_layers_cycles']:,} cy ({metrics.get('early_layers_ms',0):.1f} ms) | "
                   f"late={metrics['late_layers_cycles']:,} cy ({metrics.get('late_layers_ms',0):.1f} ms) | "
                   f"total={metrics['total_inference_cycles']:,} cy ({metrics.get('total_inference_ms',0):.1f} ms)")
@@ -663,6 +697,102 @@ def run_benchmark_on_device(port: str, baudrate: int = 115200) -> dict:
         else:
             print(f"    ✗ Secure benchmark not available (status={status}, data={len(s_data) if s_data else 0}B)")
 
+        # Step 10: Host-side round-trip benchmark for protocol operations
+        print("\n" + "─"*60)
+        print("[10] Host Round-Trip Benchmark (all operations)")
+        print("─"*60)
+
+        op_results = []
+
+        def bench_op(name, cmd, payload_builder, runs=1):
+            times = []
+            ok = 0
+            fail = 0
+            last_status = None
+            for _ in range(runs):
+                payload = payload_builder() if callable(payload_builder) else payload_builder
+                t0 = time.perf_counter()
+                st, _ = send_command(ser, cmd, payload)
+                dt_ms = (time.perf_counter() - t0) * 1000.0
+                times.append(dt_ms)
+                last_status = st
+                if st == RESP_OK:
+                    ok += 1
+                else:
+                    fail += 1
+
+            avg_ms = sum(times) / len(times) if times else 0.0
+            min_ms = min(times) if times else 0.0
+            max_ms = max(times) if times else 0.0
+
+            op_results.append({
+                'name': name,
+                'cmd': cmd,
+                'runs': runs,
+                'ok': ok,
+                'fail': fail,
+                'avg_ms': avg_ms,
+                'min_ms': min_ms,
+                'max_ms': max_ms,
+                'last_status': last_status,
+            })
+
+            mark = "✓" if fail == 0 else "✗"
+            print(
+                f"    {mark} {name:<24} "
+                f"avg={avg_ms:7.2f} ms  min={min_ms:7.2f} ms  max={max_ms:7.2f} ms "
+                f"(ok={ok}/{runs})"
+            )
+
+        bench_op("GET_DEVICE_PUBKEY", CMD_GET_DEVICE_PUBKEY, b'', runs=3)
+        bench_op("GET_MAX_INFERENCES", CMD_GET_MAX_INFERENCES, b'', runs=3)
+        bench_op("GET_INFERENCE_COUNT", CMD_GET_INFERENCE_COUNT, b'', runs=3)
+        bench_op("GET_REMAINING_INF", CMD_GET_REMAINING_INFERENCES, b'', runs=3)
+        bench_op("GET_INFERENCE_RESULT", CMD_GET_INFERENCE_RESULT, b'', runs=3)
+        bench_op("GET_BENCHMARK", CMD_GET_BENCHMARK, b'', runs=3)
+        bench_op("GET_SECURE_BENCH", CMD_GET_SECURE_BENCHMARK, b'', runs=3)
+
+        # Attested EnclaveInfo (len=32 nonce)
+        bench_op("COMPUTE_ENCLAVE_INFO", CMD_COMPUTE_ENCLAVE_INFO, lambda: os.urandom(32), runs=3)
+
+        # M_update (must keep c_limit strictly increasing)
+        op_mupdate_limit = max(c_limit + 1, metrics.get('quota_after_m_update', c_limit) + 1)
+        bench_op(
+            "VALIDATE_M_UPDATE",
+            CMD_VALIDATE_M_UPDATE,
+            lambda: build_m_update_packet(
+                session_key=session_key,
+                c_limit=op_mupdate_limit,
+                pk_v_raw=pk_v_raw,
+                enclave_info=enclave_info,
+                cert=cert,
+            ),
+            runs=1,
+        )
+        metrics['m_update_quota_after_op_bench'] = op_mupdate_limit
+
+        # Keep explicit SET_MAX operation benchmark (no state change: set current value)
+        target_quota = op_mupdate_limit
+        bench_op(
+            "SET_MAX_INFERENCES",
+            CMD_SET_MAX_INFERENCES,
+            lambda: struct.pack('<I', target_quota),
+            runs=1,
+        )
+
+        # Verified inference operation
+        bench_op(
+            "RUN_INFERENCE",
+            CMD_RUN_INFERENCE,
+            lambda: build_verified_m_inf_packet(session_key, verifier_key, model_id),
+            runs=1,
+        )
+
+        metrics['operation_benchmark'] = op_results
+        metrics['operation_benchmark_ok'] = sum(item['ok'] for item in op_results)
+        metrics['operation_benchmark_fail'] = sum(item['fail'] for item in op_results)
+        metrics['operation_benchmark_ops'] = len(op_results)
+
         print("\n" + "─"*60)
         
     finally:
@@ -718,15 +848,7 @@ def format_report(metrics: dict) -> str:
         cyc = metrics['aes_decrypt_cycles']
         ms = cycles_to_ms(cyc)
         report += f"║ AES Decrypt: {cyc:>10,} cycles  ({ms:>8.1f} ms)               ║\n"
-    if 'late_hash_cycles' in metrics:
-        cyc = metrics['late_hash_cycles']
-        ms = cycles_to_ms(cyc)
-        report += f"║ Late Hash:   {cyc:>10,} cycles  ({ms:>8.1f} ms)               ║\n"
-    if 'inference_hash_cycles' in metrics:
-        cyc = metrics['inference_hash_cycles']
-        ms = cycles_to_ms(cyc)
-        report += f"║ Inference Hash: {cyc:>7,} cycles  ({ms:>8.1f} ms)               ║\n"
-    
+
     # NS Inference
     report += """╟──────────────────────────────────────────────────────────────╢
 ║ INFERENCE PERFORMANCE                                        ║
@@ -915,8 +1037,27 @@ def format_report(metrics: dict) -> str:
     
     if 'inference_success' in metrics:
         report += f"- **Inference execution**: {'✓ SUCCESS' if metrics['inference_success'] else '✗ FAILED'}\n"
+
+    if 'operation_benchmark_ops' in metrics:
+        report += (
+            f"- **Operation benchmark**: {metrics.get('operation_benchmark_ops', 0)} ops, "
+            f"ok={metrics.get('operation_benchmark_ok', 0)}, "
+            f"fail={metrics.get('operation_benchmark_fail', 0)}\n"
+        )
     
     report += "\n"
+
+    if metrics.get('operation_benchmark'):
+        report += "## Host UART Operation Benchmark\n\n"
+        report += "| Operation | CMD | Runs | OK | Fail | Avg (ms) | Min (ms) | Max (ms) |\n"
+        report += "|---|---:|---:|---:|---:|---:|---:|---:|\n"
+        for op in metrics['operation_benchmark']:
+            report += (
+                f"| {op.get('name','-')} | 0x{op.get('cmd', 0):02X} | {op.get('runs', 0)} | "
+                f"{op.get('ok', 0)} | {op.get('fail', 0)} | "
+                f"{op.get('avg_ms', 0.0):.2f} | {op.get('min_ms', 0.0):.2f} | {op.get('max_ms', 0.0):.2f} |\n"
+            )
+        report += "\n"
 
     # Detailed per-inference results
     if 'inference_runs' in metrics and metrics['inference_runs']:

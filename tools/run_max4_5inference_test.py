@@ -110,14 +110,12 @@ def main() -> int:
 
     st, b = send(ser, CMD_GET_BENCH)
     lines.append(f"GET_BENCHMARK: status={st}, bytes={None if b is None else len(b)}")
-    if st == OK and b and len(b) >= 72:
-        vals = struct.unpack("<18I", b[:72])
+    if st == OK and b and len(b) >= 64:
+        vals = struct.unpack("<16I", b[:64])
         ns_keys = [
             "enclave_create_cycles",
             "enclave_destroy_cycles",
             "aes_decrypt_cycles",
-            "late_hash_cycles",
-            "inference_hash_cycles",
             "early_layers_cycles",
             "late_layers_cycles",
             "total_inference_cycles",
@@ -134,9 +132,9 @@ def main() -> int:
         ]
         ns_metrics = dict(zip(ns_keys, vals))
         lines.append(
-            f"NS_MEMORY_FOOTPRINT: ram_used={vals[12]}, ram_total={vals[13]}, flash_used={vals[14]}, flash_total={vals[15]}"
+            f"NS_MEMORY_FOOTPRINT: ram_used={vals[10]}, ram_total={vals[11]}, flash_used={vals[12]}, flash_total={vals[13]}"
         )
-        lines.append(f"NS_CYCLES: total_inference={vals[7]}, run_enclave={vals[8]}")
+        lines.append(f"NS_CYCLES: total_inference={vals[5]}, run_enclave={vals[6]}")
 
     st, s = send(ser, CMD_GET_SEC)
     lines.append(f"GET_SECURE_BENCHMARK: status={st}, bytes={None if s is None else len(s)}")

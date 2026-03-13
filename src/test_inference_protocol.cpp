@@ -58,19 +58,15 @@ static const uint8_t test_provider_pk[64] = {
     0xB9, 0xBA, 0xBB, 0xBC, 0xBD, 0xBE, 0xBF, 0xC0
 };
 
-// Small test input (64 bytes)
-static uint8_t test_input_image[CIFAR10_INPUT_SIZE];
+// Small test input (64 bytes) -- kept for reference, not transmitted in M_inf
 static uint8_t test_model_id[MODEL_ID_SIZE] = {0x12, 0x34, 0x56, 0x78};
 static uint8_t test_cert[CERT_SIZE] = {
     0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
     0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F
 };
 
-static void init_test_image(void) {
-    // Fill with pseudo-random values
-    for (int i = 0; i < CIFAR10_INPUT_SIZE; i++) {
-        test_input_image[i] = (i % 256);
-    }
+static void init_test_data(void) {
+    /* nothing to initialise for now */
 }
 
 /*=============================================================================
@@ -87,7 +83,7 @@ extern "C" int test_inference_protocol(void) {
     printf("║    INFERENCE PROTOCOL TEST (M_inf / PoX)              ║\n");
     printf("╚════════════════════════════════════════════════════════╝\n");
 
-    init_test_image();
+    init_test_data();
 
     // Initialize PSA once for all keys
     psa_status_t status = psa_crypto_init();
@@ -144,16 +140,14 @@ extern "C" int test_inference_protocol(void) {
         return -1;
     }
     
-    memcpy(m_inf.input, test_input_image, CIFAR10_INPUT_SIZE);
     memcpy(m_inf.model_id, test_model_id, MODEL_ID_SIZE);
 
-    // Message to sign: nonce || input || model_id
-    uint8_t msg_to_sign[NONCE_SIZE + CIFAR10_INPUT_SIZE + MODEL_ID_SIZE];
+    // Message to sign: nonce || model_id
+    uint8_t msg_to_sign[NONCE_SIZE + MODEL_ID_SIZE];
     memcpy(&msg_to_sign[0], m_inf.nonce, NONCE_SIZE);
-    memcpy(&msg_to_sign[NONCE_SIZE], m_inf.input, CIFAR10_INPUT_SIZE);
-    memcpy(&msg_to_sign[NONCE_SIZE + CIFAR10_INPUT_SIZE], m_inf.model_id, MODEL_ID_SIZE);
+    memcpy(&msg_to_sign[NONCE_SIZE], m_inf.model_id, MODEL_ID_SIZE);
 
-    size_t msg_len = NONCE_SIZE + CIFAR10_INPUT_SIZE + MODEL_ID_SIZE;
+    size_t msg_len = NONCE_SIZE + MODEL_ID_SIZE;
     size_t sig_len = 0;
 
     status = psa_sign_message(verifier_key_id, PSA_ALG_ECDSA(PSA_ALG_SHA_256),
@@ -186,11 +180,10 @@ extern "C" int test_inference_protocol(void) {
     memcpy(pox.model_id, m_inf.model_id, MODEL_ID_SIZE);
     memcpy(pox.cert, test_cert, CERT_SIZE);
     memcpy(pox.nonce, m_inf.nonce, NONCE_SIZE);
-    memcpy(pox.input, m_inf.input, CIFAR10_INPUT_SIZE);
     pox.output = inference_result;
 
-    // Message to sign for PoX: model_id || cert || nonce || input || output
-    uint8_t pox_msg[MODEL_ID_SIZE + CERT_SIZE + NONCE_SIZE + CIFAR10_INPUT_SIZE + 1];
+    // Message to sign for PoX: model_id || cert || nonce || output
+    uint8_t pox_msg[MODEL_ID_SIZE + CERT_SIZE + NONCE_SIZE + 1];
     size_t pox_offset = 0;
     memcpy(&pox_msg[pox_offset], pox.model_id, MODEL_ID_SIZE);
     pox_offset += MODEL_ID_SIZE;
@@ -198,11 +191,9 @@ extern "C" int test_inference_protocol(void) {
     pox_offset += CERT_SIZE;
     memcpy(&pox_msg[pox_offset], pox.nonce, NONCE_SIZE);
     pox_offset += NONCE_SIZE;
-    memcpy(&pox_msg[pox_offset], pox.input, CIFAR10_INPUT_SIZE);
-    pox_offset += CIFAR10_INPUT_SIZE;
     pox_msg[pox_offset] = pox.output;
 
-    size_t pox_msg_len = MODEL_ID_SIZE + CERT_SIZE + NONCE_SIZE + CIFAR10_INPUT_SIZE + 1;
+    size_t pox_msg_len = MODEL_ID_SIZE + CERT_SIZE + NONCE_SIZE + 1;
     size_t pox_sig_len = 0;
 
     status = psa_sign_message(device_key_id, PSA_ALG_ECDSA(PSA_ALG_SHA_256),
