@@ -20,6 +20,8 @@ Complete end-to-end verification of the 3-phase Enclave Authorization Protocol o
 - ✅ Anti-replay behavior confirmed (`c_limit` must be strictly increasing).
 - ✅ Verified inference command (`9`) confirmed working after successful M_update.
 - ✅ Deterministic SAU query (`CMD_GET_SAU_STATE = 0x0D`) confirmed operational.
+- ✅ `CMD_RUN_INFERENCE_NO_SAU (0x0E)` rejected cleanly when preconditions are not met.
+- ✅ `CMD_READ_PROTECTED_MEM (0x0F)` validated no-response reset path (HardFault expected with SAU closed).
 
 ---
 

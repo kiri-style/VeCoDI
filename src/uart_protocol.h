@@ -24,6 +24,8 @@ extern "C" {
 #define CMD_SET_MAX_INFERENCES      0x0B
 #define CMD_GET_DEVICE_PUBKEY       0x0C  /* Return pk_d (65B) for PoX verification */
 #define CMD_GET_SAU_STATE           0x0D  /* Return SAU state: state(1)+base(4)+size(4) */
+#define CMD_RUN_INFERENCE_NO_SAU    0x0E  /* DANGEROUS TEST: run inference path without SAU open */
+#define CMD_READ_PROTECTED_MEM      0x0F  /* DANGEROUS TEST: direct read from protected enclave memory */
 
 /* Response Codes (Device → Mac) */
 #define RESP_OK                     0x00

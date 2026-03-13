@@ -22,6 +22,7 @@ cd /Users/user/zephyrproject/zephyr/samples/modules/tflite-micro/hello_cifar_cle
    - utiliser `c_limit > current max` (anti-replay)
 4. `9` → Verified inference
 5. `15` → SAU state (deterministic)
+6. `18` → Tests sécurité unitaires/combinables (ex: `1,4,5`)
 
 ## Règles importantes
 
@@ -38,6 +39,11 @@ cd /Users/user/zephyrproject/zephyr/samples/modules/tflite-micro/hello_cifar_cle
 
 La réponse binaire de `CMD_GET_SAU_STATE (0x0D)` est:
 - `state(1)` + `base(4)` + `size(4)`
+
+## Tests danger (optionnels)
+
+- `19`: tentative d’inference sans ouvrir SAU
+- `20`: tentative de lecture directe mémoire protégée (peut provoquer HardFault/reset)
 
 ## Commande utile pour vérif rapide
 

@@ -85,6 +85,9 @@ Le menu actuel expose:
 15) SAU state
 16) Raw command
 17) Session status
+18) Security tests (unitaires/combinables)
+19) DANGER: inference sans SAU open
+20) DANGER: lecture mémoire protégée
 
 Enter command: 
 ```
@@ -108,18 +111,19 @@ Enter command: 1
 ```
 Enter command: 2
 
-[1] Computing EnclaveInfo on device...
-→ Sent command 0x01 (100 bytes data)
+[2] Computing EnclaveInfo...
+→ Sent command 0x01 (32 bytes data)
 
 [UART] ← Command received: 0x01
 [CMD] Compute EnclaveInfo
-[CMD] ✓ EnclaveInfo computed
-← Received status 0x00 (60 bytes data)
+[CMD] ✓ EnclaveInfo attested
+← Received status 0x00 (124 bytes data)
 
-✓ EnclaveInfo received: 55b3a716bf879bd9cb162de716f84eacf01300cc72d7120619344c7e998f9204
+✓ EnclaveInfo attestation verified with pk_d
+✓ EnclaveInfo: 55b3a716bf879bd9cb162de716f84eacf01300cc72d7120619344c7e998f9204
 ```
 
-**Résultat**: Le Secure World calcule le hash SHA-256 de `Model_pub || Model_secret || code || model_ID`.
+**Résultat**: le Secure World renvoie `enclave_info(32) || sig_d(64)` attesté (nonce challenge côté Mac).
 
 ---
 
@@ -217,6 +221,19 @@ Réponse:
 | 0x0B | SET_MAX_INFERENCES       | uint32                                | status                  |
 | 0x0C | GET_DEVICE_PUBKEY        | none                                  | pk_d (65B)              |
 | 0x0D | GET_SAU_STATE            | none                                  | state(1)+base(4)+size(4)|
+| 0x0E | RUN_INFERENCE_NO_SAU     | none                                  | status/pred (test danger) |
+| 0x0F | READ_PROTECTED_MEM       | none                                  | no response (fault) ou 1 octet |
+
+### Option 18 (tests unitaires / combinés)
+
+- `18` puis `a` : lance toute la suite
+- `18` puis `4` : lance uniquement T4
+- `18` puis `1,4,5` : combine plusieurs tests
+
+### Options danger
+
+- **19**: tente une inference sans `enclave_sau_open()`
+- **20**: tente une lecture directe de mémoire protégée (peut provoquer HardFault/reset)
 
 ### Status codes
 

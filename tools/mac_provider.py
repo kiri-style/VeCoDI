@@ -14,14 +14,15 @@ import sys
 import time
 import struct
 import hashlib
-from typing import Optional, Tuple
+from typing import Optional, Set, Tuple
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
+from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature, encode_dss_signature
+from cryptography.exceptions import InvalidSignature
 import os
 
 # ========== HARDCODED KEYS (MUST MATCH DEVICE) ==========
@@ -87,6 +88,8 @@ CMD_GET_INFERENCE_RESULT = 0x0A
 CMD_SET_MAX_INFERENCES = 0x0B
 CMD_GET_DEVICE_PUBKEY = 0x0C
 CMD_GET_SAU_STATE = 0x0D
+CMD_RUN_INFERENCE_NO_SAU = 0x0E
+CMD_READ_PROTECTED_MEM = 0x0F
 
 # Response codes
 RESP_OK = 0x00
@@ -332,6 +335,9 @@ def print_menu():
     print(" 15) Memory protection feedback (deterministic SAU state)")
     print(" 16) Raw UART command (manual)")
     print(" 17) Session status")
+    print(" 18) Security tests (negative / tamper checks)")
+    print(" 19) DANGER test: run inference without SAU open")
+    print(" 20) DANGER test: direct read protected memory")
     print("\n  q) Quit")
     print()
 
@@ -385,6 +391,94 @@ def get_device_max_inferences(device: 'STM32Device') -> Optional[int]:
     if not resp or resp[0] != RESP_OK or len(resp[1]) < 4:
         return None
     return struct.unpack('<I', resp[1][:4])[0]
+
+
+def get_device_pubkey(device: 'STM32Device') -> Optional[bytes]:
+    if not device.send_command(CMD_GET_DEVICE_PUBKEY):
+        return None
+    resp = device.read_response()
+    if not resp or resp[0] != RESP_OK or len(resp[1]) != 65:
+        return None
+    return resp[1]
+
+
+def get_sau_state(device: 'STM32Device') -> Optional[Tuple[int, int, int]]:
+    """Return SAU state tuple: (state, base, size)."""
+    if not device.send_command(CMD_GET_SAU_STATE):
+        return None
+    resp = device.read_response()
+    if not resp or resp[0] != RESP_OK or len(resp[1]) < 9:
+        return None
+    state = resp[1][0]
+    base = struct.unpack('<I', resp[1][1:5])[0]
+    size = struct.unpack('<I', resp[1][5:9])[0]
+    return (state, base, size)
+
+
+def decode_maybe_encrypted(payload: bytes) -> Optional[bytes]:
+    """Try encrypted decode first (when session exists), else return payload as-is."""
+    if DYNAMIC_SESSION_KEY is not None:
+        dec = decrypt_response(DYNAMIC_SESSION_KEY, payload)
+        if dec is not None:
+            return dec
+    return payload
+
+
+def verify_attested_enclave_info(device_pk_d: bytes, nonce: bytes, enclave_info: bytes, sig_raw: bytes) -> bool:
+    if len(device_pk_d) != 65 or len(nonce) != 32 or len(enclave_info) != 32 or len(sig_raw) != 64:
+        return False
+    try:
+        pub = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), device_pk_d)
+        r = int.from_bytes(sig_raw[:32], 'big')
+        s = int.from_bytes(sig_raw[32:], 'big')
+        sig_der = encode_dss_signature(r, s)
+        msg = nonce + enclave_info
+        pub.verify(sig_der, msg, ec.ECDSA(hashes.SHA256()))
+        return True
+    except (ValueError, InvalidSignature):
+        return False
+
+
+def request_enclave_info_attested(device: 'STM32Device', device_pk_d: Optional[bytes]) -> Tuple[Optional[bytes], Optional[bytes]]:
+    """Request EnclaveInfo using nonce attestation mode.
+    Returns: (enclave_info, maybe_updated_device_pk_d)
+    """
+    nonce = os.urandom(32)
+    if not device.send_command(CMD_COMPUTE_ENCLAVE_INFO, nonce):
+        return None, device_pk_d
+
+    resp = device.read_response()
+    if not resp or resp[0] != RESP_OK:
+        return None, device_pk_d
+
+    plain = decode_maybe_encrypted(resp[1])
+    if plain is None:
+        return None, device_pk_d
+
+    # New attested mode: enclave_info(32) || sig_d(64)
+    if len(plain) >= 96:
+        enclave_info = plain[:32]
+        sig_d = plain[32:96]
+
+        if device_pk_d is None:
+            device_pk_d = get_device_pubkey(device)
+        if device_pk_d is None:
+            print("✗ Cannot verify EnclaveInfo attestation: pk_d unavailable")
+            return None, None
+
+        if not verify_attested_enclave_info(device_pk_d, nonce, enclave_info, sig_d):
+            print("✗ EnclaveInfo attestation signature invalid")
+            return None, device_pk_d
+
+        print("✓ EnclaveInfo attestation verified with pk_d")
+        return enclave_info, device_pk_d
+
+    # Legacy fallback: plain enclave_info only
+    if len(plain) == 32:
+        print("! Legacy EnclaveInfo response (no attestation signature)")
+        return plain, device_pk_d
+
+    return None, device_pk_d
 
 
 def perform_ecdh_handshake(device: 'STM32Device') -> bool:
@@ -467,6 +561,187 @@ def perform_ecdh_handshake(device: 'STM32Device') -> bool:
     return True
 
 
+def run_security_tests(
+    device: 'STM32Device',
+    provider: 'ModelProvider',
+    enclave_info_cache: Optional[bytes],
+    device_pk_d: Optional[bytes],
+    model_id: int,
+    verifier_key,
+    selected_tests: Optional[Set[str]] = None,
+) -> Tuple[Optional[bytes], Optional[bytes]]:
+    """Run negative security tests against protocol checks.
+    Returns possibly updated (enclave_info_cache, device_pk_d).
+    """
+    print("\n[18] Security tests (negative/tamper)...")
+
+    if DYNAMIC_SESSION_KEY is None:
+        print("  - No dynamic session key: running ECDH first")
+        if not perform_ecdh_handshake(device):
+            print("✗ Cannot run security tests without ECDH session")
+            return enclave_info_cache, device_pk_d
+
+    if enclave_info_cache is None:
+        print("  - No cached EnclaveInfo: requesting attested EnclaveInfo")
+        enclave_info_cache, device_pk_d = request_enclave_info_attested(device, device_pk_d)
+        if enclave_info_cache is None:
+            print("✗ Cannot run security tests without trusted EnclaveInfo")
+            return enclave_info_cache, device_pk_d
+
+    current_max = get_device_max_inferences(device)
+    if current_max is None:
+        print("✗ Cannot read current max_inferences")
+        return enclave_info_cache, device_pk_d
+
+    print(f"  Current max_inferences = {current_max}")
+    print("  NOTE: some tests intentionally send malformed/replayed messages.")
+
+    passed = 0
+    total = 0
+
+    def verdict(name: str, ok: bool):
+        nonlocal passed, total
+        total += 1
+        if ok:
+            passed += 1
+            print(f"  ✓ {name}: PASS")
+        else:
+            print(f"  ✗ {name}: FAIL")
+
+    def should_run(test_id: str) -> bool:
+        return selected_tests is None or test_id in selected_tests
+
+    # -------- Test 1: M_update with fake EnclaveInfo must be rejected --------
+    if should_run('t1'):
+        print("\n  [T1] M_update with fake EnclaveInfo should be rejected")
+        c_limit_t1 = current_max + 1
+        fake_enclave_info = bytearray(enclave_info_cache)
+        fake_enclave_info[0] ^= 0x01
+
+        nonce, ciphertext, tag = provider.generate_m_update(c_limit_t1, bytes(fake_enclave_info), struct.pack('<I', model_id) + bytes(range(16)))
+        payload = nonce + ciphertext + tag
+        rejected = False
+        if device.send_command(CMD_VALIDATE_M_UPDATE, payload):
+            resp = device.read_response()
+            rejected = (resp is not None and resp[0] != RESP_OK)
+        verdict("T1 fake EnclaveInfo rejection", rejected)
+
+    # -------- Test 2: Valid M_update then replay same packet --------
+    if should_run('t2'):
+        print("\n  [T2] Replay protection should reject duplicated M_update")
+        c_limit_t2 = current_max + 2
+        nonce2, ciphertext2, tag2 = provider.generate_m_update(
+            c_limit_t2,
+            enclave_info_cache,
+            struct.pack('<I', model_id) + bytes(range(16))
+        )
+        payload2 = nonce2 + ciphertext2 + tag2
+
+        first_ok = False
+        replay_rejected = False
+        if device.send_command(CMD_VALIDATE_M_UPDATE, payload2):
+            resp_first = device.read_response()
+            first_ok = (resp_first is not None and resp_first[0] == RESP_OK)
+
+        if device.send_command(CMD_VALIDATE_M_UPDATE, payload2):
+            resp_replay = device.read_response()
+            replay_rejected = (resp_replay is not None and resp_replay[0] != RESP_OK)
+
+        verdict("T2 initial valid M_update accepted", first_ok)
+        verdict("T2 replay rejected", replay_rejected)
+
+    # -------- Test 3: Tamper GCM tag in M_update --------
+    if should_run('t3'):
+        print("\n  [T3] Tampered M_update tag should be rejected")
+        refreshed_max = get_device_max_inferences(device)
+        if refreshed_max is None:
+            verdict("T3 tag tamper rejection", False)
+        else:
+            c_limit_t3 = refreshed_max + 1
+            nonce3, ciphertext3, tag3 = provider.generate_m_update(
+                c_limit_t3,
+                enclave_info_cache,
+                struct.pack('<I', model_id) + bytes(range(16))
+            )
+            bad_tag = bytearray(tag3)
+            bad_tag[-1] ^= 0x80
+            payload3 = nonce3 + ciphertext3 + bytes(bad_tag)
+
+            tag_rejected = False
+            if device.send_command(CMD_VALIDATE_M_UPDATE, payload3):
+                resp3 = device.read_response()
+                tag_rejected = (resp3 is not None and resp3[0] != RESP_OK)
+            verdict("T3 tag tamper rejection", tag_rejected)
+
+    # -------- Test 4: Invalid verifier signature in M_inf --------
+    if should_run('t4'):
+        print("\n  [T4] M_inf invalid verifier signature should be rejected")
+        sig_rejected = False
+        if DYNAMIC_SESSION_KEY is None:
+            sig_rejected = False
+        else:
+            nonce_inf = os.urandom(32)
+            model_id_bytes = struct.pack('<I', model_id)
+            bad_sig = os.urandom(64)
+            minf_plain = nonce_inf + model_id_bytes + bad_sig
+            minf_enc = encrypt_command(DYNAMIC_SESSION_KEY, minf_plain)
+            if device.send_command(CMD_RUN_INFERENCE, minf_enc):
+                resp4 = device.read_response()
+                sig_rejected = (resp4 is not None and resp4[0] != RESP_OK)
+        verdict("T4 invalid M_inf signature rejection", sig_rejected)
+
+    # -------- Test 5: Rejected inference must not open SAU window --------
+    if should_run('t5'):
+        print("\n  [T5] Rejected inference should keep SAU window closed")
+
+        before = get_sau_state(device)
+        if before is None:
+            verdict("T5 SAU state readable before", False)
+        else:
+            state_before, base_before, size_before = before
+            verdict("T5 SAU state readable before", True)
+
+            nonce_inf = os.urandom(32)
+            model_id_bytes = struct.pack('<I', model_id)
+            bad_sig = os.urandom(64)
+            minf_plain = nonce_inf + model_id_bytes + bad_sig
+            minf_enc = encrypt_command(DYNAMIC_SESSION_KEY, minf_plain)
+
+            rejected = False
+            if device.send_command(CMD_RUN_INFERENCE, minf_enc):
+                resp5 = device.read_response()
+                rejected = (resp5 is not None and resp5[0] != RESP_OK)
+            verdict("T5 malformed inference rejected", rejected)
+
+            after = get_sau_state(device)
+            if after is None:
+                verdict("T5 SAU state readable after", False)
+            else:
+                state_after, base_after, size_after = after
+                verdict("T5 SAU state readable after", True)
+
+                # Main security property: rejected inference must not open SAU as a side effect.
+                no_open_transition = not (state_before != 1 and state_after == 1)
+                verdict("T5 no SAU open transition", no_open_transition)
+
+                # Stronger property (nice-to-have): if already CLOSED, remain CLOSED.
+                if state_before == 2:
+                    verdict("T5 SAU remains CLOSED", state_after == 2)
+                else:
+                    print(f"  ! T5 info: SAU baseline state was {state_before}, not CLOSED; skipping strict CLOSED check")
+
+                same_region = (base_before == base_after and size_before == size_after)
+                verdict("T5 SAU region unchanged", same_region)
+
+    print(f"\n[18] Security tests summary: {passed}/{total} passed")
+    if passed == total:
+        print("✓ All negative security checks behaved as expected")
+    else:
+        print("! Some checks did not return expected behavior (inspect logs)")
+
+    return enclave_info_cache, device_pk_d
+
+
 def main():
     if len(sys.argv) < 2:
         print("Usage: python3 mac_provider.py <serial_port> [baudrate]")
@@ -486,10 +761,7 @@ def main():
     if not device.connect():
         sys.exit(1)
     
-    # Test components (matching device test)
-    model_pub = bytes([0xC0 + i for i in range(32)])
-    model_secret = bytes([0xE0 + i for i in range(32)])
-    code_hash = bytes([0x01 + i for i in range(32)])
+    # model_id remains host-side for cert + M_inf binding
     model_id = 0x00000001
 
     # Interactive session state
@@ -517,18 +789,12 @@ def main():
 
             elif choice == '2':
                 print("\n[2] Computing EnclaveInfo...")
-                data = model_pub + model_secret + code_hash + struct.pack('<I', model_id)
-                if device.send_command(CMD_COMPUTE_ENCLAVE_INFO, data):
-                    resp = device.read_response()
-                    if resp and resp[0] == RESP_OK:
-                        dec = decode_enclave_info(resp[1])
-                        if dec:
-                            enclave_info_cache = dec
-                            print(f"✓ EnclaveInfo: {dec.hex()}")
-                        else:
-                            print(f"✗ Unsupported/undecodable EnclaveInfo response len={len(resp[1])}")
-                    else:
-                        print("✗ Failed to compute EnclaveInfo")
+                dec, device_pk_d = request_enclave_info_attested(device, device_pk_d)
+                if dec is not None:
+                    enclave_info_cache = dec
+                    print(f"✓ EnclaveInfo: {dec.hex()}")
+                else:
+                    print("✗ Failed to compute/verify EnclaveInfo attestation")
 
             elif choice == '3':
                 current_max = get_device_max_inferences(device)
@@ -541,17 +807,9 @@ def main():
                 c_limit = int(raw) if raw else suggested
                 if enclave_info_cache is None:
                     print("  (no cached EnclaveInfo, computing first)")
-                    data = model_pub + model_secret + code_hash + struct.pack('<I', model_id)
-                    if not device.send_command(CMD_COMPUTE_ENCLAVE_INFO, data):
-                        print("✗ Failed to request EnclaveInfo")
-                        continue
-                    resp = device.read_response()
-                    if not resp or resp[0] != RESP_OK:
-                        print("✗ Failed to receive EnclaveInfo")
-                        continue
-                    enclave_info_cache = decode_enclave_info(resp[1])
+                    enclave_info_cache, device_pk_d = request_enclave_info_attested(device, device_pk_d)
                     if enclave_info_cache is None:
-                        print("✗ Could not decode EnclaveInfo response")
+                        print("✗ Could not retrieve verified EnclaveInfo")
                         continue
 
                 pending_verifier_key = ec.generate_private_key(ec.SECP256R1(), default_backend())
@@ -746,6 +1004,116 @@ def main():
                 print(f"  Device pk_d cached:  {'YES' if device_pk_d is not None else 'NO'}")
                 print(f"  model_id:            0x{model_id:08X}")
                 print(f"  cert_len:            {len(cert)}")
+
+            elif choice == '18':
+                print("\nSecurity test mode:")
+                print("  a) Run all tests")
+                print("  1) T1 fake EnclaveInfo")
+                print("  2) T2 M_update replay")
+                print("  3) T3 GCM tag tamper")
+                print("  4) T4 invalid M_inf signature")
+                print("  5) T5 inference blocked with SAU closed")
+                print("\n  Tip: select unit tests individually or combine them (ex: 1,4,5)")
+                sel = input("Select [a or list like 1,4,5] (default a): ").strip().lower()
+                mapping = {
+                    '1': {'t1'},
+                    '2': {'t2'},
+                    '3': {'t3'},
+                    '4': {'t4'},
+                    '5': {'t5'},
+                }
+
+                if sel in ('', 'a', 'all'):
+                    selected = None
+                else:
+                    tokens = [t.strip() for t in sel.replace(';', ',').split(',') if t.strip()]
+                    selected = set()
+                    invalid = []
+                    for tok in tokens:
+                        if tok in mapping:
+                            selected.update(mapping[tok])
+                        else:
+                            invalid.append(tok)
+
+                    if invalid or not selected:
+                        print(f"✗ Invalid selection: {', '.join(invalid) if invalid else sel}")
+                        print("  Use: a  OR  one/many among 1,2,3,4,5")
+                        continue
+
+                enclave_info_cache, device_pk_d = run_security_tests(
+                    device=device,
+                    provider=provider,
+                    enclave_info_cache=enclave_info_cache,
+                    device_pk_d=device_pk_d,
+                    model_id=model_id,
+                    verifier_key=verifier_key,
+                    selected_tests=selected,
+                )
+
+            elif choice == '19':
+                print("\n[19] DANGER test: inference without SAU open")
+                print("  This may trigger BusFault/HardFault reset if SAU is closed.")
+                confirm = input("Type YES to continue: ").strip()
+                if confirm != 'YES':
+                    print("  cancelled")
+                    continue
+
+                before = get_sau_state(device)
+                if before is not None:
+                    st, base, size = before
+                    print(f"  SAU before: state={st}, base=0x{base:08X}, size={size}")
+
+                if not device.send_command(CMD_RUN_INFERENCE_NO_SAU):
+                    print("✗ send failed")
+                    continue
+
+                resp = device.read_response(timeout=2.0)
+                if resp is None:
+                    print("! No response (possible fault/reset), reconnect then check logs")
+                elif resp[0] == RESP_OK:
+                    if len(resp[1]) >= 1:
+                        print(f"✓ Command returned pred={resp[1][0]} (unexpected if SAU really closed)")
+                    else:
+                        print("✓ Command returned OK")
+                else:
+                    print("✓ Command rejected by device")
+
+                after = get_sau_state(device)
+                if after is not None:
+                    st, base, size = after
+                    print(f"  SAU after: state={st}, base=0x{base:08X}, size={size}")
+
+            elif choice == '20':
+                print("\n[20] DANGER test: direct read protected memory")
+                print("  This can trigger BusFault/HardFault reset if SAU is active.")
+                confirm = input("Type YES to continue: ").strip()
+                if confirm != 'YES':
+                    print("  cancelled")
+                    continue
+
+                before = get_sau_state(device)
+                if before is not None:
+                    st, base, size = before
+                    print(f"  SAU before: state={st}, base=0x{base:08X}, size={size}")
+
+                if not device.send_command(CMD_READ_PROTECTED_MEM):
+                    print("✗ send failed")
+                    continue
+
+                resp = device.read_response(timeout=2.0)
+                if resp is None:
+                    print("! No response (possible HardFault/reset), reconnect and check logs")
+                elif resp[0] == RESP_OK and len(resp[1]) >= 1:
+                    print(f"! Direct protected read succeeded, value=0x{resp[1][0]:02X}")
+                elif resp[0] == RESP_OK:
+                    print("! Direct protected read command returned OK")
+                else:
+                    print("✓ Command rejected before direct read")
+
+                after = get_sau_state(device)
+                if after is not None:
+                    st, base, size = after
+                    print(f"  SAU after: state={st}, base=0x{base:08X}, size={size}")
             
             else:
                 print("Invalid choice, try again")

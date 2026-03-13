@@ -24,12 +24,15 @@ Complete end-to-end verification of the 3-phase Enclave Authorization Protocol o
 - ✅ M_update anti-replay behavior: rejected when `c_limit <= current max`, accepted when strictly greater.
 - ✅ Verified inference command (`9`) works after successful M_update.
 - ✅ Deterministic SAU query via `CMD_GET_SAU_STATE (0x0D)`.
+- ✅ Dangerous test `CMD_RUN_INFERENCE_NO_SAU (0x0E)` rejected cleanly when policy preconditions are not met.
+- ✅ Dangerous test `CMD_READ_PROTECTED_MEM (0x0F)` can trigger no-response reset path (HardFault expected when SAU is closed).
 
 ### Practical outcomes observed
 
 - Before enclave lifecycle: SAU can return `UNREGISTERED`.
 - After inference path creates/closes enclave window: SAU returns `CLOSED` with valid base/size.
 - Example validated SAU window: `base=0x20000FC0`, `size=39552`.
+- During direct protected read test, host observed timeout/no response followed by device reset-state behavior.
 
 ### Host-tool robustness fixes validated
 

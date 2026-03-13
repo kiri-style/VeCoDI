@@ -160,7 +160,7 @@ See [BENCHMARK_RESULTS.md](../BENCHMARK_RESULTS.md) for detailed cycle-by-cycle 
 - **model_encrypted*.h**: legacy encrypted model headers (not used by split flow).
 
 ### UART Protocol (Mac ↔ STM32)
-- **uart_protocol.h**: Protocol command definitions (0x01-0x0D)
+- **uart_protocol.h**: Protocol command definitions (0x01-0x0F)
 - **uart_protocol.cpp**: Binary protocol handlers
    - CMD_COMPUTE_ENCLAVE_INFO (0x01): Generate EnclaveInfo hash
    - CMD_VALIDATE_M_UPDATE (0x02): AES-256-GCM decrypt and apply quota
@@ -175,6 +175,8 @@ See [BENCHMARK_RESULTS.md](../BENCHMARK_RESULTS.md) for detailed cycle-by-cycle 
    - CMD_SET_MAX_INFERENCES (0x0B): Manual max setting
    - CMD_GET_DEVICE_PUBKEY (0x0C): Return device public key `pk_d`
    - CMD_GET_SAU_STATE (0x0D): Return SAU state (`state+base+size`)
+   - CMD_RUN_INFERENCE_NO_SAU (0x0E): Dangerous test path (inference without opening SAU)
+   - CMD_READ_PROTECTED_MEM (0x0F): Dangerous test path (direct read in protected enclave region)
 
 ### Provider/Verifier Host Tool
 - **tools/mac_provider.py**: Interactive Model Provider/Verifier used for hardware tests
@@ -215,22 +217,17 @@ The UART protocol enables **Mac-side authorization** of device inferences via en
 **Purpose**: Generate deterministic 32-byte digest representing enclave identity.
 
 **Mac → Device**:
-- Data: 100 bytes = `model_pub[64] || model_secret[32] || code_hash[32] || model_id[4]`
-- Alternative: 0 bytes (uses default placeholder values)
+- Data: `nonce[32]` (attested mode)
 
 **Device Processing**:
-```c
-// XOR-based deterministic hash (simplified for prototype)
-for (uint32_t i = 0; i < 100; i++) {
-    mock_enclave_info[i % 32] ^= data[i];
-}
-```
+- EnclaveInfo est calculé/cache côté Secure uniquement (`dummy_partition`).
+- Signature device-side: `sig_d = Sign(sk_d, SHA256(nonce || enclave_info))`.
 
 **Device → Mac**:
 - Status: `0x00` (OK)
-- Data: 32 bytes (EnclaveInfo digest)
+- Data: `enclave_info[32] || sig_d[64]` (chiffré si session active)
 
-**Usage**: This EnclaveInfo is embedded in M_update plaintext to bind authorization to specific enclave instance.
+**Usage**: le Mac vérifie l’attestation avec `pk_d`, puis insère `enclave_info` dans `M_update`.
 
 ---
 

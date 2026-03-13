@@ -79,6 +79,57 @@ static uint8_t current_model_secret[32];
 static uint8_t current_code_hash[32];
 static uint32_t current_model_id = 0;
 static bool current_model_info_valid = false;
+static uint8_t current_enclave_info[ENCLAVE_INFO_SIZE];
+static bool current_enclave_info_valid = false;
+
+/* Default secure-only model identity (used when host does not provide details). */
+static const uint8_t default_model_pub[32] = {
+    0xC0,0xC1,0xC2,0xC3,0xC4,0xC5,0xC6,0xC7,
+    0xC8,0xC9,0xCA,0xCB,0xCC,0xCD,0xCE,0xCF,
+    0xD0,0xD1,0xD2,0xD3,0xD4,0xD5,0xD6,0xD7,
+    0xD8,0xD9,0xDA,0xDB,0xDC,0xDD,0xDE,0xDF
+};
+static const uint8_t default_model_secret[32] = {
+    0xE0,0xE1,0xE2,0xE3,0xE4,0xE5,0xE6,0xE7,
+    0xE8,0xE9,0xEA,0xEB,0xEC,0xED,0xEE,0xEF,
+    0xF0,0xF1,0xF2,0xF3,0xF4,0xF5,0xF6,0xF7,
+    0xF8,0xF9,0xFA,0xFB,0xFC,0xFD,0xFE,0xFF
+};
+static const uint8_t default_code_hash[32] = {
+    0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,
+    0x09,0x0A,0x0B,0x0C,0x0D,0x0E,0x0F,0x10,
+    0x11,0x12,0x13,0x14,0x15,0x16,0x17,0x18,
+    0x19,0x1A,0x1B,0x1C,0x1D,0x1E,0x1F,0x20
+};
+static const uint32_t default_model_id = 0x00000001U;
+
+static psa_status_t compute_enclave_info(
+    const uint8_t *model_pub,
+    const uint8_t *model_secret,
+    const uint8_t *code,
+    uint32_t model_id,
+    uint8_t *enclave_info);
+
+static void init_secure_model_identity(void)
+{
+    memcpy(current_model_pub, default_model_pub, sizeof(current_model_pub));
+    memcpy(current_model_secret, default_model_secret, sizeof(current_model_secret));
+    memcpy(current_code_hash, default_code_hash, sizeof(current_code_hash));
+    current_model_id = default_model_id;
+    current_model_info_valid = true;
+
+    psa_status_t st = compute_enclave_info(current_model_pub,
+                                           current_model_secret,
+                                           current_code_hash,
+                                           current_model_id,
+                                           current_enclave_info);
+    current_enclave_info_valid = (st == PSA_SUCCESS);
+    if (current_enclave_info_valid) {
+        printf("[SECURE] EnclaveInfo initialized and cached (model_id=%u)\n", current_model_id);
+    } else {
+        printf("[SECURE] EnclaveInfo init failed: %d\n", (int)st);
+    }
+}
 
 /* ECDH session key shared by NS after handshake — used to decrypt M_update. */
 static uint8_t  secure_session_key[32] = {0};
@@ -374,19 +425,20 @@ static psa_status_t tfm_dp_validate_m_update(psa_msg_t *msg)
     }
     uint8_t *cert_ptr = &plaintext[off];
 
-    /* Recompute EnclaveInfo and compare (constant-time). */
-    uint8_t enclave_info_cur[ENCLAVE_INFO_SIZE];
-    status = compute_enclave_info(current_model_pub, current_model_secret,
-                                  current_code_hash, current_model_id,
-                                  enclave_info_cur);
-    if (status != PSA_SUCCESS) {
-        secure_memzero(plaintext, sizeof(plaintext));
-        return status;
+    /* Compare against cached secure EnclaveInfo (constant-time). */
+    if (!current_enclave_info_valid) {
+        status = compute_enclave_info(current_model_pub, current_model_secret,
+                                      current_code_hash, current_model_id,
+                                      current_enclave_info);
+        if (status != PSA_SUCCESS) {
+            secure_memzero(plaintext, sizeof(plaintext));
+            return status;
+        }
+        current_enclave_info_valid = true;
     }
-    if (!secure_memequal(enclave_info_rcvd, enclave_info_cur, ENCLAVE_INFO_SIZE)) {
+    if (!secure_memequal(enclave_info_rcvd, current_enclave_info, ENCLAVE_INFO_SIZE)) {
         printf("[SECURE] M_update EnclaveInfo mismatch\n");
         secure_memzero(plaintext, sizeof(plaintext));
-        secure_memzero(enclave_info_cur, sizeof(enclave_info_cur));
         return PSA_ERROR_INVALID_ARGUMENT;
     }
 
@@ -435,7 +487,6 @@ static psa_status_t tfm_dp_validate_m_update(psa_msg_t *msg)
     /* Zeroize sensitive data. */
     secure_memzero(plaintext,        sizeof(plaintext));
     secure_memzero(packet,           pkt_len);
-    secure_memzero(enclave_info_cur, sizeof(enclave_info_cur));
     secure_memzero(resp,             sizeof(resp));
 
     return PSA_SUCCESS;
@@ -840,10 +891,8 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
     case DP_CMD_COMPUTE_ENCLAVE_INFO:
         {
             /* Compute EnclaveInfo = SHA-256(Model_pub || Model_secret || code || model_ID)
-             * Input format:
-             *  in[0] = cmd (4 bytes)
-             *  in[1] = combined_data = model_pub(32) || model_secret(32) || code(32) = 96 bytes
-             *  in[2] = model_id (4 bytes)
+             * Secure-only mode:
+             *   in[0] = cmd only (host never provides model details)
              * Output:
              *  out[0] = enclave_info (32 bytes)
              */
@@ -851,50 +900,30 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
             printf("[SECURE]   in_size[0]=%zu (cmd), in_size[1]=%zu (combined), in_size[2]=%zu (model_id)\n",
                    msg->in_size[0], msg->in_size[1], msg->in_size[2]);
             printf("[SECURE]   out_size[0]=%zu (enclave_info)\n", msg->out_size[0]);
-            
-            /* Validate input and output sizes */
-            if (msg->in_size[1] != 96 || msg->in_size[2] != 4) {
-                printf("[SECURE]   ERROR: Invalid input sizes (expected 96 and 4, got %zu and %zu)\n", 
-                       msg->in_size[1], msg->in_size[2]);
-                return PSA_ERROR_INVALID_ARGUMENT;
-            }
+
+            /* Validate output size */
             if (msg->out_size[0] != 32) {
                 printf("[SECURE]   ERROR: Invalid output size\n");
                 return PSA_ERROR_INVALID_ARGUMENT;
             }
 
-            uint8_t combined_data[96];
-            uint32_t model_id;
-            uint8_t enclave_info[32];
-
-            /* Read from buffer indices 1-2 (skipping command at index 0) */
-            psa_read(msg->handle, 1, combined_data, 96);
-            psa_read(msg->handle, 2, &model_id, 4);
-
-            /* Extract components from combined data */
-            uint8_t *model_pub = &combined_data[0];       /* bytes 0-31 */
-            uint8_t *model_secret = &combined_data[32];   /* bytes 32-63 */
-            uint8_t *code = &combined_data[64];           /* bytes 64-95 */
-
-            /* Cache current model identity for later EnclaveInfo validation. */
-            memcpy(current_model_pub, model_pub, 32);
-            memcpy(current_model_secret, model_secret, 32);
-            memcpy(current_code_hash, code, 32);
-            current_model_id = model_id;
-            current_model_info_valid = true;
-
-            printf("[SECURE] Computing EnclaveInfo for model_id=%u\n", model_id);
-            
-            psa_status_t status = compute_enclave_info(model_pub, model_secret, code, model_id, enclave_info);
-            if (status != PSA_SUCCESS) {
-                printf("[SECURE]   ERROR: compute_enclave_info failed: %d\n", status);
-                return status;
+            if (msg->in_size[1] != 0U || msg->in_size[2] != 0U) {
+                printf("[SECURE]   ERROR: host-provided model data is not allowed\n");
+                return PSA_ERROR_INVALID_ARGUMENT;
             }
 
-            psa_write(msg->handle, 0, enclave_info, 32);
-            printf("[SECURE]   ✓ EnclaveInfo computed successfully\n");
+            if (!current_model_info_valid) {
+                init_secure_model_identity();
+            }
+            if (!current_model_info_valid || !current_enclave_info_valid) {
+                printf("[SECURE]   ERROR: Secure EnclaveInfo state not ready\n");
+                return PSA_ERROR_BAD_STATE;
+            }
+
+            psa_write(msg->handle, 0, current_enclave_info, 32);
+            printf("[SECURE]   ✓ EnclaveInfo returned from secure cache\n");
             printf("[SECURE]   EnclaveInfo (first 16 bytes): ");
-            for (int i = 0; i < 16; i++) printf("%02X ", enclave_info[i]);
+            for (int i = 0; i < 16; i++) printf("%02X ", current_enclave_info[i]);
             printf("\n");
             return PSA_SUCCESS;
         }
@@ -1083,6 +1112,9 @@ psa_status_t tfm_dp_req_mngr_init(void)
 
     /* Initialize Secure benchmark system */
     secure_benchmark_init();
+
+    /* Initialize secure-only model identity and cache EnclaveInfo in S world. */
+    init_secure_model_identity();
 
     /* Scan and save TF-M's NS-RAM SAU region limits for runtime splits. */
     sau_partition_init();

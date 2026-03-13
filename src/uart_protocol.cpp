@@ -9,6 +9,7 @@
 #include <psa/crypto.h>
 #include <psa/client.h>
 #include "run_enclave.h"
+#include "create_enclave.h"
 
 /* Secure partition constants (mirrors dummy_partition.h, not on NS include path) */
 #define TFM_DP_SERVICE_SID          0xFFFFF002U
@@ -339,15 +340,18 @@ static bool is_valid_cmd(uint8_t cmd)
             cmd == CMD_GET_INFERENCE_RESULT ||
             cmd == CMD_SET_MAX_INFERENCES ||
             cmd == CMD_GET_DEVICE_PUBKEY ||
-            cmd == CMD_GET_SAU_STATE);
+            cmd == CMD_GET_SAU_STATE ||
+            cmd == CMD_RUN_INFERENCE_NO_SAU ||
+            cmd == CMD_READ_PROTECTED_MEM);
 }
 
 static bool is_valid_len_for_cmd(uint8_t cmd, uint32_t len)
 {
     switch (cmd) {
         case CMD_COMPUTE_ENCLAVE_INFO:
-            /* Accept step1 tests (len=0) and provider packet (len=100) */
-            return (len == 0U) || (len == 100U);
+            /* len=32: attested mode (nonce from host)
+             * len=0 : secure-internal compute only */
+            return (len == 0U) || (len == 32U);
         case CMD_VALIDATE_M_UPDATE:
             /* nonce(12) + ciphertext(n) + tag(16) */
             return (len >= 28U) && (len <= MAX_COMMAND_DATA_SIZE);
@@ -359,6 +363,8 @@ static bool is_valid_len_for_cmd(uint8_t cmd, uint32_t len)
         case CMD_GET_INFERENCE_RESULT:
         case CMD_GET_DEVICE_PUBKEY:
         case CMD_GET_SAU_STATE:
+        case CMD_RUN_INFERENCE_NO_SAU:
+        case CMD_READ_PROTECTED_MEM:
             return len == 0U;
         case CMD_RUN_INFERENCE:
             /* len=0: legacy (no M_inf);  len=128: new protocol (encrypted M_inf) */
@@ -387,6 +393,8 @@ static void handle_get_inference_result(void);
 static void handle_set_max_inferences(const uint8_t *data, uint32_t len);
 static void handle_get_device_pubkey(void);
 static void handle_get_sau_state(void);
+static void handle_run_inference_no_sau(void);
+static void handle_read_protected_mem(void);
 
 int uart_protocol_init(void)
 {
@@ -617,6 +625,14 @@ static void process_command(void)
             handle_get_sau_state();
             break;
 
+        case CMD_RUN_INFERENCE_NO_SAU:
+            handle_run_inference_no_sau();
+            break;
+
+        case CMD_READ_PROTECTED_MEM:
+            handle_read_protected_mem();
+            break;
+
         default:
             uart_protocol_send_response(RESP_ERROR, NULL, 0);
             break;
@@ -627,21 +643,14 @@ static void process_command(void)
 
 static void handle_compute_enclave_info(const uint8_t *data, uint32_t len)
 {
-    /*
-     * Input layout (from host/Pvd):
-     *   model_pub(32) || model_secret(32) || code_hash(32) || model_id(4)  = 100 bytes
-     *
-     * Delegates to Secure partition: SHA-256(model_pub || model_secret || code_hash || model_id)
+    /* Modes:
+     *   len=32  => attested mode: host provides nonce, device returns enclave_info||sig_d
+     *   len=0   => secure-internal compute, returns enclave_info
      */
-    if (len < 100U || data == NULL) {
+    if ((len != 0U && len != 32U) || (len > 0U && data == NULL)) {
         uart_send_encrypted_response(RESP_ERROR, NULL, 0);
         return;
     }
-
-    /* data[0..95]  = model_pub(32) || model_secret(32) || code_hash(32) */
-    /* data[96..99] = model_id (LE uint32) */
-    uint32_t model_id_le;
-    memcpy(&model_id_le, data + 96, sizeof(model_id_le));
 
     uint8_t enclave_info[32] = {0};
 
@@ -653,18 +662,52 @@ static void handle_compute_enclave_info(const uint8_t *data, uint32_t len)
     }
 
     uint32_t cmd = DP_CMD_COMPUTE_ENCLAVE_INFO;
-    psa_invec  in_vecs[3] = {
-        { &cmd,        sizeof(cmd)        },  /* in[0]: command word */
-        { data,        96U                },  /* in[1]: model_pub||model_secret||code_hash */
-        { &model_id_le, sizeof(model_id_le) } /* in[2]: model_id (4 bytes LE) */
-    };
     psa_outvec out_vec = { enclave_info, sizeof(enclave_info) };
 
-    psa_status_t status = psa_call(psa_h, PSA_IPC_CALL, in_vecs, 3, &out_vec, 1);
+    psa_invec in_vec = { &cmd, sizeof(cmd) };
+    psa_status_t status = psa_call(psa_h, PSA_IPC_CALL, &in_vec, 1, &out_vec, 1);
     psa_close(psa_h);
 
     if (status != PSA_SUCCESS) {
         uart_send_encrypted_response(RESP_ERROR, NULL, 0);
+        return;
+    }
+
+    /* Attested mode: sign SHA256(nonce(32) || enclave_info(32)) with device signing key. */
+    if (len == 32U) {
+        if (!device_key_ready) {
+            uart_send_encrypted_response(RESP_ERROR, NULL, 0);
+            return;
+        }
+
+        uint8_t msg[64];
+        memcpy(msg, data, 32U);
+        memcpy(msg + 32U, enclave_info, 32U);
+
+        uint8_t msg_hash[32];
+        size_t hash_len = 0U;
+        if (psa_hash_compute(PSA_ALG_SHA_256, msg, sizeof(msg),
+                             msg_hash, sizeof(msg_hash), &hash_len) != PSA_SUCCESS
+            || hash_len != 32U) {
+            uart_send_encrypted_response(RESP_ERROR, NULL, 0);
+            return;
+        }
+
+        uint8_t sig_d[64] = {0};
+        size_t sig_d_len = 0U;
+        if (psa_sign_hash(device_signing_key_id,
+                          PSA_ALG_ECDSA(PSA_ALG_SHA_256),
+                          msg_hash, sizeof(msg_hash),
+                          sig_d, sizeof(sig_d), &sig_d_len) != PSA_SUCCESS
+            || sig_d_len != 64U) {
+            uart_send_encrypted_response(RESP_ERROR, NULL, 0);
+            return;
+        }
+
+        uint8_t attested_resp[96];
+        memcpy(attested_resp, enclave_info, 32U);
+        memcpy(attested_resp + 32U, sig_d, 64U);
+        uart_send_encrypted_response(RESP_OK, attested_resp, sizeof(attested_resp));
         return;
     }
 
@@ -949,6 +992,80 @@ static void handle_get_remaining_inferences(void)
     remaining_bytes[3] = (remaining >> 24) & 0xFF;
     
     uart_protocol_send_response(RESP_OK, remaining_bytes, 4);
+}
+
+static void handle_run_inference_no_sau(void)
+{
+    /*
+     * DANGEROUS TEST PATH:
+     * Intentionally attempts inference without calling enclave_sau_open().
+     * Used only to validate that protected late-weights are not accessible
+     * when SAU is closed.
+     *
+     * Expected behavior on protected systems: BusFault/HardFault or error.
+     */
+    printk("[UART TEST] CMD_RUN_INFERENCE_NO_SAU received\n");
+
+    if (!is_enclave_created()) {
+        printk("[UART TEST] enclave not created -> creating now\n");
+        if (create_enclave() != 0) {
+            uart_protocol_send_response(RESP_ERROR, NULL, 0);
+            return;
+        }
+    }
+
+    /* Keep policy semantics aligned with normal path. */
+    if (mock_max_inferences == 0U || mock_inference_count >= mock_max_inferences) {
+        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+        return;
+    }
+
+    /* Prepare split-inference context (but DO NOT open SAU). */
+    set_late_weights_buffer(get_enclave_region(), get_enclave_region_size());
+    if (precompute_late_weights_hash() != 0) {
+        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+        return;
+    }
+
+    printk("[UART TEST] Running split inference WITHOUT SAU OPEN (expected to fault if closed)\n");
+    run_split_inference();
+    mock_inference_count++;
+
+    uint8_t pred = get_last_prediction();
+    uart_protocol_send_response(RESP_OK, &pred, 1);
+}
+
+static void handle_read_protected_mem(void)
+{
+    /*
+     * DANGEROUS TEST PATH:
+     * Force a direct NS read from enclave memory while SAU should be CLOSED.
+     * Expected behavior on protected system: BusFault/HardFault/reset/no response.
+     */
+    printk("[UART TEST] CMD_READ_PROTECTED_MEM received\n");
+
+    if (!is_enclave_created()) {
+        printk("[UART TEST] enclave not created -> creating now\n");
+        if (create_enclave() != 0) {
+            uart_protocol_send_response(RESP_ERROR, NULL, 0);
+            return;
+        }
+    }
+
+    /* Ensure SAU is closed before direct read attempt. */
+    if (enclave_sau_close() != 0) {
+        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+        return;
+    }
+
+    volatile uint8_t *p = (volatile uint8_t *)get_enclave_region();
+    printk("[UART TEST] Direct read from protected ptr=%p (expect fault if protected)\n", (void *)p);
+
+    /* If protection is effective, this can fault/reset and no response is sent. */
+    uint8_t v = p[0];
+
+    /* Reaching here means read did not fault (unexpected in strict isolation). */
+    uart_protocol_send_response(RESP_OK, &v, 1);
 }
 
 static void handle_get_benchmark(void)

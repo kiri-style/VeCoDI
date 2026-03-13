@@ -5,8 +5,9 @@
 ### Documentation
 - Updated top-level README quick-start and validated manual protocol sequence (`1 -> 2 -> 3 -> 9 -> 15`).
 - Updated `tools/README.md` to match the current interactive menu and anti-replay behavior.
-- Updated `src/README.md` UART command list to current range (`0x01..0x0D`), including `CMD_GET_SAU_STATE`.
+- Updated `src/README.md` UART command list to current range (`0x01..0x0F`), including dangerous SAU tests.
 - Updated `VERIFICATION_REPORT.md` with latest hardware re-validation notes.
+- Updated Mac guides with options `18/19/20` (unit tests + dangerous SAU checks).
 
 ### Protocol/Validation Notes Added
 - Clarified that verified inference (`9`) requires:
