@@ -11,6 +11,7 @@
 #define ENCLAVE_SID  0xFFFFF002
 #define ENCLAVE_VER  1
 
+__attribute__((section(".inference_ro"), used))
 void run_enclave(void)
 {
     BENCHMARK_START(run_enc);

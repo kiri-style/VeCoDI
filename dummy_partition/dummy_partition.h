@@ -30,6 +30,10 @@ extern "C" {
 #define DP_CMD_SAU_REGISTER         14  /* Register enclave RAM window: in[1]={base(4)+size(4)} */
 #define DP_CMD_SAU_CONTROL          15  /* SAU open/close: in[1]=cmd(1B): 1=CLOSE, 2=OPEN */
 #define DP_CMD_GET_SAU_STATE        16  /* Return SAU state: state(1)+base(4)+size(4) */
+#define DP_CMD_VALIDATE_BOOT_ENCLAVE_INFO 17  /* Recompute current EnclaveInfo and compare with boot-time sealed value */
+#define DP_CMD_SAU_REGISTER_ROM     18  /* Register model ROM window: in[1]={base(4)+size(4)} */
+#define DP_CMD_SAU_REGISTER_CODE    19  /* Register inference code window: in[1]={base(4)+size(4)} */
+#define DP_CMD_SET_LATE_SECRET_HASH 20  /* Hash encrypted late weights into secure model_secret */
 
 /* M_update auth-state response returned to NS after validate:
  * c_limit(4) + pk_v(64) + model_id(4) + cert_len(4) + cert(n, max 128) = 204 bytes */

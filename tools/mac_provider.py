@@ -90,6 +90,7 @@ CMD_GET_DEVICE_PUBKEY = 0x0C
 CMD_GET_SAU_STATE = 0x0D
 CMD_RUN_INFERENCE_NO_SAU = 0x0E
 CMD_READ_PROTECTED_MEM = 0x0F
+CMD_GET_ENCLAVE_STATE = 0x10
 
 # Response codes
 RESP_OK = 0x00
@@ -423,6 +424,16 @@ def get_sau_state(device: 'STM32Device') -> Optional[Tuple[int, int, int]]:
     base = struct.unpack('<I', resp[1][1:5])[0]
     size = struct.unpack('<I', resp[1][5:9])[0]
     return (state, base, size)
+
+
+def get_enclave_state(device: 'STM32Device') -> Optional[bool]:
+    """Return True if enclave is currently created on device."""
+    if not device.send_command(CMD_GET_ENCLAVE_STATE):
+        return None
+    resp = device.read_response()
+    if not resp or resp[0] != RESP_OK or len(resp[1]) < 1:
+        return None
+    return resp[1][0] != 0
 
 
 def decode_maybe_encrypted(payload: bytes) -> Optional[bytes]:
@@ -1127,10 +1138,12 @@ def main():
 
             elif choice == '17':
                 print("\n[17] Session status")
+                enclave_created = get_enclave_state(device)
                 print(f"  Dynamic session key: {'YES' if DYNAMIC_SESSION_KEY is not None else 'NO'}")
                 print(f"  Cached EnclaveInfo:  {'YES' if enclave_info_cache is not None else 'NO'}")
                 print(f"  Verifier key pair:   {'YES' if verifier_key is not None else 'NO'}")
                 print(f"  Device pk_d cached:  {'YES' if device_pk_d is not None else 'NO'}")
+                print(f"  Enclave created:     {('YES' if enclave_created else 'NO') if enclave_created is not None else 'UNKNOWN'}")
                 print(f"  model_id:            0x{model_id:08X}")
                 print(f"  cert_len:            {len(cert)}")
 

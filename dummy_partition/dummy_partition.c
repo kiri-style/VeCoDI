@@ -62,6 +62,10 @@ static void print_secure_memory_stats(void)
 #define DP_CMD_VALIDATE_M_UPDATE    11  /* Validate and decrypt M_update */
 #define DP_CMD_SET_MAX_INFERENCES   12  /* Override max inferences and reset counter */
 #define DP_CMD_SET_SESSION_KEY      13  /* Receive ECDH session_key from NS */
+#define DP_CMD_VALIDATE_BOOT_ENCLAVE_INFO 17  /* Recompute current EnclaveInfo and compare with boot-time sealed value */
+#define DP_CMD_SAU_REGISTER_ROM     18  /* Register model ROM window */
+#define DP_CMD_SAU_REGISTER_CODE    19  /* Register inference code window */
+#define DP_CMD_SET_LATE_SECRET_HASH 20  /* Hash encrypted late weights as model_secret */
 
 /* EnclaveInfo size (SHA-256 hash) */
 #define ENCLAVE_INFO_SIZE 32
@@ -79,28 +83,21 @@ static uint8_t current_model_secret[32];
 static uint8_t current_code_hash[32];
 static uint32_t current_model_id = 0;
 static bool current_model_info_valid = false;
+static bool current_model_secret_valid = false;
 static uint8_t current_enclave_info[ENCLAVE_INFO_SIZE];
 static bool current_enclave_info_valid = false;
+static uint8_t boot_enclave_info[ENCLAVE_INFO_SIZE];
+static bool boot_enclave_info_valid = false;
+
+/* Registered NS FLASH windows used to bind EnclaveInfo to real artifacts. */
+static uint32_t sau_rom_base = 0U;
+static uint32_t sau_rom_size = 0U;
+static bool     sau_rom_registered = false;
+static uint32_t sau_code_base = 0U;
+static uint32_t sau_code_size = 0U;
+static bool     sau_code_registered = false;
 
 /* Default secure-only model identity (used when host does not provide details). */
-static const uint8_t default_model_pub[32] = {
-    0xC0,0xC1,0xC2,0xC3,0xC4,0xC5,0xC6,0xC7,
-    0xC8,0xC9,0xCA,0xCB,0xCC,0xCD,0xCE,0xCF,
-    0xD0,0xD1,0xD2,0xD3,0xD4,0xD5,0xD6,0xD7,
-    0xD8,0xD9,0xDA,0xDB,0xDC,0xDD,0xDE,0xDF
-};
-static const uint8_t default_model_secret[32] = {
-    0xE0,0xE1,0xE2,0xE3,0xE4,0xE5,0xE6,0xE7,
-    0xE8,0xE9,0xEA,0xEB,0xEC,0xED,0xEE,0xEF,
-    0xF0,0xF1,0xF2,0xF3,0xF4,0xF5,0xF6,0xF7,
-    0xF8,0xF9,0xFA,0xFB,0xFC,0xFD,0xFE,0xFF
-};
-static const uint8_t default_code_hash[32] = {
-    0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,
-    0x09,0x0A,0x0B,0x0C,0x0D,0x0E,0x0F,0x10,
-    0x11,0x12,0x13,0x14,0x15,0x16,0x17,0x18,
-    0x19,0x1A,0x1B,0x1C,0x1D,0x1E,0x1F,0x20
-};
 static const uint32_t default_model_id = 0x00000001U;
 
 static psa_status_t compute_enclave_info(
@@ -112,26 +109,16 @@ static psa_status_t compute_enclave_info(
 
 static void init_secure_model_identity(void)
 {
-    memcpy(current_model_pub, default_model_pub, sizeof(current_model_pub));
-    memcpy(current_model_secret, default_model_secret, sizeof(current_model_secret));
-    memcpy(current_code_hash, default_code_hash, sizeof(current_code_hash));
+    memset(current_model_pub, 0, sizeof(current_model_pub));
+    memset(current_model_secret, 0, sizeof(current_model_secret));
+    memset(current_code_hash, 0, sizeof(current_code_hash));
     current_model_id = default_model_id;
     current_model_info_valid = true;
+    current_model_secret_valid = false;
+    current_enclave_info_valid = false;
+    boot_enclave_info_valid = false;
 
-    /* Cache EnclaveInfo from secure stored metadata at init time.
-     * This is independent from runtime enclave creation/SAU opening.
-     */
-    psa_status_t st = compute_enclave_info(current_model_pub,
-                                           current_model_secret,
-                                           current_code_hash,
-                                           current_model_id,
-                                           current_enclave_info);
-    current_enclave_info_valid = (st == PSA_SUCCESS);
-    if (current_enclave_info_valid) {
-        printf("[SECURE] EnclaveInfo initialized and cached (model_id=%u)\n", current_model_id);
-    } else {
-        printf("[SECURE] EnclaveInfo init failed: %d\n", (int)st);
-    }
+    printf("[SECURE] Model identity context initialized (model_id=%u)\n", current_model_id);
 }
 
 /* ECDH session key shared by NS after handshake — used to decrypt M_update. */
@@ -325,6 +312,127 @@ static psa_status_t compute_enclave_info(
     return PSA_SUCCESS;
 }
 
+static psa_status_t hash_region_chunked(const uint8_t *ptr, size_t len, uint8_t out_hash[32])
+{
+    psa_status_t status = psa_crypto_init();
+    if (status != PSA_SUCCESS) {
+        return status;
+    }
+
+    psa_hash_operation_t op = PSA_HASH_OPERATION_INIT;
+    status = psa_hash_setup(&op, PSA_ALG_SHA_256);
+    if (status != PSA_SUCCESS) {
+        return status;
+    }
+
+    const size_t chunk_size = 512U;
+    size_t processed = 0U;
+    while (processed < len) {
+        size_t chunk = (len - processed > chunk_size) ? chunk_size : (len - processed);
+        status = psa_hash_update(&op, ptr + processed, chunk);
+        if (status != PSA_SUCCESS) {
+            psa_hash_abort(&op);
+            return status;
+        }
+        processed += chunk;
+    }
+
+    size_t hash_len = 0U;
+    status = psa_hash_finish(&op, out_hash, 32U, &hash_len);
+    if (status != PSA_SUCCESS) {
+        return status;
+    }
+    if (hash_len != 32U) {
+        return PSA_ERROR_PROGRAMMER_ERROR;
+    }
+
+    return PSA_SUCCESS;
+}
+
+static psa_status_t refresh_model_pub_from_rom(void)
+{
+    if (!sau_rom_registered || sau_rom_size == 0U) {
+        return PSA_ERROR_BAD_STATE;
+    }
+    const uint8_t *rom_ptr = (const uint8_t *)(uintptr_t)sau_rom_base;
+    return hash_region_chunked(rom_ptr, sau_rom_size, current_model_pub);
+}
+
+static psa_status_t refresh_code_hash_from_registered_code(void)
+{
+    if (!sau_code_registered || sau_code_size == 0U) {
+        return PSA_ERROR_BAD_STATE;
+    }
+    const uint8_t *code_ptr = (const uint8_t *)(uintptr_t)sau_code_base;
+    return hash_region_chunked(code_ptr, sau_code_size, current_code_hash);
+}
+
+static psa_status_t recompute_current_enclave_info(void)
+{
+    if (!current_model_info_valid || !current_model_secret_valid) {
+        return PSA_ERROR_BAD_STATE;
+    }
+
+    psa_status_t st = refresh_model_pub_from_rom();
+    if (st != PSA_SUCCESS) {
+        return st;
+    }
+
+    st = refresh_code_hash_from_registered_code();
+    if (st != PSA_SUCCESS) {
+        return st;
+    }
+
+    st = compute_enclave_info(current_model_pub,
+                              current_model_secret,
+                              current_code_hash,
+                              current_model_id,
+                              current_enclave_info);
+    if (st == PSA_SUCCESS) {
+        current_enclave_info_valid = true;
+    }
+    return st;
+}
+
+static psa_status_t seal_boot_enclave_info_once(void)
+{
+    if (boot_enclave_info_valid) {
+        return PSA_SUCCESS;
+    }
+
+    psa_status_t st = recompute_current_enclave_info();
+    if (st != PSA_SUCCESS) {
+        return st;
+    }
+
+    memcpy(boot_enclave_info, current_enclave_info, ENCLAVE_INFO_SIZE);
+    boot_enclave_info_valid = true;
+    printf("[SECURE] Boot-time EnclaveInfo sealed\n");
+    return PSA_SUCCESS;
+}
+
+static psa_status_t validate_current_enclave_info_against_boot(uint8_t *match_out)
+{
+    if (match_out == NULL) {
+        return PSA_ERROR_INVALID_ARGUMENT;
+    }
+
+    psa_status_t st = seal_boot_enclave_info_once();
+    if (st != PSA_SUCCESS) {
+        return st;
+    }
+
+    st = recompute_current_enclave_info();
+    if (st != PSA_SUCCESS) {
+        return st;
+    }
+
+    *match_out = secure_memequal(current_enclave_info,
+                                 boot_enclave_info,
+                                 ENCLAVE_INFO_SIZE) ? 1U : 0U;
+    return PSA_SUCCESS;
+}
+
 /*
  * Validate M_update payload in Secure World.
  *
@@ -349,7 +457,7 @@ static psa_status_t tfm_dp_validate_m_update(psa_msg_t *msg)
         return PSA_ERROR_BAD_STATE;
     }
     if (!current_model_info_valid) {
-        printf("[SECURE] M_update rejected: EnclaveInfo not yet computed\n");
+        printf("[SECURE] M_update rejected: model identity context unavailable\n");
         return PSA_ERROR_BAD_STATE;
     }
 
@@ -428,18 +536,13 @@ static psa_status_t tfm_dp_validate_m_update(psa_msg_t *msg)
     }
     uint8_t *cert_ptr = &plaintext[off];
 
-    /* Compare against cached secure EnclaveInfo (constant-time). */
-    if (!current_enclave_info_valid) {
-        status = compute_enclave_info(current_model_pub, current_model_secret,
-                                      current_code_hash, current_model_id,
-                                      current_enclave_info);
-        if (status != PSA_SUCCESS) {
-            secure_memzero(plaintext, sizeof(plaintext));
-            return status;
-        }
-        current_enclave_info_valid = true;
+    /* Compare against sealed boot-time EnclaveInfo (constant-time). */
+    status = seal_boot_enclave_info_once();
+    if (status != PSA_SUCCESS) {
+        secure_memzero(plaintext, sizeof(plaintext));
+        return status;
     }
-    if (!secure_memequal(enclave_info_rcvd, current_enclave_info, ENCLAVE_INFO_SIZE)) {
+    if (!secure_memequal(enclave_info_rcvd, boot_enclave_info, ENCLAVE_INFO_SIZE)) {
         printf("[SECURE] M_update EnclaveInfo mismatch\n");
         secure_memzero(plaintext, sizeof(plaintext));
         return PSA_ERROR_INVALID_ARGUMENT;
@@ -584,6 +687,53 @@ static psa_status_t tfm_dp_decrypt_late_weights(psa_msg_t *msg)
     return PSA_SUCCESS;
 }
 
+/* model_secret = SHA-256(encrypted late weights). */
+static psa_status_t tfm_dp_set_late_secret_hash(psa_msg_t *msg)
+{
+    if (msg->in_size[1] == 0U) {
+        return PSA_ERROR_INVALID_ARGUMENT;
+    }
+
+    uint8_t in_buf[256];
+    size_t total = msg->in_size[1];
+    size_t processed = 0U;
+
+    psa_status_t status = psa_crypto_init();
+    if (status != PSA_SUCCESS) {
+        return status;
+    }
+
+    psa_hash_operation_t op = PSA_HASH_OPERATION_INIT;
+    status = psa_hash_setup(&op, PSA_ALG_SHA_256);
+    if (status != PSA_SUCCESS) {
+        return status;
+    }
+
+    while (processed < total) {
+        size_t chunk = (total - processed > sizeof(in_buf)) ? sizeof(in_buf) : (total - processed);
+        psa_read(msg->handle, 1, in_buf, chunk);
+        status = psa_hash_update(&op, in_buf, chunk);
+        if (status != PSA_SUCCESS) {
+            psa_hash_abort(&op);
+            return status;
+        }
+        processed += chunk;
+    }
+
+    size_t hash_len = 0U;
+    status = psa_hash_finish(&op, current_model_secret, sizeof(current_model_secret), &hash_len);
+    if (status != PSA_SUCCESS) {
+        return status;
+    }
+    if (hash_len != sizeof(current_model_secret)) {
+        return PSA_ERROR_PROGRAMMER_ERROR;
+    }
+
+    current_model_secret_valid = true;
+    current_enclave_info_valid = false;
+    return PSA_SUCCESS;
+}
+
 /* Handler signature for IPC calls. */
 typedef psa_status_t (*dp_func_t)(psa_msg_t *);
 
@@ -628,6 +778,7 @@ __always_inline void rtpox_configure_sau_secure(uint32_t address_init, uint32_t 
  * OPEN:   Regions 5+7 disabled, Region 1 restored => full NS RAM.
  * ===================================================================== */
 
+#define SAU_REGION_NS_FLASH  0U   /* TF-M initial NS-flash SAU region index */
 #define SAU_REGION_NS_RAM    1U   /* TF-M initial NS-data SAU region index */
 #define SAU_REGION_BEFORE    5U   /* our NS before-enclave region */
 #define SAU_REGION_AFTER     7U   /* our NS after-enclave region  */
@@ -640,6 +791,8 @@ static bool     sau_enclave_open       = true;  /* tracks current state */
 /* Limits of TF-M's NS-RAM SAU region (Region 1), read at init. */
 static uint32_t sau_ns_ram_base  = 0U;
 static uint32_t sau_ns_ram_limit = 0U;
+static uint32_t sau_ns_flash_base  = 0U;
+static uint32_t sau_ns_flash_limit = 0U;
 
 /* Write a SAU region: base and limit both 32-byte-aligned boundaries,
  * enable=1 => Non-Secure (NSC=0), enable=0 => disabled (=> Secure default). */
@@ -666,6 +819,12 @@ static void sau_disable_region(uint32_t idx)
 /* Called once at partition startup: read & save TF-M's NS-RAM region. */
 static void sau_partition_init(void)
 {
+    SAU->RNR = SAU_REGION_NS_FLASH;
+    uint32_t frbar = SAU->RBAR;
+    uint32_t frlar = SAU->RLAR;
+    sau_ns_flash_base  = frbar & SAU_RBAR_BADDR_Msk;
+    sau_ns_flash_limit = (frlar & SAU_RLAR_LADDR_Msk) | 0x1FU;
+
     SAU->RNR = SAU_REGION_NS_RAM;
     uint32_t rbar = SAU->RBAR;
     uint32_t rlar = SAU->RLAR;
@@ -675,6 +834,9 @@ static void sau_partition_init(void)
     printf("[SECURE SAU] NS-RAM region %u: 0x%08X..0x%08X (en=%u)\n",
            SAU_REGION_NS_RAM, sau_ns_ram_base, sau_ns_ram_limit,
            (unsigned)((rlar & SAU_RLAR_ENABLE_Msk) ? 1U : 0U));
+    printf("[SECURE SAU] NS-FLASH region %u: 0x%08X..0x%08X (en=%u)\n",
+           SAU_REGION_NS_FLASH, sau_ns_flash_base, sau_ns_flash_limit,
+           (unsigned)((frlar & SAU_RLAR_ENABLE_Msk) ? 1U : 0U));
     printf("[SECURE SAU] Regions %u,%u reserved for enclave window\n",
            SAU_REGION_BEFORE, SAU_REGION_AFTER);
 }
@@ -920,15 +1082,17 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
             if (!current_model_info_valid) {
                 init_secure_model_identity();
             }
-            if (!current_model_info_valid || !current_enclave_info_valid) {
-                printf("[SECURE]   ERROR: Secure EnclaveInfo state not ready\n");
-                return PSA_ERROR_BAD_STATE;
+
+            psa_status_t st = seal_boot_enclave_info_once();
+            if (st != PSA_SUCCESS) {
+                printf("[SECURE]   ERROR: secure boot EnclaveInfo not ready (%d)\n", (int)st);
+                return st;
             }
 
-            psa_write(msg->handle, 0, current_enclave_info, 32);
+            psa_write(msg->handle, 0, boot_enclave_info, 32);
             printf("[SECURE]   ✓ EnclaveInfo returned from secure cache\n");
             printf("[SECURE]   EnclaveInfo (first 16 bytes): ");
-            for (int i = 0; i < 16; i++) printf("%02X ", current_enclave_info[i]);
+            for (int i = 0; i < 16; i++) printf("%02X ", boot_enclave_info[i]);
             printf("\n");
             return PSA_SUCCESS;
         }
@@ -1069,6 +1233,83 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
             }
             psa_write(msg->handle, 0, resp, sizeof(resp));
             return PSA_SUCCESS;
+        }
+
+    case DP_CMD_VALIDATE_BOOT_ENCLAVE_INFO:
+        {
+            if (msg->out_size[0] < 1U) {
+                return PSA_ERROR_INVALID_ARGUMENT;
+            }
+
+            uint8_t match = 0U;
+            psa_status_t st = validate_current_enclave_info_against_boot(&match);
+            if (st != PSA_SUCCESS) {
+                printf("[SECURE] current-vs-boot EnclaveInfo validation failed: %d\n", (int)st);
+                return st;
+            }
+
+            psa_write(msg->handle, 0, &match, sizeof(match));
+            printf("[SECURE] current-vs-boot EnclaveInfo match=%u\n", match);
+            return PSA_SUCCESS;
+        }
+
+    case DP_CMD_SAU_REGISTER_ROM:
+        {
+            if (msg->in_size[1] != 8U) {
+                return PSA_ERROR_INVALID_ARGUMENT;
+            }
+            uint32_t params[2];
+            psa_read(msg->handle, 1, params, sizeof(params));
+            uint32_t base = params[0];
+            uint32_t size = params[1];
+
+            if (size == 0U || (base & 0x1FU) != 0U || (size & 0x1FU) != 0U ||
+                base < sau_ns_flash_base || (base + size - 1U) > sau_ns_flash_limit) {
+                return PSA_ERROR_INVALID_ARGUMENT;
+            }
+
+            sau_rom_base = base;
+            sau_rom_size = size;
+            sau_rom_registered = true;
+            current_enclave_info_valid = false;
+
+            uint8_t resp = 0xABU;
+            if (msg->out_size[0] >= 1U) {
+                psa_write(msg->handle, 0, &resp, 1U);
+            }
+            return PSA_SUCCESS;
+        }
+
+    case DP_CMD_SAU_REGISTER_CODE:
+        {
+            if (msg->in_size[1] != 8U) {
+                return PSA_ERROR_INVALID_ARGUMENT;
+            }
+            uint32_t params[2];
+            psa_read(msg->handle, 1, params, sizeof(params));
+            uint32_t base = params[0];
+            uint32_t size = params[1];
+
+            if (size == 0U || (base & 0x1FU) != 0U || (size & 0x1FU) != 0U ||
+                base < sau_ns_flash_base || (base + size - 1U) > sau_ns_flash_limit) {
+                return PSA_ERROR_INVALID_ARGUMENT;
+            }
+
+            sau_code_base = base;
+            sau_code_size = size;
+            sau_code_registered = true;
+            current_enclave_info_valid = false;
+
+            uint8_t resp = 0xACU;
+            if (msg->out_size[0] >= 1U) {
+                psa_write(msg->handle, 0, &resp, 1U);
+            }
+            return PSA_SUCCESS;
+        }
+
+    case DP_CMD_SET_LATE_SECRET_HASH:
+        {
+            return tfm_dp_set_late_secret_hash(msg);
         }
 
     default:

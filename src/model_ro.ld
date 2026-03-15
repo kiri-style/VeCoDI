@@ -5,6 +5,11 @@
     __model_ro_start = .;
     KEEP(*(.model_ro*))
     KEEP(*(.rodata.model_ro*))
+    /* C++ mangled symbols from split_inference.cpp (early ROM weights/biases). */
+    KEEP(*(.rodata._ZL9wt_conv2d))
+    KEEP(*(.rodata._ZL11wt_conv2d_*))
+    KEEP(*(.rodata._ZL11bias_conv2d))
+    KEEP(*(.rodata._ZL13bias_conv2d_*))
     . = ALIGN(32);
     __model_ro_end = .;
 
@@ -13,10 +18,10 @@
 } > FLASH
 
 
-/* Section pour l’inférence */
-/* NS linker script fragment */
-.inference_ro (NOLOAD) : ALIGN(32) {
+/* Section pour le code d’inférence (hashé dans EnclaveInfo) */
+.inference_ro : ALIGN(32) {
     __inference_start = .;
     KEEP(*(.inference_ro*))
+    . = ALIGN(32);
     __inference_end = .;
 } > FLASH

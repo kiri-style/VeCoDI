@@ -24,6 +24,7 @@ This TF-M secure partition provides cryptographic services for the Non-Secure (N
 - **EnclaveInfo computation** (SHA-256) ✅ Verified
 - **M_update validation** (AES-256-GCM decrypt + verify) ✅ Verified
 - **Benchmark services** (DWT cycle counting)
+- **Boot-time EnclaveInfo sealing** and **current-vs-boot integrity validation** before enclave creation
 
 ## Key Paths (Secure World)
 - `dummy_partition/dummy_partition.c`: command dispatcher + AES-CTR decryption implementation
@@ -56,6 +57,10 @@ Defined in [dummy_partition.c](dummy_partition.c):
 **Enclave Authorization Protocol (Verified 27 Feb 2026):**
 - `DP_CMD_COMPUTE_ENCLAVE_INFO = 10` ✅ (SHA-256 hash of Model_pub || Model_secret || code || model_ID)
 - `DP_CMD_VALIDATE_M_UPDATE = 11` ✅ (AES-256-GCM decrypt, EnclaveInfo verify, anti-replay, atomic policy update)
+- `DP_CMD_VALIDATE_BOOT_ENCLAVE_INFO = 17` ✅ (recompute current EnclaveInfo from registered artifacts and compare with boot-time sealed value)
+- `DP_CMD_SAU_REGISTER_ROM = 18` ✅ (register early-model ROM window used for `model_pub` hashing)
+- `DP_CMD_SAU_REGISTER_CODE = 19` ✅ (register inference code window used for `code_hash` hashing)
+- `DP_CMD_SET_LATE_SECRET_HASH = 20` ✅ (hash encrypted late weights into `model_secret`)
 
 **Benchmark & Diagnostics (NEW):**
 - `DP_CMD_GET_BENCHMARK = 8` (retrieves Secure-side performance metrics and memory usage)
@@ -92,6 +97,18 @@ Both NS and Secure worlds use ARM's Data Watchpoint and Trace (DWT) cycle counte
 - **All Timing**: Includes PSA call overhead (minimal in Secure world)
 
 ## Current Flow (Late Weights + Counter + Benchmark)
+
+### 0. Boot-time EnclaveInfo sealing
+NS bootstrap registers the relevant flash windows and sends the encrypted late-weight blob to Secure.
+
+Secure then computes:
+
+- `model_pub = SHA256(early ROM window)`
+- `model_secret = SHA256(encrypted late blob)`
+- `code_hash = SHA256(inference code window)`
+- `EnclaveInfo = SHA256(model_pub || model_secret || code_hash || model_id_LE)`
+
+The result is stored in Secure as the boot-time reference and never depends on host-provided model bytes.
 
 ### 1. Decryption Flow (cmd=3)
 NS calls `psa_call()` with:
@@ -141,6 +158,11 @@ Secure logic: `inference_counter_secure = 0` (called during enclave creation)
 - All operations logged to Secure console
 - NS cannot bypass limit checks
 - Automatic enclave refresh via destroy→recreate pattern
+
+### 3. Pre-create integrity gate
+- Before NS creates an enclave, it asks Secure to recompute current `EnclaveInfo` from the registered ROM/code windows and encrypted late blob digest.
+- Secure compares that value against the boot-time sealed reference.
+- If they differ, Secure returns failure and NS must not create the enclave.
 
 ## End-to-End Path (What Runs)
 1. NS app calls `create_enclave()` in `src/create_enclave.cpp`.
@@ -244,6 +266,6 @@ commands through `tfm_dp_secret_digest_ipc()`.
 
 ## Notes
 - Legacy model decryption is removed; `DP_CMD_DECRYPT_MODEL` returns `PSA_ERROR_NOT_SUPPORTED`.
-- The secure partition focuses on **decryption and policy checks**; it does not execute NS-side integrity-hash functions.
+- The secure partition is the authority for integrity checks: it computes all security-relevant hashes and performs the current-vs-boot comparison internally.
 - For production: Consider adding **HMAC verification** in secure partition before decryption to ensure encrypted weights haven't been tampered with.
 

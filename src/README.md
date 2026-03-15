@@ -23,6 +23,8 @@ This folder contains the Non-Secure (NS) application that drives the split infer
 - Creates the enclave environment.
 - Requests **secure decryption of late-layer weights** into NS RAM.
 - Runs CMSIS-NN split inference (early + late) using the decrypted weights.
+- Registers ROM/code windows used by Secure to bind `EnclaveInfo` to real artifacts.
+- Refuses enclave creation if Secure says current `EnclaveInfo` no longer matches the boot-time sealed reference.
 
 ## Architecture (NS + Secure Interaction)
 ```
@@ -58,7 +60,7 @@ This folder contains the Non-Secure (NS) application that drives the split infer
 
 ### Application entry
 - **main.cpp**: high-level flow; calls `create_enclave()` then `enter_enclave()`.
-- **create_enclave.cpp**: allocates the NS buffer used for late weights, invokes PSA decrypt, and manages enclave state.
+- **create_enclave.cpp**: bootstraps Secure EnclaveInfo material, validates boot-time integrity before creation, allocates the NS buffer used for late weights, invokes PSA decrypt, and manages enclave state.
 - **run_enclave.cpp**: executes split inference inside the enclave thread. **[MODIFIED]** Now atomically calls `DP_CMD_RUN_INFERENCE` (Secure checks counter + increments before inference runs).
 
 ### Split inference
@@ -87,6 +89,23 @@ psa_close(handle);
 - After valid M_update: `max_inferences_per_enclave = c_limit` (from Model Provider)
 - Once limit reached: inference execution **blocked** (no auto-recreation)
 - All verification happens in Secure world atomically
+
+## Secure EnclaveInfo lifecycle
+
+### Boot-time materialization
+- `uart_protocol_init()` triggers `initialize_secure_enclave_info_boot()`.
+- NS registers:
+   - early model ROM window (`.model_ro`)
+   - inference code window (`.inference_ro`)
+- NS sends encrypted late weights to Secure so Secure computes `model_secret = SHA256(ciphertext)`.
+- Secure seals a boot-time reference:
+
+   `EnclaveInfo = SHA256(model_pub || model_secret || code_hash || model_id_LE)`
+
+### Pre-create validation
+- At the start of `create_enclave()`, NS asks Secure to recompute the current value from registered artifacts.
+- Secure compares `current_enclave_info` against `boot_enclave_info`.
+- If the comparison fails, `create_enclave()` aborts before decrypting late weights or marking the enclave as created.
 
 ## Performance Metrics
 
@@ -155,7 +174,7 @@ See [DEVICE_BENCHMARK.md](../md/DEVICE_BENCHMARK.md) for benchmark collection, m
 - **model_encrypted*.h**: legacy encrypted model headers (not used by split flow).
 
 ### UART Protocol (Mac ↔ STM32)
-- **uart_protocol.h**: Protocol command definitions (0x01-0x0F)
+- **uart_protocol.h**: Protocol command definitions (0x01-0x10)
 - **uart_protocol.cpp**: Binary protocol handlers
    - CMD_COMPUTE_ENCLAVE_INFO (0x01): Generate EnclaveInfo hash
    - CMD_VALIDATE_M_UPDATE (0x02): AES-256-GCM decrypt and apply quota
@@ -172,6 +191,7 @@ See [DEVICE_BENCHMARK.md](../md/DEVICE_BENCHMARK.md) for benchmark collection, m
    - CMD_GET_SAU_STATE (0x0D): Return SAU state (`state+base+size`)
    - CMD_RUN_INFERENCE_NO_SAU (0x0E): Dangerous test path (inference without opening SAU)
    - CMD_READ_PROTECTED_MEM (0x0F): Dangerous test path (direct read in protected enclave region)
+   - CMD_GET_ENCLAVE_STATE (0x10): Return enclave lifecycle state (`created(1)`)
 
 ### Provider/Verifier Host Tool
 - **tools/mac_provider.py**: Interactive Model Provider/Verifier used for hardware tests
@@ -179,6 +199,7 @@ See [DEVICE_BENCHMARK.md](../md/DEVICE_BENCHMARK.md) for benchmark collection, m
    - ECDH/HKDF dynamic session key flow
    - PoX verification (valid + negative checks)
    - Security test suite (unitary/combinable)
+   - Session status now shows whether the enclave is currently created on-device
 
 ### Protocol Testing
 - **test_enclave_auth.c**: Test harness for authorization protocol

@@ -27,8 +27,22 @@ For interactive manual testing, use:
 **Current protocol notes**
 
 - ``CMD_GET_SAU_STATE (0x0D)`` is available and returns ``state(1) + base(4) + size(4)``.
+- ``CMD_GET_ENCLAVE_STATE (0x10)`` returns ``created(1)`` and is shown by Mac menu ``17`` as ``Enclave created: YES/NO``.
 - ``M_update`` rejection with ``RESP_ERROR`` is expected if ``c_limit`` is not strictly increasing.
 - SAU can be ``UNREGISTERED`` before enclave creation; after first enclave lifecycle it typically reports ``CLOSED``.
+
+**Boot-time EnclaveInfo binding**
+
+- At boot, the device registers the early-model ROM window, the inference-code window, and hashes the encrypted late weights in Secure world.
+- Secure seals a boot reference:
+
+  ``EnclaveInfo = SHA256(model_pub || model_secret || code_hash || model_id_LE)``
+
+- ``model_pub`` = SHA-256 of early-layer ROM window
+- ``model_secret`` = SHA-256 of encrypted late-layer blob
+- ``code_hash`` = SHA-256 of ``run_enclave`` code window
+- ``model_id`` = static secure model identifier
+- Before any enclave creation, Secure recomputes the current value and compares it against the boot-time sealed value; if they differ, enclave creation is denied.
 
 Protocol Architecture (Current)
 ===============================
@@ -43,6 +57,11 @@ Host (Mac) → NS (Zephyr) → S (TF-M) split:
    - ``CMD_COMPUTE_ENCLAVE_INFO (0x01)`` in attested mode: Mac sends nonce(32), device returns
      ``enclave_info(32) || sig_d(64)``.
    - Mac verifies ``sig_d`` with ``pk_d`` from ``CMD_GET_DEVICE_PUBKEY (0x0C)``.
+
+  Secure boot note:
+
+  - The boot-time EnclaveInfo reference is materialized in Secure world during device initialization.
+  - The same Secure reference is reused later for M_update validation and for pre-create integrity checks.
 
 2. **Authorization update**
 
@@ -61,6 +80,7 @@ Host (Mac) → NS (Zephyr) → S (TF-M) split:
 4. **Memory protection checks**
 
    - ``CMD_GET_SAU_STATE (0x0D)`` returns deterministic SAU state (`UNREGISTERED/OPEN/CLOSED`) + region.
+  - ``CMD_GET_ENCLAVE_STATE (0x10)`` returns whether the enclave is currently created.
    - Danger test commands:
      - ``0x0E``: inference path without explicit SAU open
      - ``0x0F``: direct protected-memory read (expected fault/reset when SAU closed)
@@ -203,14 +223,20 @@ Execution Flow
 Initialization Phase
 --------------------
 
-1. **Enclave Creation** (``create_enclave()``)
+1. **Pre-create integrity validation** (``create_enclave()``)
+
+  - NS asks Secure to recompute current ``EnclaveInfo`` from real registered artifacts.
+  - Secure compares it with the boot-time sealed reference.
+  - If the values differ, enclave creation is aborted.
+
+2. **Enclave Creation** (``create_enclave()``)
    
    - Reserve 39552-byte RAM region for late weights
    - Call secure partition via PSA IPC
    - Command: ``DP_CMD_DECRYPT_LATE_WEIGHTS``
    - Secure world decrypts AES-CTR weights into NS RAM
 
-2. **Split Inference Configuration**
+3. **Split Inference Configuration**
    
    - Main retrieves enclave region: ``get_enclave_region()``
    - Configures split inference: ``set_late_weights_buffer(buf, size)``

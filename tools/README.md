@@ -37,10 +37,17 @@ Bench/Debug:
 - `14` Read console output
 - `15` Deterministic SAU state (UNREGISTERED/OPEN/CLOSED + base + size)
 - `16` Raw UART command
-- `17` Session status
+- `17` Session status (`dynamic session`, `cached EnclaveInfo`, `pk_d`, `model_id`, `cert_len`, `enclave created`)
 - `18` Security tests (unitary or combined: ex `1,4,6`)
 - `19` DANGER: inference without SAU open
 - `20` DANGER: direct read of protected memory
+
+## Session status details
+
+- `Session status` now queries the device for enclave lifecycle state.
+- It shows `Enclave created: YES` when the enclave currently exists on-device.
+- It shows `Enclave created: NO` before creation or after destruction.
+- It shows `UNKNOWN` if the UART query fails.
 
 ## Protocol architecture (host perspective)
 
@@ -58,6 +65,7 @@ Bench/Debug:
   - successful `3` (M_update accepted)
 - Anti-replay is enforced by device: `M_update` is rejected when `c_limit <= current max`.
 - If `3` is rejected, resend with higher `c_limit`.
+- Before enclave creation, the device also checks that the current Secure recomputation of `EnclaveInfo` still matches the boot-time sealed reference.
 
 ## Security tests (option 18)
 

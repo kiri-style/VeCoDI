@@ -10,6 +10,7 @@
 #include <psa/client.h>
 #include "run_enclave.h"
 #include "create_enclave.h"
+#include "../split_inference/late/L_nn_wt_encrypted.h"
 
 /* Secure partition constants (mirrors dummy_partition.h, not on NS include path) */
 #define TFM_DP_SERVICE_SID          0xFFFFF002U
@@ -341,6 +342,7 @@ static bool is_valid_cmd(uint8_t cmd)
             cmd == CMD_SET_MAX_INFERENCES ||
             cmd == CMD_GET_DEVICE_PUBKEY ||
             cmd == CMD_GET_SAU_STATE ||
+            cmd == CMD_GET_ENCLAVE_STATE ||
             cmd == CMD_RUN_INFERENCE_NO_SAU ||
             cmd == CMD_READ_PROTECTED_MEM);
 }
@@ -363,6 +365,7 @@ static bool is_valid_len_for_cmd(uint8_t cmd, uint32_t len)
         case CMD_GET_INFERENCE_RESULT:
         case CMD_GET_DEVICE_PUBKEY:
         case CMD_GET_SAU_STATE:
+        case CMD_GET_ENCLAVE_STATE:
         case CMD_RUN_INFERENCE_NO_SAU:
         case CMD_READ_PROTECTED_MEM:
             return len == 0U;
@@ -393,6 +396,7 @@ static void handle_get_inference_result(void);
 static void handle_set_max_inferences(const uint8_t *data, uint32_t len);
 static void handle_get_device_pubkey(void);
 static void handle_get_sau_state(void);
+static void handle_get_enclave_state(void);
 static void handle_run_inference_no_sau(void);
 static void handle_read_protected_mem(void);
 
@@ -437,6 +441,11 @@ int uart_protocol_init(void)
 
     /* Generate device signing key pair (sk_d, pk_d) for PoX */
     init_device_signing_key();
+
+    /* Boot-time Secure EnclaveInfo materialization (all components). */
+    if (initialize_secure_enclave_info_boot() != 0) {
+        printk("[UART] WARNING: secure boot EnclaveInfo init failed\n");
+    }
 
     return 0;
 }
@@ -625,6 +634,10 @@ static void process_command(void)
             handle_get_sau_state();
             break;
 
+        case CMD_GET_ENCLAVE_STATE:
+            handle_get_enclave_state();
+            break;
+
         case CMD_RUN_INFERENCE_NO_SAU:
             handle_run_inference_no_sau();
             break;
@@ -655,6 +668,11 @@ static void handle_compute_enclave_info(const uint8_t *data, uint32_t len)
     }
 
     uint8_t enclave_info[32] = {0};
+
+    if (initialize_secure_enclave_info_boot() != 0) {
+        uart_send_encrypted_response(RESP_ERROR, NULL, 0);
+        return;
+    }
 
     /* Call Secure partition for real SHA-256 via PSA IPC */
     psa_handle_t psa_h = psa_connect(TFM_DP_SERVICE_SID, 1);
@@ -729,6 +747,11 @@ static void handle_validate_m_update(const uint8_t *data, uint32_t len)
      * Secure out[0] = c_limit(4) + pk_v(64) + model_id(4) + cert_len(4) + cert(n)
      */
     if (data == NULL || len < 28U) {
+        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+        return;
+    }
+
+    if (initialize_secure_enclave_info_boot() != 0) {
         uart_protocol_send_response(RESP_ERROR, NULL, 0);
         return;
     }
@@ -1324,4 +1347,10 @@ static void handle_get_sau_state(void)
     }
 
     uart_protocol_send_response(RESP_OK, resp, sizeof(resp));
+}
+
+static void handle_get_enclave_state(void)
+{
+    uint8_t created = is_enclave_created() ? 1U : 0U;
+    uart_protocol_send_response(RESP_OK, &created, sizeof(created));
 }

@@ -8,6 +8,11 @@
 #include "benchmark.h"
 #include "../split_inference/late/L_nn_wt_encrypted.h"
 
+extern const uint8_t __model_ro_start[];
+extern const uint8_t __model_ro_end[];
+extern const uint8_t __inference_start[];
+extern const uint8_t __inference_end[];
+
 /* ============================================================
  *                 CONFIGURATION
  * ============================================================ */
@@ -25,6 +30,11 @@
 #define DP_CMD_DECRYPT_LATE_WEIGHTS 3
 #define DP_CMD_SAU_REGISTER    14U  /* Register enclave RAM window with Secure */
 #define DP_CMD_SAU_CONTROL     15U  /* SAU cmd: 1=CLOSE, 2=OPEN */
+#define DP_CMD_VALIDATE_BOOT_ENCLAVE_INFO 17U
+#define DP_CMD_SAU_REGISTER_ROM 18U
+#define DP_CMD_SAU_REGISTER_CODE 19U
+#define DP_CMD_SET_LATE_SECRET_HASH 20U
+#define DP_CMD_COMPUTE_ENCLAVE_INFO 10U
 
 /* ============================================================
  *                 GLOBALS
@@ -32,6 +42,9 @@
 
 static bool enclave_created = false;
 static uint32_t max_inferences_per_enclave = 0;
+static bool model_ro_registered_once = false;
+static bool inference_code_registered_once = false;
+static bool boot_enclave_info_seeded_once = false;
 
 /* Forward declaration for reset function */
 extern void reset_inference_counter(void);
@@ -70,6 +83,178 @@ int enclave_sau_register_window(const uint8_t *base, uint32_t size)
     }
     printk("[NS SAU] Enclave registered: base=%p size=%u resp=0x%02X\n",
            (void *)base, size, resp);
+    return 0;
+}
+
+static int enclave_sau_register_rom_window(const uint8_t *base, uint32_t size)
+{
+    psa_handle_t h = psa_connect(ENCLAVE_SID, ENCLAVE_VER);
+    if (h <= 0) {
+        printk("[NS SAU] psa_connect failed for REGISTER_ROM\n");
+        return -1;
+    }
+    uint32_t cmd = DP_CMD_SAU_REGISTER_ROM;
+    uint32_t params[2] = { (uint32_t)(uintptr_t)base, size };
+    psa_invec  in_v[2] = { {&cmd, sizeof(cmd)}, {params, sizeof(params)} };
+    uint8_t    resp    = 0U;
+    psa_outvec out_v   = { &resp, 1U };
+    psa_status_t st = psa_call(h, PSA_IPC_CALL, in_v, 2, &out_v, 1);
+    psa_close(h);
+    if (st != PSA_SUCCESS) {
+        printk("[NS SAU] REGISTER_ROM failed: %d\n", (int)st);
+        return -1;
+    }
+    return 0;
+}
+
+static int enclave_sau_register_code_window(const uint8_t *base, uint32_t size)
+{
+    psa_handle_t h = psa_connect(ENCLAVE_SID, ENCLAVE_VER);
+    if (h <= 0) {
+        printk("[NS SAU] psa_connect failed for REGISTER_CODE\n");
+        return -1;
+    }
+    uint32_t cmd = DP_CMD_SAU_REGISTER_CODE;
+    uint32_t params[2] = { (uint32_t)(uintptr_t)base, size };
+    psa_invec  in_v[2] = { {&cmd, sizeof(cmd)}, {params, sizeof(params)} };
+    uint8_t    resp    = 0U;
+    psa_outvec out_v   = { &resp, 1U };
+    psa_status_t st = psa_call(h, PSA_IPC_CALL, in_v, 2, &out_v, 1);
+    psa_close(h);
+    if (st != PSA_SUCCESS) {
+        printk("[NS SAU] REGISTER_CODE failed: %d\n", (int)st);
+        return -1;
+    }
+    return 0;
+}
+
+int ensure_model_ro_registered(void)
+{
+    if (model_ro_registered_once) {
+        return 0;
+    }
+
+    uint32_t rom_size = (uint32_t)(__model_ro_end - __model_ro_start);
+    if (rom_size == 0U) {
+        printk("[NS] model_ro section empty\n");
+        return -1;
+    }
+
+    if (enclave_sau_register_rom_window(__model_ro_start, rom_size) != 0) {
+        return -1;
+    }
+    model_ro_registered_once = true;
+    return 0;
+}
+
+int ensure_inference_code_registered(void)
+{
+    if (inference_code_registered_once) {
+        return 0;
+    }
+
+    uint32_t code_size = (uint32_t)(__inference_end - __inference_start);
+    if (code_size == 0U) {
+        printk("[NS] inference_ro section empty\n");
+        return -1;
+    }
+
+    if (enclave_sau_register_code_window(__inference_start, code_size) != 0) {
+        return -1;
+    }
+    inference_code_registered_once = true;
+    return 0;
+}
+
+static int seed_late_secret_hash_secure(void)
+{
+    psa_handle_t h = psa_connect(ENCLAVE_SID, ENCLAVE_VER);
+    if (h <= 0) {
+        return -1;
+    }
+
+    uint32_t cmd = DP_CMD_SET_LATE_SECRET_HASH;
+    psa_invec in_v[2] = {
+        { &cmd, sizeof(cmd) },
+        { late_wt_encrypted, late_wt_encrypted_len }
+    };
+
+    psa_status_t st = psa_call(h, PSA_IPC_CALL, in_v, 2, NULL, 0);
+    psa_close(h);
+    return (st == PSA_SUCCESS) ? 0 : -1;
+}
+
+static int validate_boot_enclave_info_before_create(void)
+{
+    if (initialize_secure_enclave_info_boot() != 0) {
+        printk("[NS] Failed to initialize secure boot EnclaveInfo\n");
+        return -1;
+    }
+
+    if (seed_late_secret_hash_secure() != 0) {
+        printk("[NS] Failed to recompute secure late secret hash\n");
+        return -1;
+    }
+
+    psa_handle_t h = psa_connect(ENCLAVE_SID, ENCLAVE_VER);
+    if (h <= 0) {
+        printk("[NS] psa_connect failed for current-vs-boot EnclaveInfo validation\n");
+        return -1;
+    }
+
+    uint32_t cmd = DP_CMD_VALIDATE_BOOT_ENCLAVE_INFO;
+    uint8_t match = 0U;
+    psa_invec in_v = { &cmd, sizeof(cmd) };
+    psa_outvec out_v = { &match, sizeof(match) };
+    psa_status_t st = psa_call(h, PSA_IPC_CALL, &in_v, 1, &out_v, 1);
+    psa_close(h);
+
+    if (st != PSA_SUCCESS) {
+        printk("[NS] Secure current-vs-boot EnclaveInfo validation failed: %d\n", (int)st);
+        return -1;
+    }
+
+    if (match != 1U) {
+        printk("[NS] EnclaveInfo mismatch with boot-time reference, enclave creation denied\n");
+        return -1;
+    }
+
+    printk("[NS] EnclaveInfo validated against boot-time reference\n");
+    return 0;
+}
+
+int initialize_secure_enclave_info_boot(void)
+{
+    if (boot_enclave_info_seeded_once) {
+        return 0;
+    }
+
+    if (ensure_model_ro_registered() != 0) {
+        return -1;
+    }
+    if (ensure_inference_code_registered() != 0) {
+        return -1;
+    }
+    if (seed_late_secret_hash_secure() != 0) {
+        return -1;
+    }
+
+    uint8_t enclave_info[32] = {0};
+    psa_handle_t h = psa_connect(ENCLAVE_SID, ENCLAVE_VER);
+    if (h <= 0) {
+        return -1;
+    }
+    uint32_t cmd = DP_CMD_COMPUTE_ENCLAVE_INFO;
+    psa_invec in_v = { &cmd, sizeof(cmd) };
+    psa_outvec out_v = { enclave_info, sizeof(enclave_info) };
+    psa_status_t st = psa_call(h, PSA_IPC_CALL, &in_v, 1, &out_v, 1);
+    psa_close(h);
+    if (st != PSA_SUCCESS) {
+        return -1;
+    }
+
+    boot_enclave_info_seeded_once = true;
+    printk("[NS] Secure boot EnclaveInfo initialized\n");
     return 0;
 }
 
@@ -178,6 +363,12 @@ int create_enclave(void)
     
     if (enclave_created) {
         printk("[NS] Enclave already created\n");
+        return -1;
+    }
+
+    printk("[NS] Validating current EnclaveInfo against boot-time reference...\n");
+    if (validate_boot_enclave_info_before_create() != 0) {
+        printk("[NS] ✗ Enclave creation aborted: boot-time EnclaveInfo validation failed\n");
         return -1;
     }
 

@@ -23,6 +23,11 @@ int enclave_sau_register_window(const uint8_t *base, uint32_t size);
 int enclave_sau_open(void);
 int enclave_sau_close(void);
 
+/* Boot-time secure EnclaveInfo bootstrap helpers */
+int ensure_model_ro_registered(void);
+int ensure_inference_code_registered(void);
+int initialize_secure_enclave_info_boot(void);
+
 #ifdef __cplusplus
 }
 #endif
