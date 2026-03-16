@@ -223,6 +223,11 @@ static int validate_boot_enclave_info_before_create(void)
     return 0;
 }
 
+int validate_enclave_info_before_inference(void)
+{
+    return validate_boot_enclave_info_before_create();
+}
+
 int initialize_secure_enclave_info_boot(void)
 {
     if (boot_enclave_info_seeded_once) {

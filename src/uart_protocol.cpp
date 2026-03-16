@@ -2,6 +2,7 @@
 
 #include "uart_protocol.h"
 #include <zephyr/kernel.h>
+#include <zephyr/irq.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/uart.h>
 #include <zephyr/drivers/gpio.h>
@@ -20,6 +21,8 @@
 #include "benchmark.h"
 #include "secure_benchmark_ns.h"
 #include "split_inference.h"
+
+int validate_enclave_info_before_inference(void);
 
 /* Debug mode: Set to 1 to enable diagnostics, 0 for clean protocol */
 #define UART_DEBUG_MODE 0
@@ -937,6 +940,20 @@ static void handle_run_inference(void)
         return;
     }
 
+    /*
+     * ATOMIC INFERENCE SECTION:
+     * From EnclaveInfo runtime check up to RAM-close/inference completion and
+     * host response send, keep IRQ masked for strict sequential execution.
+     */
+    unsigned int irq_key_atomic = irq_lock();
+
+    if (validate_enclave_info_before_inference() != 0) {
+        irq_unlock(irq_key_atomic);
+        printk("[UART] EnclaveInfo runtime validation failed, inference denied\n");
+        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+        return;
+    }
+
     /* Run the enclave (NS+S integrated architecture) */
     run_enclave();
     mock_inference_count++;
@@ -946,6 +963,7 @@ static void handle_run_inference(void)
     if (!verified_mode) {
         /* Legacy path: no PoX, plain confirmation */
         uart_protocol_send_response(RESP_OK, NULL, 0);
+        irq_unlock(irq_key_atomic);
         return;
     }
 
@@ -989,6 +1007,7 @@ static void handle_run_inference(void)
     memcpy(response_plain + 1U, pox_sig, 64U);
 
     uart_send_encrypted_response(RESP_OK, response_plain, sizeof(response_plain));
+    irq_unlock(irq_key_atomic);
 }
 
 static void handle_get_inference_count(void)
