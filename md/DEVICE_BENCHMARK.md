@@ -13,13 +13,31 @@ The device benchmark system measures performance metrics directly on the STM32L5
 
 ## Collected Metrics
 
-### Non-Secure (NS) Metrics - 64 bytes total
-- Enclave lifecycle: create, destroy cycles
+### Non-Secure (NS) Metrics
+
+The benchmark response supports multiple payload versions for backward compatibility:
+
+- **Legacy layout:** 64 bytes (`16 x uint32_t`)
+- **Extended v1 layout:** 184 bytes (`16I + 2I + 7Q + 14I + 7I`)
+- **Extended v2 layout (current):** 232 bytes (`18I + 8Q + 24I`)
+
+Core metrics (all layouts):
+- Enclave lifecycle: create/destroy cycles
 - Cryptographic operations: AES decrypt cycles
 - Inference performance: early/late layers, total
-- End-to-end: run_enclave() timing
+- End-to-end: `run_enclave()` timing
 - Memory usage: RAM used/total, Flash used/total
 - Counters: inference count, recreations
+
+Extended metrics (v1/v2):
+- Request and validation counters:
+  - `inference_requests_total`
+  - `enclave_info_validation_failures`
+- Aggregate cycle stats per stage:
+  - `sum_cycles`, `min_cycles`, `max_cycles`, `count`, `avg_cycles`
+  - stages: `enclave_create`, `enclave_destroy`, `aes_decrypt`, `early_layers`, `late_layers`, `total_inference`, `run_enclave`
+- **Extended v2 adds IRQ atomic timing stage:**
+  - `irq_atomic_sum_cycles`, `irq_atomic_min_cycles`, `irq_atomic_max_cycles`, `irq_atomic_count`, `irq_atomic_avg_cycles`
 
 ### Secure (S) Metrics - 88 bytes total
 - AES Decrypt: cycles and operation count
@@ -44,66 +62,73 @@ This will:
 4. Execute split inference
 5. Collect both NS and S metrics
 6. Benchmark all main UART operations (avg/min/max latency)
+7. Decode extended NS aggregate metrics (including IRQ-masked window timing when available)
 7. Save full report to `build/DEVICE_BENCHMARK_RESULTS.md`
 
-### Output Example
+
+## Complete Results (16 March 2026)
 
 ```
-======================================================================
-NON-SECURE (NS) BENCHMARK RESULTS
-======================================================================
+╔══════════════════════════════════════════════════════════════╗
+║        NON-SECURE (NS) BENCHMARK RESULTS                    ║
+╠══════════════════════════════════════════════════════════════╣
+║ ENCLAVE LIFECYCLE                                            ║
+╟──────────────────────────────────────────────────────────────╢
+║ Create:     4,719,136 cycles  (    42.9 ms)               ║
+║ Destroy:            0 cycles  (     0.0 ms)               ║
+╟──────────────────────────────────────────────────────────────╢
+║ CRYPTOGRAPHIC OPERATIONS                                     ║
+╟──────────────────────────────────────────────────────────────╢
+║ AES Decrypt:  1,043,519 cycles  (     9.5 ms)               ║
+╟──────────────────────────────────────────────────────────────╢
+║ INFERENCE PERFORMANCE                                        ║
+╟──────────────────────────────────────────────────────────────╢
+║ Early Layers: 2,818,532 cycles  (   25.6 ms)              ║
+║ Late Layers:  1,274,028 cycles  (    11.6 ms)              ║
+║ Total Inf:    4,116,262 cycles  (    37.4 ms)              ║
+╟──────────────────────────────────────────────────────────────╢
+║ END-TO-END METRICS                                           ║
+╟──────────────────────────────────────────────────────────────╢
+║ run_enclave(): 4,164,761 cycles  (   37.9 ms)             ║
+║ Inferences:            10 total                              ║
+╟──────────────────────────────────────────────────────────────╢
+║ MEMORY USAGE (NS World)                                      ║
+╟──────────────────────────────────────────────────────────────╢
+║ Heap Used:            0 bytes  (       0 KB)                   ║
+║ Stack Used:       2,048 bytes  (       2 KB)                   ║
+║ RAM Used:       122,194 / 131,072 bytes (93.2%)              ║
+║ Flash Used:     141,088 / 262,144 bytes (53.8%)              ║
+╚══════════════════════════════════════════════════════════════╝
 
-Enclave Lifecycle:
-  Create:   7,980,975 cycles (72.6 ms)
-  Destroy:          0 cycles (0.0 ms)
+╔══════════════════════════════════════════════════════════════╗
+║        SECURE (S) BENCHMARK RESULTS                         ║
+╠══════════════════════════════════════════════════════════════╣
+║ CRYPTOGRAPHIC OPERATIONS                                     ║
+╟──────────────────────────────────────────────────────────────╢
+║ AES Decrypt:  7,626,509 cycles  (    69.3 ms) [1 ops]       ║
+║ Late Hash:            0 cycles  (     0.0 ms) [0 ops]       ║
+║ Digest Compute:       0 cycles  (     0.0 ms) [0 ops]       ║
+╟──────────────────────────────────────────────────────────────╢
+║ COUNTER MANAGEMENT                                           ║
+╟──────────────────────────────────────────────────────────────╢
+║ Get Max:            513 cycles  (     0.0 ms)               ║
+║ Check Allowed:        0 cycles  (     0.0 ms)               ║
+║ Increment:            0 cycles  (     0.0 ms)               ║
+║ Reset:               16 cycles  (     0.0 ms)               ║
+║ Total Ops:           13 operations                    ║
+╟──────────────────────────────────────────────────────────────╢
+║ MEMORY USAGE (Secure World)                                 ║
+╟──────────────────────────────────────────────────────────────╢
+║ RAM Used:        52,732 / 65,536 bytes (80.5%)               ║
+║ Flash Used:     119,532 / 134,144 bytes (89.1%)              ║
+╚══════════════════════════════════════════════════════════════╝
 
-Inference Performance:
-  Early Layers: 42,984,997 cycles (390.8 ms)
-  Late Layers:   7,922,258 cycles (72.0 ms)
-  Total:        51,553,622 cycles (468.7 ms)
-
-NS Memory Usage:
-  RAM Used:      121,788 / 131,072 bytes (92.9%)
-  Flash Used:    176,160 / 262,144 bytes (67.2%)
-
-======================================================================
-SECURE (S) BENCHMARK RESULTS
-======================================================================
-
-Cryptographic Operations (Secure):
-  AES Decrypt:     7,662,219 cycles (69.7 ms) [1 ops]
-
-Secure Memory Usage:
-  RAM Used:       52,732 / 65,536 bytes (80.5%)
-  Flash Used:    119,532 / 134,144 bytes (89.1%)
-
-======================================================================
-COMBINED SYSTEM METRICS
-======================================================================
-Total RAM:      174,520 / 196,608 bytes (88.8%)
-Total Flash:    295,692 / 396,288 bytes (74.6%)
-
-======================================================================
-MEMORY FOOTPRINT ANALYSIS
-======================================================================
-
-ELF Section Analysis (ACTUAL from build):
-
-Flash (ROM) Sections:
-├─ .rodata (Constants):     138,252 bytes ( 135.0 KB)
-└─ Total Flash Used:        138,252 bytes ( 135.0 KB)
-
-RAM (SRAM) Sections:
-├─ .data (Initialized):       3,976 bytes (   3.9 KB)
-├─ .bss (Zero-init):        117,809 bytes ( 115.0 KB)
-└─ Total RAM Used:          121,785 bytes ( 118.9 KB)
-
-Largest Symbols (Top 20):
- 1. _ZL14enclave_memory                        39,552 bytes (  38.6 KB)
- 2. late_wt_encrypted                          39,552 bytes (  38.6 KB)
- 3. _ZL11wt_conv2d_6                           18,432 bytes (  18.0 KB)
- 4. _ZL10early_buf0                            16,384 bytes (  16.0 KB)
- ...
+╔══════════════════════════════════════════════════════════════╗
+║        COMBINED SYSTEM METRICS                              ║
+╠══════════════════════════════════════════════════════════════╣
+║ Total RAM:      174,926 / 196,608 bytes (89.0%)             ║
+║ Total Flash:    260,620 / 396,288 bytes (65.8%)             ║
+╚══════════════════════════════════════════════════════════════╝
 ```
 
 Defaults to auto-detected `/dev/tty.usbmodem*` if port not specified.
@@ -173,6 +198,20 @@ Device → Mac: Inference count (4 bytes LE)
 
 Mac → Device: CMD_GET_REMAINING_INFERENCES (0x06)
 Device → Mac: Remaining quota (4 bytes LE)
+
+Mac → Device: CMD_GET_BENCHMARK (0x08)
+Device → Mac: NS benchmark payload (64B / 184B / 232B depending on firmware)
+
+Mac → Device: CMD_GET_SECURE_BENCHMARK (0x09)
+Device → Mac: Secure benchmark payload (88B)
+
+### Paper-oriented fields
+
+For publication/analysis workflows, focus on:
+
+- `run_enclave_count`, `run_enclave_avg_cycles`, `run_enclave_min_cycles`, `run_enclave_max_cycles`
+- `irq_atomic_count`, `irq_atomic_avg_cycles`, `irq_atomic_min_cycles`, `irq_atomic_max_cycles`
+- `inference_requests_total` and `enclave_info_validation_failures`
 ```
 
 ## Expected Performance
