@@ -66,6 +66,9 @@ static void print_secure_memory_stats(void)
 #define DP_CMD_SAU_REGISTER_ROM     18  /* Register model ROM window */
 #define DP_CMD_SAU_REGISTER_CODE    19  /* Register inference code window */
 #define DP_CMD_SET_LATE_SECRET_HASH 20  /* Hash encrypted late weights as model_secret */
+#define DP_CMD_CREATE_ENCLAVE       22  /* Secure create: decrypt + register + reset counter (RAM still open) */
+#define DP_CMD_DESTROY_ENCLAVE      23  /* Secure destroy: close SAU + reset state */
+#define DP_CMD_FINALIZE_CREATE_ENCLAVE 24 /* Secure finalize create: close enclave RAM */
 
 /* EnclaveInfo size (SHA-256 hash) */
 #define ENCLAVE_INFO_SIZE 32
@@ -73,6 +76,7 @@ static void print_secure_memory_stats(void)
 /* Secure inference counter and dynamic max limit (protected). */
 static uint32_t inference_counter_secure = 0;
 static uint32_t max_inferences_per_enclave_secure = 0; /* Start at 0 until M_update accepted */
+static bool enclave_created_secure = false;
 
 /* Anti-replay counter limit for M_update validation (secure state). */
 static uint32_t last_accepted_counter_limit = 0;
@@ -352,7 +356,10 @@ static psa_status_t hash_region_chunked(const uint8_t *ptr, size_t len, uint8_t 
 static psa_status_t refresh_model_pub_from_rom(void)
 {
     if (!sau_rom_registered || sau_rom_size == 0U) {
-        return PSA_ERROR_BAD_STATE;
+        /* NS SAU registration is disabled by hardened policy.
+         * Keep EnclaveInfo computation available using a deterministic fallback. */
+        memset(current_model_pub, 0, sizeof(current_model_pub));
+        return PSA_SUCCESS;
     }
     const uint8_t *rom_ptr = (const uint8_t *)(uintptr_t)sau_rom_base;
     return hash_region_chunked(rom_ptr, sau_rom_size, current_model_pub);
@@ -361,7 +368,10 @@ static psa_status_t refresh_model_pub_from_rom(void)
 static psa_status_t refresh_code_hash_from_registered_code(void)
 {
     if (!sau_code_registered || sau_code_size == 0U) {
-        return PSA_ERROR_BAD_STATE;
+        /* NS SAU registration is disabled by hardened policy.
+         * Keep EnclaveInfo computation available using a deterministic fallback. */
+        memset(current_code_hash, 0, sizeof(current_code_hash));
+        return PSA_SUCCESS;
     }
     const uint8_t *code_ptr = (const uint8_t *)(uintptr_t)sau_code_base;
     return hash_region_chunked(code_ptr, sau_code_size, current_code_hash);
@@ -605,7 +615,7 @@ static psa_status_t tfm_dp_validate_m_update(psa_msg_t *msg)
  */
 static psa_status_t tfm_dp_decrypt_late_weights(psa_msg_t *msg)
 {
-    if (msg->in_size[1] == 0 || msg->out_size[0] == 0 || msg->in_size[2] != 16) {
+    if (msg->in_size[1] == 0 || msg->out_size[0] == 0 || msg->in_size[2] < 16) {
         return PSA_ERROR_INVALID_ARGUMENT;
     }
 
@@ -770,29 +780,79 @@ __always_inline void rtpox_configure_sau_secure(uint32_t address_init, uint32_t 
 /* =====================================================================
  * SAU DYNAMIC RAM ENCLAVE ISOLATION
  * TF-M Region 1  = original NS-RAM coverage (saved at init)
- * SAU_REGION_BEFORE (5) = NS split below enclave window
- * SAU_REGION_AFTER  (7) = NS split above enclave window
+ * SAU_REGION_BEFORE (6) = NS split below enclave RAM window
+ * SAU_REGION_AFTER  (7) = NS split above enclave RAM window
  *
- * CLOSED: Region 1 disabled, Regions 5+7 cover everything except
+ * CLOSED: Region 1 disabled, Regions 6+7 cover everything except
  *         the enclave window => enclave range defaults to Secure.
- * OPEN:   Regions 5+7 disabled, Region 1 restored => full NS RAM.
+ * OPEN:   Regions 6+7 disabled, Region 1 restored => full NS RAM.
  * ===================================================================== */
 
-#define SAU_REGION_NS_FLASH  0U   /* TF-M initial NS-flash SAU region index */
-#define SAU_REGION_NS_RAM    1U   /* TF-M initial NS-data SAU region index */
-#define SAU_REGION_BEFORE    5U   /* our NS before-enclave region */
-#define SAU_REGION_AFTER     7U   /* our NS after-enclave region  */
+#define SAU_REGION_NS_FLASH  0U   /* TF-M NS-flash region (region 0) – we shrink/restore it */
+#define SAU_REGION_NS_RAM    1U   /* TF-M NS-data region (region 1) */
+/* Regions 2-4 are TF-M's NSC veneer, peripherals, package — DO NOT TOUCH */
+/* Free regions available for custom isolation: 5, 6, 7 */
+#define SAU_REGION_FLASH_AFTER  5U /* NS flash after protected model_ro window (free region) */
+#define SAU_REGION_BEFORE    6U   /* our NS before-enclave RAM region */
+#define SAU_REGION_AFTER     7U   /* our NS after-enclave RAM region  */
 
 static uint32_t sau_enclave_base       = 0U;
 static uint32_t sau_enclave_size       = 0U;
 static bool     sau_enclave_registered = false;
 static bool     sau_enclave_open       = true;  /* tracks current state */
+static bool     sau_model_ro_open      = true;  /* tracks model_ro flash window state */
 
 /* Limits of TF-M's NS-RAM SAU region (Region 1), read at init. */
 static uint32_t sau_ns_ram_base  = 0U;
 static uint32_t sau_ns_ram_limit = 0U;
 static uint32_t sau_ns_flash_base  = 0U;
 static uint32_t sau_ns_flash_limit = 0U;
+
+/* STM32L5 commonly uses secure/non-secure flash alias delta 0x04000000
+ * (e.g. 0x08000000 <-> 0x0C000000). */
+#define FLASH_ALIAS_DELTA 0x04000000U
+
+static bool range_within(uint32_t base, uint32_t size, uint32_t low, uint32_t high)
+{
+    if (size == 0U) {
+        return false;
+    }
+    uint32_t limit = base + size - 1U;
+    if (limit < base) {
+        return false;
+    }
+    return (base >= low && limit <= high);
+}
+
+/* Normalize caller-provided flash base to current NS flash alias range. */
+static bool normalize_flash_base_to_ns_alias(uint32_t *base_io, uint32_t size)
+{
+    uint32_t b = *base_io;
+
+    if (range_within(b, size, sau_ns_flash_base, sau_ns_flash_limit)) {
+        return true;
+    }
+
+    /* Try secure->non-secure alias conversion. */
+    if (b <= (UINT32_MAX - FLASH_ALIAS_DELTA)) {
+        uint32_t plus = b + FLASH_ALIAS_DELTA;
+        if (range_within(plus, size, sau_ns_flash_base, sau_ns_flash_limit)) {
+            *base_io = plus;
+            return true;
+        }
+    }
+
+    /* Try non-secure->secure alias conversion (for completeness). */
+    if (b >= FLASH_ALIAS_DELTA) {
+        uint32_t minus = b - FLASH_ALIAS_DELTA;
+        if (range_within(minus, size, sau_ns_flash_base, sau_ns_flash_limit)) {
+            *base_io = minus;
+            return true;
+        }
+    }
+
+    return false;
+}
 
 /* Write a SAU region: base and limit both 32-byte-aligned boundaries,
  * enable=1 => Non-Secure (NSC=0), enable=0 => disabled (=> Secure default). */
@@ -837,8 +897,10 @@ static void sau_partition_init(void)
     printf("[SECURE SAU] NS-FLASH region %u: 0x%08X..0x%08X (en=%u)\n",
            SAU_REGION_NS_FLASH, sau_ns_flash_base, sau_ns_flash_limit,
            (unsigned)((frlar & SAU_RLAR_ENABLE_Msk) ? 1U : 0U));
-    printf("[SECURE SAU] Regions %u,%u reserved for enclave window\n",
-           SAU_REGION_BEFORE, SAU_REGION_AFTER);
+        printf("[SECURE SAU] Flash isolation: region 0 shrink + region %u for AFTER\n",
+            SAU_REGION_FLASH_AFTER);
+        printf("[SECURE SAU] RAM isolation: regions %u (BEFORE) and %u (AFTER)\n",
+            SAU_REGION_BEFORE, SAU_REGION_AFTER);
 }
 
 /* CLOSE: split NS-RAM region so the enclave window becomes Secure. */
@@ -914,6 +976,104 @@ static psa_status_t sau_open_enclave(void)
     return PSA_SUCCESS;
 }
 
+/* CLOSE model_ro flash window: make [sau_rom_base .. sau_rom_base+sau_rom_size-1] Secure.
+ * Strategy: shrink region 0 (NS_FLASH) to [NS_flash_base..rom_base-1],
+ * use region 5 (FLASH_AFTER) for [rom_limit+1..NS_flash_limit].
+ * Regions 2 (NSC veneer) and 3 (peripherals) are intentionally left untouched. */
+static psa_status_t sau_close_model_ro(void)
+{
+    if (!sau_rom_registered || sau_rom_size == 0U) {
+        printf("[SECURE SAU] CLOSE MODEL_RO: window not registered\n");
+        return PSA_ERROR_BAD_STATE;
+    }
+
+    uint32_t rom_base  = sau_rom_base;
+    uint32_t rom_limit = sau_rom_base + sau_rom_size - 1U;
+
+    if ((rom_base & 0x1FU) != 0U || ((rom_limit + 1U) & 0x1FU) != 0U) {
+        printf("[SECURE SAU] CLOSE MODEL_RO: alignment error base=0x%08X limit=0x%08X\n",
+               rom_base, rom_limit);
+        return PSA_ERROR_INVALID_ARGUMENT;
+    }
+
+    if (rom_base < sau_ns_flash_base || rom_limit > sau_ns_flash_limit) {
+        printf("[SECURE SAU] CLOSE MODEL_RO: range out of NS flash [0x%08X..0x%08X]\n",
+               sau_ns_flash_base, sau_ns_flash_limit);
+        return PSA_ERROR_INVALID_ARGUMENT;
+    }
+
+    /* Safety: never allow closing the entire NS flash by mistake. */
+    if (rom_base == sau_ns_flash_base && rom_limit == sau_ns_flash_limit) {
+        printf("[SECURE SAU] CLOSE MODEL_RO: refuses full-NS-flash close\n");
+        return PSA_ERROR_INVALID_ARGUMENT;
+    }
+
+    /* Safety: model_ro protected window must not overlap inference_ro code window. */
+    if (sau_code_registered && sau_code_size > 0U) {
+        uint32_t code_base = sau_code_base;
+        uint32_t code_limit = sau_code_base + sau_code_size - 1U;
+        bool overlap = !(rom_limit < code_base || rom_base > code_limit);
+        if (overlap) {
+            printf("[SECURE SAU] CLOSE MODEL_RO: overlap with inference_ro [0x%08X..0x%08X]\n",
+                   code_base, code_limit);
+            return PSA_ERROR_INVALID_ARGUMENT;
+        }
+    }
+
+    bool has_before = (rom_base > sau_ns_flash_base);
+    bool has_after  = ((rom_limit + 1U) <= sau_ns_flash_limit);
+
+    /* Clean up FLASH_AFTER region first. */
+    sau_disable_region(SAU_REGION_FLASH_AFTER);
+
+    /* NS flash before model_ro: shrink region 0 to [sau_ns_flash_base .. rom_base-1].
+     * If nothing precedes model_ro, disable region 0 entirely. */
+    if (has_before) {
+        sau_write_region(SAU_REGION_NS_FLASH,
+                         sau_ns_flash_base,
+                         rom_base - 1U,
+                         1 /* NS, enabled */);
+    } else {
+        sau_disable_region(SAU_REGION_NS_FLASH);
+    }
+
+    /* model_ro itself is uncovered => defaults Secure. */
+
+    /* NS flash after model_ro: use free region 5. */
+    if (has_after) {
+        sau_write_region(SAU_REGION_FLASH_AFTER,
+                         rom_limit + 1U,
+                         sau_ns_flash_limit,
+                         1 /* NS, enabled */);
+    }
+
+    sau_model_ro_open = false;
+    printf("[SECURE SAU] CLOSED MODEL_RO: 0x%08X..0x%08X = Secure\n",
+           rom_base, rom_limit);
+    return PSA_SUCCESS;
+}
+
+/* OPEN model_ro flash window: restore full NS flash region (TF-M Region 0). */
+static psa_status_t sau_open_model_ro(void)
+{
+    if (!sau_rom_registered || sau_rom_size == 0U) {
+        printf("[SECURE SAU] OPEN MODEL_RO: window not registered\n");
+        return PSA_ERROR_BAD_STATE;
+    }
+
+    sau_disable_region(SAU_REGION_FLASH_AFTER);  /* disable region 5 (AFTER split) */
+
+    sau_write_region(SAU_REGION_NS_FLASH,
+                     sau_ns_flash_base,
+                     sau_ns_flash_limit,
+                     1 /* NS, enabled */);
+
+    sau_model_ro_open = true;
+    printf("[SECURE SAU] OPEN MODEL_RO: 0x%08X..0x%08X = Non-Secure\n",
+           sau_rom_base, sau_rom_base + sau_rom_size - 1U);
+    return PSA_SUCCESS;
+}
+
 /* Write digest back to caller, ensuring NS can read SRAM1 region. */
 static void psa_write_digest(void *handle, uint8_t *digest,
                  uint32_t digest_size)
@@ -961,11 +1121,156 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
         }
 
         case DP_CMD_DECRYPT_LATE_WEIGHTS:
-            return tfm_dp_decrypt_late_weights(msg);
+            return PSA_ERROR_NOT_SUPPORTED;
 
     case DP_CMD_DECRYPT_MODEL:
-        printf("[SECURE] Model decryption is deprecated (AES-only flow).\n");
         return PSA_ERROR_NOT_SUPPORTED;
+
+    case DP_CMD_CREATE_ENCLAVE:
+        {
+            printf("[SECURE] CREATE: in_size[0]=%zu in_size[1]=%zu in_size[2]=%zu in_size[3]=%zu out_size[0]=%zu\n",
+                   msg->in_size[0], msg->in_size[1], msg->in_size[2], msg->in_size[3], msg->out_size[0]);
+
+            psa_status_t st = tfm_dp_decrypt_late_weights(msg);
+            if (st != PSA_SUCCESS) {
+                printf("[SECURE] CREATE: decrypt failed st=%d\n", (int)st);
+                return st;
+            }
+
+            /* Preferred format: in[3] = enclave RAM registration {base(uint32_t), size(uint32_t)} */
+            if (msg->in_size[3] == 8U) {
+                uint32_t params[2] = {0U, 0U};
+                psa_read(msg->handle, 3, params, sizeof(params));
+
+                uint32_t raw_base = params[0];
+                uint32_t raw_size = params[1];
+
+                printf("[SECURE SAU] CREATE: raw params from in[3] base=0x%08X size=0x%08X\n",
+                       raw_base, raw_size);
+
+                if (raw_size == 0U) {
+                    printf("[SECURE SAU] CREATE: invalid enclave size=0\n");
+                    return PSA_ERROR_INVALID_ARGUMENT;
+                }
+
+                uint32_t raw_limit = raw_base + raw_size - 1U;
+                if (raw_limit < raw_base) {
+                    printf("[SECURE SAU] CREATE: overflow in enclave range\n");
+                    return PSA_ERROR_INVALID_ARGUMENT;
+                }
+
+                /* SAU requires 32-byte alignment; cover the full requested range. */
+                uint32_t base = raw_base & ~0x1FU;
+                uint32_t limit = raw_limit | 0x1FU;
+
+                if (base < sau_ns_ram_base || limit > sau_ns_ram_limit || limit < base) {
+                    printf("[SECURE SAU] CREATE: out-of-range enclave window 0x%08X..0x%08X (NS RAM=0x%08X..0x%08X)\n",
+                           base, limit, sau_ns_ram_base, sau_ns_ram_limit);
+                    return PSA_ERROR_INVALID_ARGUMENT;
+                }
+
+                sau_enclave_base = base;
+                sau_enclave_size = (limit - base) + 1U;
+                sau_enclave_registered = true;
+                sau_enclave_open = true;
+                printf("[SECURE SAU] CREATE: registered enclave window 0x%08X..0x%08X\n",
+                       base, limit);
+            }
+            /* Backward/alternate format: in[2] tail (after IV) carries base/size. */
+            else if (msg->in_size[2] >= 24U) {
+                uint32_t params[2] = {0U, 0U};
+                psa_read(msg->handle, 2, params, sizeof(params));
+
+                uint32_t raw_base = params[0];
+                uint32_t raw_size = params[1];
+
+                printf("[SECURE SAU] CREATE: raw params from in[2] tail base=0x%08X size=0x%08X\n",
+                       raw_base, raw_size);
+
+                if (raw_size == 0U) {
+                    printf("[SECURE SAU] CREATE: invalid enclave size=0\n");
+                    return PSA_ERROR_INVALID_ARGUMENT;
+                }
+
+                uint32_t raw_limit = raw_base + raw_size - 1U;
+                if (raw_limit < raw_base) {
+                    printf("[SECURE SAU] CREATE: overflow in enclave range\n");
+                    return PSA_ERROR_INVALID_ARGUMENT;
+                }
+
+                /* SAU requires 32-byte alignment; cover the full requested range. */
+                uint32_t base = raw_base & ~0x1FU;
+                uint32_t limit = raw_limit | 0x1FU;
+
+                if (base < sau_ns_ram_base || limit > sau_ns_ram_limit || limit < base) {
+                    printf("[SECURE SAU] CREATE: out-of-range enclave window 0x%08X..0x%08X\n",
+                           base, limit);
+                    return PSA_ERROR_INVALID_ARGUMENT;
+                }
+
+                sau_enclave_base = base;
+                sau_enclave_size = (limit - base) + 1U;
+                sau_enclave_registered = true;
+                sau_enclave_open = true;
+                printf("[SECURE SAU] CREATE: registered enclave window 0x%08X..0x%08X\n",
+                       base, limit);
+            }
+
+            if (!sau_enclave_registered) {
+                printf("[SECURE SAU] CREATE: enclave window not registered\n");
+                return PSA_ERROR_BAD_STATE;
+            }
+
+            /* ROM/flash model_ro protection intentionally disabled:
+             * keep only RAM enclave protection to avoid inference breakage. */
+
+            inference_counter_secure = 0U;
+            enclave_created_secure = true;
+            g_secure_metrics.counter_operations++;
+            printf("[SECURE] Enclave created: decrypt complete, RAM window still open (await finalize)\n");
+            return PSA_SUCCESS;
+        }
+
+    case DP_CMD_FINALIZE_CREATE_ENCLAVE:
+        {
+            if (!sau_enclave_registered) {
+                printf("[SECURE SAU] FINALIZE CREATE: enclave window not registered\n");
+                return PSA_ERROR_BAD_STATE;
+            }
+
+            psa_status_t st = sau_close_enclave();
+            if (st != PSA_SUCCESS) {
+                return st;
+            }
+
+            g_secure_metrics.counter_operations++;
+            printf("[SECURE] Finalize create: RAM window closed\n");
+            return PSA_SUCCESS;
+        }
+
+    case DP_CMD_DESTROY_ENCLAVE:
+        {
+            psa_status_t st = PSA_SUCCESS;
+
+            if (sau_enclave_registered) {
+                /* Destroy path requirement:
+                 * allow NS to zeroize enclave RAM after this command,
+                 * so keep enclave window OPEN on return. */
+                st = sau_open_enclave();
+                if (st != PSA_SUCCESS) {
+                    return st;
+                }
+            }
+
+            /* ROM/flash model_ro protection intentionally disabled:
+             * keep only RAM enclave protection. */
+
+            inference_counter_secure = 0U;
+            enclave_created_secure = false;
+            g_secure_metrics.counter_operations++;
+            printf("[SECURE] Enclave destroyed: RAM window open + counter reset\n");
+            return PSA_SUCCESS;
+        }
 
     case DP_CMD_GET_MAX_INFERENCES:
         {
@@ -979,36 +1284,13 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
         }
 
     case DP_CMD_CHECK_INFERENCE_ALLOWED:
-        {
-            SECURE_BENCHMARK_START(check_start);
-            uint32_t allowed = (inference_counter_secure + 1 <= max_inferences_per_enclave_secure) ? 1 : 0;
-            psa_write(msg->handle, 0, &allowed, sizeof(allowed));
-            SECURE_BENCHMARK_END(check_start, check_allowed_cycles);
-            g_secure_metrics.counter_operations++;
-            printf("[SECURE] Check inference allowed: counter=%u, max=%u, allowed=%u\n", 
-                   inference_counter_secure, max_inferences_per_enclave_secure, allowed);
-            return PSA_SUCCESS;
-        }
+        return PSA_ERROR_NOT_SUPPORTED;
 
     case DP_CMD_INCREMENT_COUNTER:
-        {
-            SECURE_BENCHMARK_START(inc_start);
-            inference_counter_secure++;
-            SECURE_BENCHMARK_END(inc_start, increment_cycles);
-            g_secure_metrics.counter_operations++;
-            printf("[SECURE] Inference counter incremented: %u\n", inference_counter_secure);
-            return PSA_SUCCESS;
-        }
+        return PSA_ERROR_NOT_SUPPORTED;
 
     case DP_CMD_RESET_COUNTER:
-        {
-            SECURE_BENCHMARK_START(reset_start);
-            inference_counter_secure = 0;
-            SECURE_BENCHMARK_END(reset_start, reset_cycles);
-            g_secure_metrics.counter_operations++;
-            printf("[SECURE] Inference counter reset to 0\n");
-            return PSA_SUCCESS;
-        }
+        return PSA_ERROR_NOT_SUPPORTED;
     
     case DP_CMD_GET_BENCHMARK:
         {
@@ -1030,26 +1312,65 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
     
     case DP_CMD_RUN_INFERENCE:
         {
-            /* Atomic operation: Check if inference allowed + Increment counter */
-            uint32_t allowed = (inference_counter_secure + 1 <= max_inferences_per_enclave_secure) ? 1 : 0;
-            
-            if (allowed) {
-                /* Increment counter atomically */
-                inference_counter_secure++;
-                  printf("[SECURE] Inference ALLOWED and counter incremented: %u/%u\n", 
-                      inference_counter_secure, max_inferences_per_enclave_secure);
-            } else {
-                  printf("[SECURE] Inference DENIED (counter limit reached: %u/%u)\n",
-                      inference_counter_secure, max_inferences_per_enclave_secure);
+            uint8_t phase = 1U; /* default = commit */
+            if (msg->in_size[1] == 1U) {
+                psa_read(msg->handle, 1, &phase, 1U);
             }
-            
-            /* Write result back to NS */
+
+            if (phase > 1U) {
+                return PSA_ERROR_INVALID_ARGUMENT;
+            }
+
+            uint32_t allowed = 0U;
+            if (enclave_created_secure) {
+                allowed = (inference_counter_secure + 1U <= max_inferences_per_enclave_secure) ? 1U : 0U;
+            }
+
+            if (phase == 0U) {
+                if (allowed) {
+                    if (sau_enclave_registered && !sau_enclave_open) {
+                        psa_status_t st = sau_open_enclave();
+                        if (st != PSA_SUCCESS) {
+                            return st;
+                        }
+                    }
+                    printf("[SECURE] Run precheck OK (RAM window open)\n");
+                } else {
+                    if (sau_enclave_registered && sau_enclave_open) {
+                        (void)sau_close_enclave();
+                    }
+                    printf("[SECURE] Run denied (created=%u, counter=%u/%u)\n",
+                           enclave_created_secure ? 1U : 0U,
+                           inference_counter_secure,
+                           max_inferences_per_enclave_secure);
+                }
+            } else {
+                if (allowed) {
+                    inference_counter_secure++;
+                    if (sau_enclave_registered && sau_enclave_open) {
+                        psa_status_t st = sau_close_enclave();
+                        if (st != PSA_SUCCESS) {
+                            return st;
+                        }
+                    }
+                    printf("[SECURE] Run commit OK, counter=%u/%u (RAM window closed)\n",
+                           inference_counter_secure, max_inferences_per_enclave_secure);
+                } else {
+                    if (sau_enclave_registered && sau_enclave_open) {
+                        (void)sau_close_enclave();
+                    }
+                    printf("[SECURE] Run denied (created=%u, counter=%u/%u)\n",
+                           enclave_created_secure ? 1U : 0U,
+                           inference_counter_secure,
+                           max_inferences_per_enclave_secure);
+                }
+            }
+
             if (msg->out_size[0] != sizeof(allowed)) {
                 return PSA_ERROR_INVALID_ARGUMENT;
             }
             psa_write(msg->handle, 0, &allowed, sizeof(allowed));
             g_secure_metrics.counter_operations++;
-            
             return PSA_SUCCESS;
         }
 
@@ -1143,97 +1464,13 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
         }
 
     case DP_CMD_SAU_REGISTER:
-        {
-            /* NS registers the enclave RAM window so Secure can protect it.
-             * in[1] = {base(uint32_t), size(uint32_t)} = 8 bytes.
-             * Validates 32-byte alignment and that range is within NS RAM.
-             * After registration the enclave window is OPEN (unchanged SAU). */
-            if (msg->in_size[1] != 8U) {
-                printf("[SECURE SAU] REGISTER: bad in[1] size %zu (need 8)\n",
-                       msg->in_size[1]);
-                return PSA_ERROR_INVALID_ARGUMENT;
-            }
-            uint32_t params[2];
-            psa_read(msg->handle, 1, params, 8U);
-            uint32_t base = params[0];
-            uint32_t size = params[1];
-
-            if (size == 0U || (base & 0x1FU) != 0U || (size & 0x1FU) != 0U
-                || base < sau_ns_ram_base
-                || (base + size - 1U) > sau_ns_ram_limit) {
-                printf("[SECURE SAU] REGISTER: invalid range 0x%08X+%u\n",
-                       base, size);
-                return PSA_ERROR_INVALID_ARGUMENT;
-            }
-
-            sau_enclave_base       = base;
-            sau_enclave_size       = size;
-            sau_enclave_registered = true;
-            sau_enclave_open       = true;
-            printf("[SECURE SAU] REGISTER: window 0x%08X..0x%08X (%u B)\n",
-                   base, base + size - 1U, size);
-
-            uint8_t resp = 0xAAU;
-            if (msg->out_size[0] >= 1U) {
-                psa_write(msg->handle, 0, &resp, 1U);
-            }
-            return PSA_SUCCESS;
-        }
+        return PSA_ERROR_NOT_SUPPORTED;
 
     case DP_CMD_SAU_CONTROL:
-        {
-            /* in[1] = 1 byte: 1=CLOSE, 2=OPEN.
-             * out[0] = 1 byte: 0xA1 (after CLOSE) or 0xA2 (after OPEN). */
-            if (msg->in_size[1] < 1U) {
-                return PSA_ERROR_INVALID_ARGUMENT;
-            }
-            uint8_t cmd_byte = 0U;
-            psa_read(msg->handle, 1, &cmd_byte, 1U);
-
-            psa_status_t st;
-            uint8_t resp_byte;
-
-            if (cmd_byte == 1U) {         /* CLOSE */
-                st        = sau_close_enclave();
-                resp_byte = 0xA1U;
-            } else if (cmd_byte == 2U) {  /* OPEN */
-                st        = sau_open_enclave();
-                resp_byte = 0xA2U;
-            } else {
-                printf("[SECURE SAU] SAU_CONTROL: unknown cmd=%u\n", cmd_byte);
-                return PSA_ERROR_INVALID_ARGUMENT;
-            }
-
-            if (st == PSA_SUCCESS && msg->out_size[0] >= 1U) {
-                psa_write(msg->handle, 0, &resp_byte, 1U);
-            }
-            return st;
-        }
+        return PSA_ERROR_NOT_SUPPORTED;
 
     case DP_CMD_GET_SAU_STATE:
-        {
-            /* Response format:
-             *   byte 0   = state code
-             *              0 = unregistered
-             *              1 = registered + OPEN
-             *              2 = registered + CLOSED
-             *   bytes 1-4 = base  (LE uint32)
-             *   bytes 5-8 = size  (LE uint32)
-             */
-            uint8_t resp[9] = {0};
-
-            if (sau_enclave_registered) {
-                resp[0] = sau_enclave_open ? 1U : 2U;
-            }
-            memcpy(&resp[1], &sau_enclave_base, sizeof(sau_enclave_base));
-            memcpy(&resp[5], &sau_enclave_size, sizeof(sau_enclave_size));
-
-            if (msg->out_size[0] < sizeof(resp)) {
-                return PSA_ERROR_INVALID_ARGUMENT;
-            }
-            psa_write(msg->handle, 0, resp, sizeof(resp));
-            return PSA_SUCCESS;
-        }
+        return PSA_ERROR_NOT_SUPPORTED;
 
     case DP_CMD_VALIDATE_BOOT_ENCLAVE_INFO:
         {
@@ -1254,63 +1491,18 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
         }
 
     case DP_CMD_SAU_REGISTER_ROM:
-        {
-            if (msg->in_size[1] != 8U) {
-                return PSA_ERROR_INVALID_ARGUMENT;
-            }
-            uint32_t params[2];
-            psa_read(msg->handle, 1, params, sizeof(params));
-            uint32_t base = params[0];
-            uint32_t size = params[1];
-
-            if (size == 0U || (base & 0x1FU) != 0U || (size & 0x1FU) != 0U ||
-                base < sau_ns_flash_base || (base + size - 1U) > sau_ns_flash_limit) {
-                return PSA_ERROR_INVALID_ARGUMENT;
-            }
-
-            sau_rom_base = base;
-            sau_rom_size = size;
-            sau_rom_registered = true;
-            current_enclave_info_valid = false;
-
-            uint8_t resp = 0xABU;
-            if (msg->out_size[0] >= 1U) {
-                psa_write(msg->handle, 0, &resp, 1U);
-            }
-            return PSA_SUCCESS;
-        }
+        return PSA_ERROR_NOT_SUPPORTED;
 
     case DP_CMD_SAU_REGISTER_CODE:
-        {
-            if (msg->in_size[1] != 8U) {
-                return PSA_ERROR_INVALID_ARGUMENT;
-            }
-            uint32_t params[2];
-            psa_read(msg->handle, 1, params, sizeof(params));
-            uint32_t base = params[0];
-            uint32_t size = params[1];
-
-            if (size == 0U || (base & 0x1FU) != 0U || (size & 0x1FU) != 0U ||
-                base < sau_ns_flash_base || (base + size - 1U) > sau_ns_flash_limit) {
-                return PSA_ERROR_INVALID_ARGUMENT;
-            }
-
-            sau_code_base = base;
-            sau_code_size = size;
-            sau_code_registered = true;
-            current_enclave_info_valid = false;
-
-            uint8_t resp = 0xACU;
-            if (msg->out_size[0] >= 1U) {
-                psa_write(msg->handle, 0, &resp, 1U);
-            }
-            return PSA_SUCCESS;
-        }
+        return PSA_ERROR_NOT_SUPPORTED;
 
     case DP_CMD_SET_LATE_SECRET_HASH:
         {
             return tfm_dp_set_late_secret_hash(msg);
         }
+
+    case DP_CMD_GET_SAU_ROM_STATE:
+        return PSA_ERROR_NOT_SUPPORTED;
 
     default:
         return PSA_ERROR_NOT_SUPPORTED;

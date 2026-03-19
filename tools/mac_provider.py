@@ -91,6 +91,9 @@ CMD_GET_SAU_STATE = 0x0D
 CMD_RUN_INFERENCE_NO_SAU = 0x0E
 CMD_READ_PROTECTED_MEM = 0x0F
 CMD_GET_ENCLAVE_STATE = 0x10
+CMD_CREATE_ENCLAVE = 0x11
+CMD_DESTROY_ENCLAVE = 0x12
+CMD_UPDATE_RATE_LIMIT = 0x13
 
 # Response codes
 RESP_OK = 0x00
@@ -322,7 +325,7 @@ def print_menu():
     print("  4) Get device signing pubkey (pk_d)")
     print("\n Quota / counters:")
     print("  5) Get max inferences")
-    print("  6) Set max inferences (manual override)")
+    print("  6) Update rate limit (secure API)")
     print("  7) Get inference count")
     print("  8) Get remaining inferences")
     print("\n Inference:")
@@ -333,12 +336,15 @@ def print_menu():
     print(" 12) Get NS benchmark metrics")
     print(" 13) Get Secure benchmark metrics")
     print(" 14) Read console output")
-    print(" 15) Memory protection feedback (deterministic SAU state)")
+    print(" 15) Memory protection feedback (best-effort; may be blocked)")
     print(" 16) Raw UART command (manual)")
     print(" 17) Session status")
     print(" 18) Security tests (negative / tamper checks)")
     print(" 19) DANGER test: run inference without SAU open")
     print(" 20) DANGER test: direct read protected memory")
+    print("\n Enclave lifecycle:")
+    print(" 21) Create enclave")
+    print(" 22) Destroy enclave")
     print("\n  q) Quit")
     print()
 
@@ -367,6 +373,98 @@ def parse_ns_benchmark(data: bytes):
     print(f"    enclave_recreations:     {vals[15]}")
     print(f"    RAM used/total:          {vals[10]}/{vals[11]} B")
     print(f"    Flash used/total:        {vals[12]}/{vals[13]} B")
+
+    # Extended benchmark payload (newer firmware):
+    # 18I + 8Q + 24I = 232 bytes
+    if len(data) >= 232:
+        ext = struct.unpack('<18I8Q24I', data[:232])
+
+        req_total = ext[16]
+        enclave_info_fail = ext[17]
+
+        run_sum = ext[24]
+        irq_sum = ext[25]
+
+        run_min = ext[38]
+        run_max = ext[39]
+        irq_min = ext[40]
+        irq_max = ext[41]
+
+        run_count = ext[48]
+        irq_count = ext[49]
+
+        run_avg = (run_sum // run_count) if run_count else 0
+        irq_avg = (irq_sum // irq_count) if irq_count else 0
+
+        print("  Extended metrics:")
+        print(f"    inference_requests_total:       {req_total}")
+        print(f"    enclave_info_validation_fail:   {enclave_info_fail}")
+        print(f"    run_enclave_count:              {run_count}")
+        print(f"    run_enclave_avg_cycles:         {run_avg}")
+        print(f"    run_enclave_min/max_cycles:     {run_min}/{run_max}")
+        print(f"    irq_atomic_count:               {irq_count}")
+        print(f"    irq_atomic_avg_cycles:          {irq_avg}")
+        print(f"    irq_atomic_min/max_cycles:      {irq_min}/{irq_max}")
+
+    # Additional atomic lifecycle stats appended in newer firmware:
+    # 2x u64 sums + 6x u32 (min/max/count for create/destroy atomic) = 40 bytes
+    if len(data) >= 272:
+        off = 232
+        create_atomic_sum, destroy_atomic_sum = struct.unpack_from('<QQ', data, off)
+        off += 16
+        (create_atomic_min,
+         create_atomic_max,
+         destroy_atomic_min,
+         destroy_atomic_max,
+         create_atomic_count,
+         destroy_atomic_count) = struct.unpack_from('<6I', data, off)
+
+        create_atomic_avg = (create_atomic_sum // create_atomic_count) if create_atomic_count else 0
+        destroy_atomic_avg = (destroy_atomic_sum // destroy_atomic_count) if destroy_atomic_count else 0
+
+        print("  Atomic lifecycle metrics:")
+        print(f"    create_atomic_count:            {create_atomic_count}")
+        print(f"    create_atomic_avg_cycles:       {create_atomic_avg}")
+        print(f"    create_atomic_min/max_cycles:   {create_atomic_min}/{create_atomic_max}")
+        print(f"    destroy_atomic_count:           {destroy_atomic_count}")
+        print(f"    destroy_atomic_avg_cycles:      {destroy_atomic_avg}")
+        print(f"    destroy_atomic_min/max_cycles:  {destroy_atomic_min}/{destroy_atomic_max}")
+
+    # Legacy extended payload parser (184 bytes total).
+    # Keep this only for older firmware that returns exactly this layout.
+    if len(data) == 184:
+        off = 64
+        req_total, val_fail = struct.unpack_from('<II', data, off)
+        off += 8
+
+        sums = struct.unpack_from('<7Q', data, off)
+        off += 56
+
+        minmax = struct.unpack_from('<14I', data, off)
+        off += 56
+
+        counts = struct.unpack_from('<7I', data, off)
+
+        labels = [
+            'enclave_create',
+            'enclave_destroy',
+            'aes_decrypt',
+            'early_layers',
+            'late_layers',
+            'total_inference',
+            'run_enclave',
+        ]
+
+        print("  NS extended:")
+        print(f"    inference_requests_total: {req_total}")
+        print(f"    enclave_info_failures:    {val_fail}")
+        for i, name in enumerate(labels):
+            c = counts[i]
+            s = sums[i]
+            mn = minmax[2 * i]
+            mx = minmax[2 * i + 1]
+            avg = (s // c) if c > 0 else 0
+            print(f"    {name}: count={c}, avg={avg}, min={mn}, max={mx}, sum={s}")
 
 
 def parse_secure_benchmark(data: bytes):
@@ -434,6 +532,28 @@ def get_enclave_state(device: 'STM32Device') -> Optional[bool]:
     if not resp or resp[0] != RESP_OK or len(resp[1]) < 1:
         return None
     return resp[1][0] != 0
+
+
+def create_enclave(device: 'STM32Device') -> bool:
+    if not device.send_command(CMD_CREATE_ENCLAVE):
+        return False
+    resp = device.read_response()
+    return bool(resp and resp[0] == RESP_OK)
+
+
+def destroy_enclave(device: 'STM32Device') -> bool:
+    if not device.send_command(CMD_DESTROY_ENCLAVE):
+        return False
+    resp = device.read_response(timeout=3.0)
+    if resp and resp[0] == RESP_OK:
+        return True
+    if resp is None:
+        # Fallback: if enclave is confirmed absent, treat destroy as effective.
+        state = get_enclave_state(device)
+        if state is False:
+            print("! Destroy response timed out, but enclave state is NO (treated as success)")
+            return True
+    return False
 
 
 def decode_maybe_encrypted(payload: bytes) -> Optional[bytes]:
@@ -984,12 +1104,14 @@ def main():
                     continue
                 new_max = int(raw)
                 payload = struct.pack('<I', new_max)
-                if device.send_command(CMD_SET_MAX_INFERENCES, payload):
+                if device.send_command(CMD_UPDATE_RATE_LIMIT, payload):
                     resp = device.read_response()
                     if resp and resp[0] == RESP_OK:
-                        print(f"✓ max_inferences set to {new_max}")
+                        print(f"✓ rate limit updated to {new_max}")
                     else:
-                        print("✗ Set max failed")
+                        print("✗ Update_RateLimit failed")
+                else:
+                    print("✗ Failed to send Update_RateLimit command")
 
             elif choice == '7':
                 if device.send_command(CMD_GET_INFERENCE_COUNT):
@@ -1013,6 +1135,14 @@ def main():
                     continue
                 if verifier_key is None:
                     print("✗ Send a successful M_update first (command 3) to provision verifier key")
+                    continue
+
+                enclave_state = get_enclave_state(device)
+                if enclave_state is None:
+                    print("✗ Could not query enclave state")
+                    continue
+                if enclave_state is False:
+                    print("✗ Enclave not created. Run command 21 first.")
                     continue
 
                 nonce_inf = os.urandom(32)
@@ -1055,6 +1185,14 @@ def main():
                         print("✗ verified inference failed (quota/signature/model_id?)")
 
             elif choice == '10':
+                enclave_state = get_enclave_state(device)
+                if enclave_state is None:
+                    print("✗ Could not query enclave state")
+                    continue
+                if enclave_state is False:
+                    print("✗ Enclave not created. Run command 21 first.")
+                    continue
+
                 if device.send_command(CMD_RUN_INFERENCE):
                     resp = device.read_response()
                     if resp and resp[0] == RESP_OK:
@@ -1116,7 +1254,7 @@ def main():
                         else:
                             print("  Protection status: no enclave window registered")
                     else:
-                        print("✗ Failed to get deterministic SAU state")
+                        print("! SAU state unavailable (blocked by hardened secure policy)")
                 else:
                     print("✗ Failed to send GET_SAU_STATE")
 
@@ -1202,6 +1340,14 @@ def main():
                     print("  cancelled")
                     continue
 
+                enclave_state = get_enclave_state(device)
+                if enclave_state is None:
+                    print("✗ Could not query enclave state")
+                    continue
+                if enclave_state is False:
+                    print("✗ Enclave not created. Run command 21 first.")
+                    continue
+
                 before = get_sau_state(device)
                 if before is not None:
                     st, base, size = before
@@ -1235,6 +1381,14 @@ def main():
                     print("  cancelled")
                     continue
 
+                enclave_state = get_enclave_state(device)
+                if enclave_state is None:
+                    print("✗ Could not query enclave state")
+                    continue
+                if enclave_state is False:
+                    print("✗ Enclave not created. Run command 21 first.")
+                    continue
+
                 before = get_sau_state(device)
                 if before is not None:
                     st, base, size = before
@@ -1258,6 +1412,26 @@ def main():
                 if after is not None:
                     st, base, size = after
                     print(f"  SAU after: state={st}, base=0x{base:08X}, size={size}")
+
+            elif choice == '21':
+                print("\n[21] Create enclave")
+                if create_enclave(device):
+                    print("✓ Create_Enclave succeeded")
+                else:
+                    print("✗ Create_Enclave failed")
+
+            elif choice == '22':
+                print("\n[22] Destroy enclave")
+                before = get_enclave_state(device)
+                ok = destroy_enclave(device)
+                after = get_enclave_state(device)
+                if ok or after is False:
+                    if before is False:
+                        print("✓ Destroy_Enclave: already destroyed (no-op)")
+                    else:
+                        print("✓ Destroy_Enclave succeeded")
+                else:
+                    print("✗ Destroy_Enclave failed")
             
             else:
                 print("Invalid choice, try again")

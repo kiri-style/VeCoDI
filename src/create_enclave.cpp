@@ -6,6 +6,7 @@
 #include "create_enclave.h"
 #include "run_enclave.h"
 #include "benchmark.h"
+#include "split_inference.h"
 #include "../split_inference/late/L_nn_wt_encrypted.h"
 
 extern const uint8_t __model_ro_start[];
@@ -27,14 +28,12 @@ extern const uint8_t __inference_end[];
 #define ENCLAVE_VER  1
 
 #define DP_CMD_SECRET_DIGEST   0
-#define DP_CMD_DECRYPT_LATE_WEIGHTS 3
-#define DP_CMD_SAU_REGISTER    14U  /* Register enclave RAM window with Secure */
-#define DP_CMD_SAU_CONTROL     15U  /* SAU cmd: 1=CLOSE, 2=OPEN */
 #define DP_CMD_VALIDATE_BOOT_ENCLAVE_INFO 17U
-#define DP_CMD_SAU_REGISTER_ROM 18U
-#define DP_CMD_SAU_REGISTER_CODE 19U
 #define DP_CMD_SET_LATE_SECRET_HASH 20U
 #define DP_CMD_COMPUTE_ENCLAVE_INFO 10U
+#define DP_CMD_CREATE_ENCLAVE 22U
+#define DP_CMD_DESTROY_ENCLAVE 23U
+#define DP_CMD_FINALIZE_CREATE_ENCLAVE 24U
 
 /* ============================================================
  *                 GLOBALS
@@ -45,6 +44,7 @@ static uint32_t max_inferences_per_enclave = 0;
 static bool model_ro_registered_once = false;
 static bool inference_code_registered_once = false;
 static bool boot_enclave_info_seeded_once = false;
+static int32_t last_create_secure_status = 0;
 
 /* Forward declaration for reset function */
 extern void reset_inference_counter(void);
@@ -61,70 +61,19 @@ static struct k_thread enclave_thread;
  *                 SAU ENCLAVE RAM ISOLATION (NS SIDE)
  * ============================================================ */
 
-/* Tell the Secure partition where enclave RAM window lives so it can
- * configure SAU regions.  Can be called by enclave setup and SAU tests. */
-int enclave_sau_register_window(const uint8_t *base, uint32_t size)
-{
-    psa_handle_t h = psa_connect(ENCLAVE_SID, ENCLAVE_VER);
-    if (h <= 0) {
-        printk("[NS SAU] psa_connect failed for REGISTER\n");
-        return -1;
-    }
-    uint32_t cmd = DP_CMD_SAU_REGISTER;
-    uint32_t params[2] = { (uint32_t)(uintptr_t)base, size };
-    psa_invec  in_v[2] = { {&cmd, sizeof(cmd)}, {params, sizeof(params)} };
-    uint8_t    resp    = 0U;
-    psa_outvec out_v   = { &resp, 1U };
-    psa_status_t st = psa_call(h, PSA_IPC_CALL, in_v, 2, &out_v, 1);
-    psa_close(h);
-    if (st != PSA_SUCCESS) {
-        printk("[NS SAU] REGISTER failed: %d\n", (int)st);
-        return -1;
-    }
-    printk("[NS SAU] Enclave registered: base=%p size=%u resp=0x%02X\n",
-           (void *)base, size, resp);
-    return 0;
-}
+/* SAU/decrypt operations are now internal to Secure Create_Enclave. */
 
 static int enclave_sau_register_rom_window(const uint8_t *base, uint32_t size)
 {
-    psa_handle_t h = psa_connect(ENCLAVE_SID, ENCLAVE_VER);
-    if (h <= 0) {
-        printk("[NS SAU] psa_connect failed for REGISTER_ROM\n");
-        return -1;
-    }
-    uint32_t cmd = DP_CMD_SAU_REGISTER_ROM;
-    uint32_t params[2] = { (uint32_t)(uintptr_t)base, size };
-    psa_invec  in_v[2] = { {&cmd, sizeof(cmd)}, {params, sizeof(params)} };
-    uint8_t    resp    = 0U;
-    psa_outvec out_v   = { &resp, 1U };
-    psa_status_t st = psa_call(h, PSA_IPC_CALL, in_v, 2, &out_v, 1);
-    psa_close(h);
-    if (st != PSA_SUCCESS) {
-        printk("[NS SAU] REGISTER_ROM failed: %d\n", (int)st);
-        return -1;
-    }
+    ARG_UNUSED(base);
+    ARG_UNUSED(size);
     return 0;
 }
 
 static int enclave_sau_register_code_window(const uint8_t *base, uint32_t size)
 {
-    psa_handle_t h = psa_connect(ENCLAVE_SID, ENCLAVE_VER);
-    if (h <= 0) {
-        printk("[NS SAU] psa_connect failed for REGISTER_CODE\n");
-        return -1;
-    }
-    uint32_t cmd = DP_CMD_SAU_REGISTER_CODE;
-    uint32_t params[2] = { (uint32_t)(uintptr_t)base, size };
-    psa_invec  in_v[2] = { {&cmd, sizeof(cmd)}, {params, sizeof(params)} };
-    uint8_t    resp    = 0U;
-    psa_outvec out_v   = { &resp, 1U };
-    psa_status_t st = psa_call(h, PSA_IPC_CALL, in_v, 2, &out_v, 1);
-    psa_close(h);
-    if (st != PSA_SUCCESS) {
-        printk("[NS SAU] REGISTER_CODE failed: %d\n", (int)st);
-        return -1;
-    }
+    ARG_UNUSED(base);
+    ARG_UNUSED(size);
     return 0;
 }
 
@@ -263,48 +212,7 @@ int initialize_secure_enclave_info_boot(void)
     return 0;
 }
 
-/* Public helpers called by run_enclave.cpp and sau_test.cpp. */
-int enclave_sau_open(void)
-{
-    psa_handle_t h = psa_connect(ENCLAVE_SID, ENCLAVE_VER);
-    if (h <= 0) { printk("[NS SAU] psa_connect failed for OPEN\n"); return -1; }
-    uint32_t cmd  = DP_CMD_SAU_CONTROL;
-    uint8_t  ctrl = 2U;  /* OPEN */
-    psa_invec  in_v[2] = { {&cmd, sizeof(cmd)}, {&ctrl, 1U} };
-    uint8_t    resp    = 0U;
-    psa_outvec out_v   = { &resp, 1U };
-    psa_status_t st = psa_call(h, PSA_IPC_CALL, in_v, 2, &out_v, 1);
-    psa_close(h);
-    if (st != PSA_SUCCESS) {
-        printk("[NS SAU] OPEN failed: %d\n", (int)st);
-        return -1;
-    }
-    printk("[NS SAU] stage open: status=0, byte=0x%02x\n", resp);
-    return 0;
-}
-
-int enclave_sau_close(void)
-{
-    psa_handle_t h = psa_connect(ENCLAVE_SID, ENCLAVE_VER);
-    if (h <= 0) { printk("[NS SAU] psa_connect failed for CLOSE\n"); return -1; }
-    uint32_t cmd  = DP_CMD_SAU_CONTROL;
-    uint8_t  ctrl = 1U;  /* CLOSE */
-    psa_invec  in_v[2] = { {&cmd, sizeof(cmd)}, {&ctrl, 1U} };
-    uint8_t    resp    = 0U;
-    psa_outvec out_v   = { &resp, 1U };
-    psa_status_t st = psa_call(h, PSA_IPC_CALL, in_v, 2, &out_v, 1);
-    psa_close(h);
-    if (st != PSA_SUCCESS) {
-        printk("[NS SAU] CLOSE failed: %d\n", (int)st);
-        return -1;
-    }
-    printk("[NS SAU] stage close: status=0, byte=0x%02x\n", resp);
-    return 0;
-}
-
-
-
-static int decrypt_late_weights_into_ns(void)
+static int create_enclave_secure_into_ns(void)
 {
     BENCHMARK_START(decrypt);
     
@@ -324,14 +232,21 @@ static int decrypt_late_weights_into_ns(void)
     psa_handle_t handle = psa_connect(ENCLAVE_SID, ENCLAVE_VER);
     if (handle <= 0) {
         printk("[NS] psa_connect failed (late weights), handle=%d\n", (int)handle);
+        last_create_secure_status = (int32_t)handle;
         return -1;
     }
 
-    uint32_t cmd = DP_CMD_DECRYPT_LATE_WEIGHTS;
+    uint32_t cmd = DP_CMD_CREATE_ENCLAVE;
+    uint8_t iv_and_meta[24] = {0};
+    memcpy(iv_and_meta, late_wt_iv, sizeof(late_wt_iv));
+    uint32_t *meta = (uint32_t *)(void *)(iv_and_meta + sizeof(late_wt_iv));
+    meta[0] = (uint32_t)(uintptr_t)out_buf;
+    meta[1] = (uint32_t)out_size;
+
     psa_invec in_vec[3] = {
         { &cmd, sizeof(cmd) },
         { late_wt_encrypted, late_wt_encrypted_len },
-        { late_wt_iv, sizeof(late_wt_iv) }
+        { iv_and_meta, sizeof(iv_and_meta) }
     };
 
     psa_outvec out_vec = {
@@ -347,14 +262,45 @@ static int decrypt_late_weights_into_ns(void)
     psa_close(handle);
 
     if (status != PSA_SUCCESS) {
-        printk("[NS] Secure decrypt failed (late weights), status=%d\n", status);
+        printk("[NS] Secure Create_Enclave failed, status=%d\n", status);
+        last_create_secure_status = (int32_t)status;
         return -1;
     }
 
+    last_create_secure_status = 0;
+
     BENCHMARK_END(decrypt, g_benchmark_metrics.aes_decrypt_cycles);
-    printk("[NS] ✓ Late weights decrypted into NS RAM (%u cycles, %u ms)\n",
+    BENCHMARK_ACCUMULATE(g_benchmark_metrics.aes_decrypt_cycles,
+                         g_benchmark_metrics.aes_decrypt_sum_cycles,
+                         g_benchmark_metrics.aes_decrypt_min_cycles,
+                         g_benchmark_metrics.aes_decrypt_max_cycles,
+                         g_benchmark_metrics.aes_decrypt_count);
+    printk("[NS] ✓ Secure Create_Enclave completed (%u cycles, %u ms)\n",
            g_benchmark_metrics.aes_decrypt_cycles,
            benchmark_cycles_to_ms(g_benchmark_metrics.aes_decrypt_cycles));
+    return 0;
+}
+
+static int finalize_create_enclave_secure(void)
+{
+    psa_handle_t handle = psa_connect(ENCLAVE_SID, ENCLAVE_VER);
+    if (handle <= 0) {
+        printk("[NS] psa_connect failed (finalize create), handle=%d\n", (int)handle);
+        last_create_secure_status = (int32_t)handle;
+        return -1;
+    }
+
+    uint32_t cmd = DP_CMD_FINALIZE_CREATE_ENCLAVE;
+    psa_invec in_vec = { &cmd, sizeof(cmd) };
+    psa_status_t status = psa_call(handle, PSA_IPC_CALL, &in_vec, 1, NULL, 0);
+    psa_close(handle);
+
+    if (status != PSA_SUCCESS) {
+        printk("[NS] Secure finalize create failed, status=%d\n", (int)status);
+        last_create_secure_status = (int32_t)status;
+        return -1;
+    }
+
     return 0;
 }
 
@@ -368,12 +314,13 @@ int create_enclave(void)
     
     if (enclave_created) {
         printk("[NS] Enclave already created\n");
+        last_create_secure_status = 1;
         return -1;
     }
 
-    printk("[NS] Validating current EnclaveInfo against boot-time reference...\n");
     if (validate_boot_enclave_info_before_create() != 0) {
-        printk("[NS] ✗ Enclave creation aborted: boot-time EnclaveInfo validation failed\n");
+        printk("[NS] ✗ EnclaveInfo pre-create validation failed\n");
+        last_create_secure_status = -3;
         return -1;
     }
 
@@ -382,13 +329,6 @@ int create_enclave(void)
         enclave_region_size = ENCLAVE_MEMORY_SIZE;
         printk("[NS] Enclave region reserved: base=%p size=%zu\n",
             (void*)enclave_region_base, enclave_region_size);
-
-    /* Register enclave RAM window with Secure partition so SAU can protect it. */
-    printk("[NS] Registering enclave window with Secure (SAU)...\n");
-    if (enclave_sau_register_window(enclave_region_base,
-                            (uint32_t)enclave_region_size) != 0) {
-        printk("[NS] WARNING: SAU register failed, isolation disabled\n");
-    }
 
     printk("[NS] Configuration:\n");
         printk("      Enclave memory size: %zu bytes\n", enclave_region_size);
@@ -399,21 +339,33 @@ int create_enclave(void)
         memset(enclave_region_base, 0, enclave_region_size);
     printk("[NS] \u2713 Memory cleared\n");
 
-    if (decrypt_late_weights_into_ns() != 0) {
-        printk("[NS] \u2717 Late weights decrypt failed\n");
+    if (create_enclave_secure_into_ns() != 0) {
+        printk("[NS] \u2717 Secure Create_Enclave failed\n");
         return -1;
     }
 
-    /* Enclave decryption complete: close the SAU window.
-     * The window will re-open only during inference. */
-    printk("[NS] Closing SAU enclave window (weights now Secure)...\n");
-    enclave_sau_close();
+    /* Bind freshly decrypted late weights to split-inference pipeline.
+     * RAM remains open until finalize step so we can compute hash now. */
+    set_late_weights_buffer(enclave_region_base, enclave_region_size);
+
+    if (precompute_late_weights_hash() != 0) {
+        printk("[NS] ✗ Late-weights hash precompute failed during create\n");
+        (void)finalize_create_enclave_secure();
+        last_create_secure_status = -2;
+        return -1;
+    }
+
+    if (finalize_create_enclave_secure() != 0) {
+        printk("[NS] ✗ Finalize create failed (RAM close)\n");
+        return -1;
+    }
 
     /* Get max inferences policy from secure side */
     printk("[NS] Requesting max inferences policy from secure...\n");
     psa_handle_t handle = psa_connect(ENCLAVE_SID, ENCLAVE_VER);
     if (handle <= 0) {
         printk("[NS] psa_connect failed (max inferences), handle=%d\n", (int)handle);
+        last_create_secure_status = (int32_t)handle;
         return -1;
     }
 
@@ -426,32 +378,21 @@ int create_enclave(void)
 
     if (status != PSA_SUCCESS) {
         printk("[NS] Failed to get max inferences, status=%d\n", status);
+        last_create_secure_status = (int32_t)status;
         return -1;
     }
     printk("[NS] ✓ Max inferences per enclave: %u\n", max_inferences_per_enclave);
 
-    /* Reset inference counter in Secure side */
-    printk("[NS] Resetting Secure inference counter...\n");
-    handle = psa_connect(ENCLAVE_SID, ENCLAVE_VER);
-    if (handle <= 0) {
-        printk("[NS] psa_connect failed (reset counter), handle=%d\n", (int)handle);
-        return -1;
-    }
-
-    cmd = 7; /* DP_CMD_RESET_COUNTER */
-    psa_invec reset_vec = { &cmd, sizeof(cmd) };
-    status = psa_call(handle, PSA_IPC_CALL, &reset_vec, 1, NULL, 0);
-    psa_close(handle);
-
-    if (status != PSA_SUCCESS) {
-        printk("[NS] Failed to reset Secure counter, status=%d\n", status);
-        return -1;
-    }
-    printk("[NS] ✓ Secure inference counter reset to 0\n");
-
     enclave_created = true;
+    last_create_secure_status = 0;
+    g_benchmark_metrics.enclave_recreations++;
 
     BENCHMARK_END(create_enc, g_benchmark_metrics.enclave_create_cycles);
+    BENCHMARK_ACCUMULATE(g_benchmark_metrics.enclave_create_cycles,
+                         g_benchmark_metrics.enclave_create_sum_cycles,
+                         g_benchmark_metrics.enclave_create_min_cycles,
+                         g_benchmark_metrics.enclave_create_max_cycles,
+                         g_benchmark_metrics.enclave_create_count);
     printk("[NS] ✓ Enclave creation complete (%u cycles, %u ms)\n",
            g_benchmark_metrics.enclave_create_cycles,
            benchmark_cycles_to_ms(g_benchmark_metrics.enclave_create_cycles));
@@ -538,21 +479,44 @@ int destroy_enclave(void)
 
     printk("[NS] Destroying enclave...\n");
 
-    /* Open SAU window temporarily so NS can zero sensitive model memory. */
-    enclave_sau_open();
+    /* Secure Destroy_Enclave: close regions and reset secure state. */
+    psa_handle_t handle = psa_connect(ENCLAVE_SID, ENCLAVE_VER);
+    if (handle <= 0) {
+        printk("[NS] psa_connect failed (destroy), handle=%d\n", (int)handle);
+        return -1;
+    }
+    uint32_t cmd = DP_CMD_DESTROY_ENCLAVE;
+    psa_invec in_vec = { &cmd, sizeof(cmd) };
+    psa_status_t status = psa_call(handle, PSA_IPC_CALL, &in_vec, 1, NULL, 0);
+    psa_close(handle);
+    if (status != PSA_SUCCESS) {
+        printk("[NS] Secure destroy failed, status=%d\n", status);
+        return -1;
+    }
 
-    /* Zeroize sensitive model memory */
     memset(enclave_region_base, 0, enclave_region_size);
-
-    /* Re-close: weights are gone but keep window Secure as a clean state. */
-    enclave_sau_close();
 
     enclave_created = false;
     max_inferences_per_enclave = 0;
 
     BENCHMARK_END(destroy_enc, g_benchmark_metrics.enclave_destroy_cycles);
+    BENCHMARK_ACCUMULATE(g_benchmark_metrics.enclave_destroy_cycles,
+                         g_benchmark_metrics.enclave_destroy_sum_cycles,
+                         g_benchmark_metrics.enclave_destroy_min_cycles,
+                         g_benchmark_metrics.enclave_destroy_max_cycles,
+                         g_benchmark_metrics.enclave_destroy_count);
     printk("[NS] ✓ Enclave destroyed (memory zeroed, counters reset, %u cycles, %u ms)\n",
            g_benchmark_metrics.enclave_destroy_cycles,
            benchmark_cycles_to_ms(g_benchmark_metrics.enclave_destroy_cycles));
     return 0;
+}
+
+int update_rate_limit(uint32_t new_limit)
+{
+    return set_max_inferences(new_limit);
+}
+
+int32_t get_last_create_secure_status(void)
+{
+    return last_create_secure_status;
 }

@@ -283,6 +283,138 @@ def build_verified_m_inf_packet(
     minf_plain = nonce_inf + model_id_bytes + sig_v_raw
     return encrypt_command(session_key, minf_plain)
 
+
+NS_BENCHMARK_LEGACY_SIZE = 64    # 16 x uint32
+NS_BENCHMARK_EXT_V1_SIZE = 184   # 16I + 2I + 7Q + 14I + 7I
+NS_BENCHMARK_EXT_V2_SIZE = 232   # 18I + 8Q + 24I
+NS_BENCHMARK_EXT_V3_SIZE = 272   # V2 + (2Q + 6I) for create/destroy atomic lifecycle stats
+
+
+def _set_stage_stats(metrics: dict, stage: str, sum_cycles: int, min_cycles: int, max_cycles: int, count: int):
+    metrics[f'{stage}_sum_cycles'] = int(sum_cycles)
+    metrics[f'{stage}_min_cycles'] = int(min_cycles)
+    metrics[f'{stage}_max_cycles'] = int(max_cycles)
+    metrics[f'{stage}_count'] = int(count)
+
+    if count > 0:
+        metrics[f'{stage}_avg_cycles'] = int(sum_cycles // count)
+
+
+def parse_ns_benchmark_payload(data: bytes, metrics: dict):
+    """Parse NS benchmark payload (legacy 64B and extended 184B/232B/272B layouts)."""
+    if not data or len(data) < NS_BENCHMARK_LEGACY_SIZE:
+        return
+
+    values = struct.unpack('<16I', data[:NS_BENCHMARK_LEGACY_SIZE])
+
+    metrics['enclave_create_cycles'] = values[0]
+    metrics['enclave_destroy_cycles'] = values[1]
+    metrics['aes_decrypt_cycles'] = values[2]
+    metrics['early_layers_cycles'] = values[3]
+    metrics['late_layers_cycles'] = values[4]
+    metrics['total_inference_cycles'] = values[5]
+    metrics['run_enclave_cycles'] = values[6]
+    metrics['heap_used_bytes'] = values[7]
+    metrics['heap_free_bytes'] = values[8]
+    metrics['stack_used_bytes'] = values[9]
+    metrics['ram_used_bytes'] = values[10]
+    metrics['ram_total_bytes'] = values[11]
+    metrics['flash_used_bytes'] = values[12]
+    metrics['flash_total_bytes'] = values[13]
+    metrics['inference_count'] = values[14]
+    metrics['enclave_recreations'] = values[15]
+
+    # Extended v2 layout (current firmware): 18I + 8Q + 24I = 232 bytes
+    if len(data) >= NS_BENCHMARK_EXT_V2_SIZE:
+        ext = struct.unpack('<18I8Q24I', data[:NS_BENCHMARK_EXT_V2_SIZE])
+
+        metrics['inference_requests_total'] = ext[16]
+        metrics['enclave_info_validation_failures'] = ext[17]
+
+        stage_names = [
+            'enclave_create', 'enclave_destroy', 'aes_decrypt', 'early_layers',
+            'late_layers', 'total_inference', 'run_enclave', 'irq_atomic'
+        ]
+
+        sums = ext[18:26]
+        minmax = ext[26:42]
+        counts = ext[42:50]
+
+        for i, stage in enumerate(stage_names):
+            _set_stage_stats(
+                metrics,
+                stage,
+                sums[i],
+                minmax[2 * i],
+                minmax[2 * i + 1],
+                counts[i],
+            )
+
+        # Extended v3 layout: append create/destroy atomic lifecycle stats.
+        # tail = 2Q sums + 6I(min/max/count for create_atomic and destroy_atomic)
+        if len(data) >= NS_BENCHMARK_EXT_V3_SIZE:
+            off = NS_BENCHMARK_EXT_V2_SIZE
+            create_atomic_sum, destroy_atomic_sum = struct.unpack_from('<QQ', data, off)
+            off += 16
+            (
+                create_atomic_min,
+                create_atomic_max,
+                destroy_atomic_min,
+                destroy_atomic_max,
+                create_atomic_count,
+                destroy_atomic_count,
+            ) = struct.unpack_from('<6I', data, off)
+
+            _set_stage_stats(
+                metrics,
+                'create_atomic',
+                create_atomic_sum,
+                create_atomic_min,
+                create_atomic_max,
+                create_atomic_count,
+            )
+            _set_stage_stats(
+                metrics,
+                'destroy_atomic',
+                destroy_atomic_sum,
+                destroy_atomic_min,
+                destroy_atomic_max,
+                destroy_atomic_count,
+            )
+        return
+
+    # Extended v1 layout (older firmware): 16I + 2I + 7Q + 14I + 7I = 184 bytes
+    if len(data) >= NS_BENCHMARK_EXT_V1_SIZE:
+        off = NS_BENCHMARK_LEGACY_SIZE
+        req_total, val_fail = struct.unpack_from('<II', data, off)
+        off += 8
+
+        sums = struct.unpack_from('<7Q', data, off)
+        off += 56
+
+        minmax = struct.unpack_from('<14I', data, off)
+        off += 56
+
+        counts = struct.unpack_from('<7I', data, off)
+
+        metrics['inference_requests_total'] = req_total
+        metrics['enclave_info_validation_failures'] = val_fail
+
+        stage_names = [
+            'enclave_create', 'enclave_destroy', 'aes_decrypt', 'early_layers',
+            'late_layers', 'total_inference', 'run_enclave'
+        ]
+
+        for i, stage in enumerate(stage_names):
+            _set_stage_stats(
+                metrics,
+                stage,
+                sums[i],
+                minmax[2 * i],
+                minmax[2 * i + 1],
+                counts[i],
+            )
+
 def run_benchmark_on_device(port: str, baudrate: int = 115200) -> dict:
     """
     Run full benchmark sequence on device:
@@ -589,34 +721,9 @@ def run_benchmark_on_device(port: str, baudrate: int = 115200) -> dict:
         status, data = send_command(ser, CMD_GET_BENCHMARK)
         _cy2ms = lambda c: c / 110_000.0  # 110 MHz → ms
 
-        if status == RESP_OK and data and len(data) >= 64:  # 16 x uint32_t = 64 bytes
+        if status == RESP_OK and data and len(data) >= NS_BENCHMARK_LEGACY_SIZE:
             vprint(f"    raw ({len(data)}B): [{data[:16].hex()}...]")
-
-            # Parse benchmark_metrics_t structure (16 x uint32_t)
-            # [0] enclave_create  [1] enclave_destroy  [2] aes_decrypt
-            # [3] early_layers    [4] late_layers       [5] total_inference
-            # [6] run_enclave     [7] heap_used         [8] heap_free
-            # [9] stack_used      [10] ram_used         [11] ram_total
-            # [12] flash_used     [13] flash_total      [14] inference_count
-            # [15] enclave_recreations
-            values = struct.unpack('<16I', data[:64])
-
-            metrics['enclave_create_cycles']  = values[0]
-            metrics['enclave_destroy_cycles'] = values[1]
-            metrics['aes_decrypt_cycles']     = values[2]
-            metrics['early_layers_cycles']    = values[3]
-            metrics['late_layers_cycles']     = values[4]
-            metrics['total_inference_cycles'] = values[5]
-            metrics['run_enclave_cycles']     = values[6]
-            metrics['heap_used_bytes']        = values[7]
-            metrics['heap_free_bytes']        = values[8]
-            metrics['stack_used_bytes']       = values[9]
-            metrics['ram_used_bytes']         = values[10]
-            metrics['ram_total_bytes']        = values[11]
-            metrics['flash_used_bytes']       = values[12]
-            metrics['flash_total_bytes']      = values[13]
-            metrics['inference_count']        = values[14]
-            metrics['enclave_recreations']    = values[15]
+            parse_ns_benchmark_payload(data, metrics)
 
             # Convert cycles to ms @ 110 MHz
             cpu_freq_mhz = 110
@@ -625,20 +732,55 @@ def run_benchmark_on_device(port: str, baudrate: int = 115200) -> dict:
                 if cyc > 0:
                     metrics[f'{k}_ms'] = cyc / (cpu_freq_mhz * 1000)
 
-            vprint(f"    enclave_create:    {values[0]:>12,} cy  ({_cy2ms(values[0]):.2f} ms)")
-            vprint(f"    enclave_destroy:   {values[1]:>12,} cy  ({_cy2ms(values[1]):.2f} ms)")
-            vprint(f"    aes_decrypt:       {values[2]:>12,} cy  ({_cy2ms(values[2]):.2f} ms)")
-            vprint(f"    early_layers:      {values[3]:>12,} cy  ({_cy2ms(values[3]):.2f} ms)")
-            vprint(f"    late_layers:       {values[4]:>12,} cy  ({_cy2ms(values[4]):.2f} ms)")
-            vprint(f"    total_inference:   {values[5]:>12,} cy  ({_cy2ms(values[5]):.2f} ms)")
-            vprint(f"    run_enclave:       {values[6]:>12,} cy  ({_cy2ms(values[6]):.2f} ms)")
-            vprint(f"    heap_used:         {values[7]:>12,} B")
-            vprint(f"    heap_free:         {values[8]:>12,} B")
-            vprint(f"    stack_used:        {values[9]:>12,} B")
-            vprint(f"    ram_used:          {values[10]:>12,} / {values[11]:,} B  ({values[10]/values[11]*100:.1f}%)")
-            vprint(f"    flash_used:        {values[12]:>12,} / {values[13]:,} B  ({values[12]/values[13]*100:.1f}%)")
-            vprint(f"    inference_count:   {values[14]:>12,}")
-            vprint(f"    enclave_recr:      {values[15]:>12,}")
+            vprint(f"    enclave_create:    {metrics.get('enclave_create_cycles', 0):>12,} cy  ({_cy2ms(metrics.get('enclave_create_cycles', 0)):.2f} ms)")
+            vprint(f"    enclave_destroy:   {metrics.get('enclave_destroy_cycles', 0):>12,} cy  ({_cy2ms(metrics.get('enclave_destroy_cycles', 0)):.2f} ms)")
+            vprint(f"    aes_decrypt:       {metrics.get('aes_decrypt_cycles', 0):>12,} cy  ({_cy2ms(metrics.get('aes_decrypt_cycles', 0)):.2f} ms)")
+            vprint(f"    early_layers:      {metrics.get('early_layers_cycles', 0):>12,} cy  ({_cy2ms(metrics.get('early_layers_cycles', 0)):.2f} ms)")
+            vprint(f"    late_layers:       {metrics.get('late_layers_cycles', 0):>12,} cy  ({_cy2ms(metrics.get('late_layers_cycles', 0)):.2f} ms)")
+            vprint(f"    total_inference:   {metrics.get('total_inference_cycles', 0):>12,} cy  ({_cy2ms(metrics.get('total_inference_cycles', 0)):.2f} ms)")
+            vprint(f"    run_enclave:       {metrics.get('run_enclave_cycles', 0):>12,} cy  ({_cy2ms(metrics.get('run_enclave_cycles', 0)):.2f} ms)")
+            vprint(f"    heap_used:         {metrics.get('heap_used_bytes', 0):>12,} B")
+            vprint(f"    heap_free:         {metrics.get('heap_free_bytes', 0):>12,} B")
+            vprint(f"    stack_used:        {metrics.get('stack_used_bytes', 0):>12,} B")
+
+            ram_used = metrics.get('ram_used_bytes', 0)
+            ram_total = metrics.get('ram_total_bytes', 0)
+            flash_used = metrics.get('flash_used_bytes', 0)
+            flash_total = metrics.get('flash_total_bytes', 0)
+
+            ram_pct = (ram_used / ram_total * 100.0) if ram_total else 0.0
+            flash_pct = (flash_used / flash_total * 100.0) if flash_total else 0.0
+
+            vprint(f"    ram_used:          {ram_used:>12,} / {ram_total:,} B  ({ram_pct:.1f}%)")
+            vprint(f"    flash_used:        {flash_used:>12,} / {flash_total:,} B  ({flash_pct:.1f}%)")
+            vprint(f"    inference_count:   {metrics.get('inference_count', 0):>12,}")
+            vprint(f"    enclave_recr:      {metrics.get('enclave_recreations', 0):>12,}")
+
+            if metrics.get('irq_atomic_count', 0) > 0:
+                irq_avg = metrics.get('irq_atomic_avg_cycles', 0)
+                irq_min = metrics.get('irq_atomic_min_cycles', 0)
+                irq_max = metrics.get('irq_atomic_max_cycles', 0)
+                irq_count = metrics.get('irq_atomic_count', 0)
+                vprint(f"    irq_atomic:        count={irq_count}, avg={irq_avg} cy ({_cy2ms(irq_avg):.3f} ms), min/max={irq_min}/{irq_max} cy")
+
+            if metrics.get('create_atomic_count', 0) > 0:
+                ca_avg = metrics.get('create_atomic_avg_cycles', 0)
+                ca_min = metrics.get('create_atomic_min_cycles', 0)
+                ca_max = metrics.get('create_atomic_max_cycles', 0)
+                ca_count = metrics.get('create_atomic_count', 0)
+                vprint(f"    create_atomic:     count={ca_count}, avg={ca_avg} cy ({_cy2ms(ca_avg):.3f} ms), min/max={ca_min}/{ca_max} cy")
+
+            if metrics.get('destroy_atomic_count', 0) > 0:
+                da_avg = metrics.get('destroy_atomic_avg_cycles', 0)
+                da_min = metrics.get('destroy_atomic_min_cycles', 0)
+                da_max = metrics.get('destroy_atomic_max_cycles', 0)
+                da_count = metrics.get('destroy_atomic_count', 0)
+                vprint(f"    destroy_atomic:    count={da_count}, avg={da_avg} cy ({_cy2ms(da_avg):.3f} ms), min/max={da_min}/{da_max} cy")
+
+            if 'inference_requests_total' in metrics:
+                vprint(f"    inference_requests_total: {metrics['inference_requests_total']}")
+                vprint(f"    enclave_info_validation_failures: {metrics.get('enclave_info_validation_failures', 0)}")
+
             print(f"    ✓ early={metrics['early_layers_cycles']:,} cy ({metrics.get('early_layers_ms',0):.1f} ms) | "
                   f"late={metrics['late_layers_cycles']:,} cy ({metrics.get('late_layers_ms',0):.1f} ms) | "
                   f"total={metrics['total_inference_cycles']:,} cy ({metrics.get('total_inference_ms',0):.1f} ms)")
@@ -646,6 +788,27 @@ def run_benchmark_on_device(port: str, baudrate: int = 115200) -> dict:
                   f"({metrics['ram_used_bytes']/metrics['ram_total_bytes']*100:.1f}%)  "
                   f"Flash {metrics['flash_used_bytes']:,}/{metrics['flash_total_bytes']:,} B "
                   f"({metrics['flash_used_bytes']/metrics['flash_total_bytes']*100:.1f}%)")
+
+            if metrics.get('irq_atomic_count', 0) > 0:
+                print(
+                    f"    ✓ IRQ-masked window: avg={metrics.get('irq_atomic_avg_cycles', 0):,} cy "
+                    f"({_cy2ms(metrics.get('irq_atomic_avg_cycles', 0)):.3f} ms), "
+                    f"min/max={metrics.get('irq_atomic_min_cycles', 0):,}/{metrics.get('irq_atomic_max_cycles', 0):,} cy"
+                )
+
+            if metrics.get('create_atomic_count', 0) > 0:
+                print(
+                    f"    ✓ CREATE atomic: avg={metrics.get('create_atomic_avg_cycles', 0):,} cy "
+                    f"({_cy2ms(metrics.get('create_atomic_avg_cycles', 0)):.3f} ms), "
+                    f"min/max={metrics.get('create_atomic_min_cycles', 0):,}/{metrics.get('create_atomic_max_cycles', 0):,} cy"
+                )
+
+            if metrics.get('destroy_atomic_count', 0) > 0:
+                print(
+                    f"    ✓ DESTROY atomic: avg={metrics.get('destroy_atomic_avg_cycles', 0):,} cy "
+                    f"({_cy2ms(metrics.get('destroy_atomic_avg_cycles', 0)):.3f} ms), "
+                    f"min/max={metrics.get('destroy_atomic_min_cycles', 0):,}/{metrics.get('destroy_atomic_max_cycles', 0):,} cy"
+                )
         else:
             print(f"    ✗ NS benchmark not available (status={status}, data={len(data) if data else 0}B)")
         
@@ -1028,6 +1191,50 @@ def format_report(metrics: dict) -> str:
         cyc = metrics['total_inference_cycles']
         ms = cycles_to_ms(cyc)
         report += f"- **Device total inference cycles**: {cyc:,} ({ms:.1f} ms @ 110 MHz)\n"
+
+    if 'run_enclave_count' in metrics:
+        report += (
+            f"- **run_enclave aggregate**: count={metrics.get('run_enclave_count', 0)}, "
+            f"avg={metrics.get('run_enclave_avg_cycles', 0):,} cycles, "
+            f"min/max={metrics.get('run_enclave_min_cycles', 0):,}/{metrics.get('run_enclave_max_cycles', 0):,}\n"
+        )
+
+    if 'irq_atomic_count' in metrics and metrics.get('irq_atomic_count', 0) > 0:
+        irq_avg = metrics.get('irq_atomic_avg_cycles', 0)
+        irq_sum = metrics.get('irq_atomic_sum_cycles', 0)
+        report += (
+            f"- **IRQ-masked atomic window**: count={metrics.get('irq_atomic_count', 0)}, "
+            f"avg={irq_avg:,} cycles ({cycles_to_ms(irq_avg):.3f} ms), "
+            f"sum={irq_sum:,} cycles ({cycles_to_ms(irq_sum):.3f} ms), "
+            f"min/max={metrics.get('irq_atomic_min_cycles', 0):,}/{metrics.get('irq_atomic_max_cycles', 0):,}\n"
+        )
+
+    if metrics.get('create_atomic_count', 0) > 0:
+        ca_avg = metrics.get('create_atomic_avg_cycles', 0)
+        ca_sum = metrics.get('create_atomic_sum_cycles', 0)
+        report += (
+            f"- **CREATE atomic window**: count={metrics.get('create_atomic_count', 0)}, "
+            f"avg={ca_avg:,} cycles ({cycles_to_ms(ca_avg):.3f} ms), "
+            f"sum={ca_sum:,} cycles ({cycles_to_ms(ca_sum):.3f} ms), "
+            f"min/max={metrics.get('create_atomic_min_cycles', 0):,}/{metrics.get('create_atomic_max_cycles', 0):,}\n"
+        )
+
+    if metrics.get('destroy_atomic_count', 0) > 0:
+        da_avg = metrics.get('destroy_atomic_avg_cycles', 0)
+        da_sum = metrics.get('destroy_atomic_sum_cycles', 0)
+        report += (
+            f"- **DESTROY atomic window**: count={metrics.get('destroy_atomic_count', 0)}, "
+            f"avg={da_avg:,} cycles ({cycles_to_ms(da_avg):.3f} ms), "
+            f"sum={da_sum:,} cycles ({cycles_to_ms(da_sum):.3f} ms), "
+            f"min/max={metrics.get('destroy_atomic_min_cycles', 0):,}/{metrics.get('destroy_atomic_max_cycles', 0):,}\n"
+        )
+
+    if 'inference_requests_total' in metrics:
+        report += (
+            f"- **Inference requests / validation failures**: "
+            f"{metrics.get('inference_requests_total', 0)} / "
+            f"{metrics.get('enclave_info_validation_failures', 0)}\n"
+        )
     
     if 'ecdh_success' in metrics:
         report += f"- **ECDH handshake**: {'✓ SUCCESS' if metrics['ecdh_success'] else '✗ FAILED'}\n"
@@ -1056,6 +1263,36 @@ def format_report(metrics: dict) -> str:
                 f"| {op.get('name','-')} | 0x{op.get('cmd', 0):02X} | {op.get('runs', 0)} | "
                 f"{op.get('ok', 0)} | {op.get('fail', 0)} | "
                 f"{op.get('avg_ms', 0.0):.2f} | {op.get('min_ms', 0.0):.2f} | {op.get('max_ms', 0.0):.2f} |\n"
+            )
+        report += "\n"
+
+    aggregate_stages = [
+        'enclave_create',
+        'enclave_destroy',
+        'aes_decrypt',
+        'early_layers',
+        'late_layers',
+        'total_inference',
+        'run_enclave',
+        'irq_atomic',
+        'create_atomic',
+        'destroy_atomic',
+    ]
+    has_aggregate = any(metrics.get(f'{stage}_count', 0) > 0 for stage in aggregate_stages)
+    if has_aggregate:
+        report += "## NS Aggregate Cycle Statistics\n\n"
+        report += "| Stage | Count | Sum (cycles) | Avg (cycles) | Min (cycles) | Max (cycles) | Avg (ms) |\n"
+        report += "|---|---:|---:|---:|---:|---:|---:|\n"
+        for stage in aggregate_stages:
+            count = metrics.get(f'{stage}_count', 0)
+            if count <= 0:
+                continue
+            sum_c = metrics.get(f'{stage}_sum_cycles', 0)
+            avg_c = metrics.get(f'{stage}_avg_cycles', 0)
+            min_c = metrics.get(f'{stage}_min_cycles', 0)
+            max_c = metrics.get(f'{stage}_max_cycles', 0)
+            report += (
+                f"| {stage} | {count} | {sum_c:,} | {avg_c:,} | {min_c:,} | {max_c:,} | {cycles_to_ms(avg_c):.3f} |\n"
             )
         report += "\n"
 

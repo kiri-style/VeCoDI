@@ -21,6 +21,14 @@ benchmark_metrics_t g_benchmark_metrics;
 // Reference point for cycle counting
 static uint32_t benchmark_start_cycles = 0;
 
+static uint32_t safe_avg_u64(uint64_t sum, uint32_t count)
+{
+    if (count == 0U) {
+        return 0U;
+    }
+    return (uint32_t)(sum / count);
+}
+
 // ============================================================================
 // Initialization
 // ============================================================================
@@ -172,25 +180,70 @@ void benchmark_print_report(const benchmark_metrics_t *metrics)
            benchmark_cycles_to_ms(metrics->total_inference_cycles));
     printk("╟──────────────────────────────────────────────────────────────╢\n");
     
-    // End-to-End
+        // End-to-End
     printk("║ END-TO-END METRICS                                           ║\n");
     printk("╟──────────────────────────────────────────────────────────────╢\n");
-    printk("║ run_enclave(): %8u cycles  (%6u ms)                 ║\n",
+        printk("║ run_enclave(last): %8u cycles  (%6u ms)            ║\n",
            metrics->run_enclave_cycles,
            benchmark_cycles_to_ms(metrics->run_enclave_cycles));
     printk("║ Inferences:    %8u total                               ║\n",
            metrics->inference_count);
-    
-    // Calculate average if we have inferences
-    if (metrics->inference_count > 0) {
-        uint32_t avg_cycles = metrics->run_enclave_cycles / metrics->inference_count;
-        printk("║ Avg per inf:   %8u cycles  (%6u ms)                 ║\n",
-               avg_cycles, benchmark_cycles_to_ms(avg_cycles));
-    }
-    
-    printk("╟──────────────────────────────────────────────────────────────╢\n");
-    
-    // Memory Usage
+
+        if (metrics->run_enclave_count > 0U) {
+            uint32_t avg_cycles = safe_avg_u64(metrics->run_enclave_sum_cycles,
+                                               metrics->run_enclave_count);
+            printk("║ run_enclave(avg):  %8u cycles  (%6u ms)          ║\n",
+                   avg_cycles,
+                   benchmark_cycles_to_ms(avg_cycles));
+            printk("║ run_enclave(min/max): %6u / %6u ms               ║\n",
+                   benchmark_cycles_to_ms(metrics->run_enclave_min_cycles),
+                   benchmark_cycles_to_ms(metrics->run_enclave_max_cycles));
+            uint32_t avg_ms = benchmark_cycles_to_ms(avg_cycles);
+            if (avg_ms > 0U) {
+                printk("║ Approx throughput:  %8u inf/s                     ║\n", 1000U / avg_ms);
+            }
+        }
+
+        if (metrics->irq_atomic_count > 0U) {
+            uint32_t irq_avg = safe_avg_u64(metrics->irq_atomic_sum_cycles,
+                                            metrics->irq_atomic_count);
+            printk("║ IRQ-masked(avg):   %8u cycles  (%6u us)          ║\n",
+                   irq_avg,
+                   benchmark_cycles_to_us(irq_avg));
+            printk("║ IRQ-masked(min/max): %6u / %6u us               ║\n",
+                   benchmark_cycles_to_us(metrics->irq_atomic_min_cycles),
+                   benchmark_cycles_to_us(metrics->irq_atomic_max_cycles));
+        }
+
+         if (metrics->create_atomic_count > 0U) {
+             uint32_t create_atomic_avg = safe_avg_u64(metrics->create_atomic_sum_cycles,
+                                     metrics->create_atomic_count);
+             printk("║ CREATE atomic(avg): %8u cycles  (%6u us)         ║\n",
+                 create_atomic_avg,
+                 benchmark_cycles_to_us(create_atomic_avg));
+             printk("║ CREATE atomic(min/max): %5u / %5u us            ║\n",
+                 benchmark_cycles_to_us(metrics->create_atomic_min_cycles),
+                 benchmark_cycles_to_us(metrics->create_atomic_max_cycles));
+         }
+
+         if (metrics->destroy_atomic_count > 0U) {
+             uint32_t destroy_atomic_avg = safe_avg_u64(metrics->destroy_atomic_sum_cycles,
+                                      metrics->destroy_atomic_count);
+             printk("║ DESTROY atomic(avg): %7u cycles  (%6u us)        ║\n",
+                 destroy_atomic_avg,
+                 benchmark_cycles_to_us(destroy_atomic_avg));
+             printk("║ DESTROY atomic(min/max): %4u / %5u us           ║\n",
+                 benchmark_cycles_to_us(metrics->destroy_atomic_min_cycles),
+                 benchmark_cycles_to_us(metrics->destroy_atomic_max_cycles));
+         }
+
+        printk("║ Requests total: %8u | EnclaveInfo fail: %6u        ║\n",
+               metrics->inference_requests_total,
+               metrics->enclave_info_validation_failures);
+
+        printk("╟──────────────────────────────────────────────────────────────╢\n");
+
+        // Memory Usage
     printk("║ MEMORY USAGE                                                 ║\n");
     printk("╟──────────────────────────────────────────────────────────────╢\n");
     
@@ -221,6 +274,68 @@ void benchmark_print_report(const benchmark_metrics_t *metrics)
            metrics->stack_used_bytes, metrics->stack_used_bytes / 1024);
     printk("╚══════════════════════════════════════════════════════════════╝\n");
     printk("\n");
+
+        printk("[BENCHMARK][CSV] stage,count,sum_cycles,avg_cycles,min_cycles,max_cycles\n");
+        printk("[BENCHMARK][CSV] enclave_create,%u,%llu,%u,%u,%u\n",
+            metrics->enclave_create_count,
+            (unsigned long long)metrics->enclave_create_sum_cycles,
+            safe_avg_u64(metrics->enclave_create_sum_cycles, metrics->enclave_create_count),
+            metrics->enclave_create_min_cycles,
+            metrics->enclave_create_max_cycles);
+        printk("[BENCHMARK][CSV] enclave_destroy,%u,%llu,%u,%u,%u\n",
+            metrics->enclave_destroy_count,
+            (unsigned long long)metrics->enclave_destroy_sum_cycles,
+            safe_avg_u64(metrics->enclave_destroy_sum_cycles, metrics->enclave_destroy_count),
+            metrics->enclave_destroy_min_cycles,
+            metrics->enclave_destroy_max_cycles);
+        printk("[BENCHMARK][CSV] aes_decrypt,%u,%llu,%u,%u,%u\n",
+            metrics->aes_decrypt_count,
+            (unsigned long long)metrics->aes_decrypt_sum_cycles,
+            safe_avg_u64(metrics->aes_decrypt_sum_cycles, metrics->aes_decrypt_count),
+            metrics->aes_decrypt_min_cycles,
+            metrics->aes_decrypt_max_cycles);
+        printk("[BENCHMARK][CSV] early_layers,%u,%llu,%u,%u,%u\n",
+            metrics->early_layers_count,
+            (unsigned long long)metrics->early_layers_sum_cycles,
+            safe_avg_u64(metrics->early_layers_sum_cycles, metrics->early_layers_count),
+            metrics->early_layers_min_cycles,
+            metrics->early_layers_max_cycles);
+        printk("[BENCHMARK][CSV] late_layers,%u,%llu,%u,%u,%u\n",
+            metrics->late_layers_count,
+            (unsigned long long)metrics->late_layers_sum_cycles,
+            safe_avg_u64(metrics->late_layers_sum_cycles, metrics->late_layers_count),
+            metrics->late_layers_min_cycles,
+            metrics->late_layers_max_cycles);
+        printk("[BENCHMARK][CSV] total_inference,%u,%llu,%u,%u,%u\n",
+            metrics->total_inference_count,
+            (unsigned long long)metrics->total_inference_sum_cycles,
+            safe_avg_u64(metrics->total_inference_sum_cycles, metrics->total_inference_count),
+            metrics->total_inference_min_cycles,
+            metrics->total_inference_max_cycles);
+        printk("[BENCHMARK][CSV] run_enclave,%u,%llu,%u,%u,%u\n",
+            metrics->run_enclave_count,
+            (unsigned long long)metrics->run_enclave_sum_cycles,
+            safe_avg_u64(metrics->run_enclave_sum_cycles, metrics->run_enclave_count),
+            metrics->run_enclave_min_cycles,
+            metrics->run_enclave_max_cycles);
+        printk("[BENCHMARK][CSV] irq_atomic,%u,%llu,%u,%u,%u\n",
+            metrics->irq_atomic_count,
+            (unsigned long long)metrics->irq_atomic_sum_cycles,
+            safe_avg_u64(metrics->irq_atomic_sum_cycles, metrics->irq_atomic_count),
+            metrics->irq_atomic_min_cycles,
+            metrics->irq_atomic_max_cycles);
+        printk("[BENCHMARK][CSV] create_atomic,%u,%llu,%u,%u,%u\n",
+            metrics->create_atomic_count,
+            (unsigned long long)metrics->create_atomic_sum_cycles,
+            safe_avg_u64(metrics->create_atomic_sum_cycles, metrics->create_atomic_count),
+            metrics->create_atomic_min_cycles,
+            metrics->create_atomic_max_cycles);
+        printk("[BENCHMARK][CSV] destroy_atomic,%u,%llu,%u,%u,%u\n",
+            metrics->destroy_atomic_count,
+            (unsigned long long)metrics->destroy_atomic_sum_cycles,
+            safe_avg_u64(metrics->destroy_atomic_sum_cycles, metrics->destroy_atomic_count),
+            metrics->destroy_atomic_min_cycles,
+            metrics->destroy_atomic_max_cycles);
 }
 
 void benchmark_print_memory_summary(void)
@@ -231,7 +346,7 @@ void benchmark_print_memory_summary(void)
     
     printk("[BENCHMARK] Memory: Heap=%u/%u KB (%.1f%%), Stack=%u KB\n",
            used / 1024, total / 1024,
-           (total > 0) ? (100.0f * used / total) : 0.0f,
+            (total > 0) ? (100.0 * (double)used / (double)total) : 0.0,
            stack / 1024);
 }
 

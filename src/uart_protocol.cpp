@@ -346,6 +346,9 @@ static bool is_valid_cmd(uint8_t cmd)
             cmd == CMD_GET_DEVICE_PUBKEY ||
             cmd == CMD_GET_SAU_STATE ||
             cmd == CMD_GET_ENCLAVE_STATE ||
+            cmd == CMD_CREATE_ENCLAVE ||
+            cmd == CMD_DESTROY_ENCLAVE ||
+            cmd == CMD_UPDATE_RATE_LIMIT ||
             cmd == CMD_RUN_INFERENCE_NO_SAU ||
             cmd == CMD_READ_PROTECTED_MEM);
 }
@@ -369,6 +372,8 @@ static bool is_valid_len_for_cmd(uint8_t cmd, uint32_t len)
         case CMD_GET_DEVICE_PUBKEY:
         case CMD_GET_SAU_STATE:
         case CMD_GET_ENCLAVE_STATE:
+        case CMD_CREATE_ENCLAVE:
+        case CMD_DESTROY_ENCLAVE:
         case CMD_RUN_INFERENCE_NO_SAU:
         case CMD_READ_PROTECTED_MEM:
             return len == 0U;
@@ -376,6 +381,7 @@ static bool is_valid_len_for_cmd(uint8_t cmd, uint32_t len)
             /* len=0: legacy (no M_inf);  len=128: new protocol (encrypted M_inf) */
             return (len == 0U) || (len == 128U);
         case CMD_SET_MAX_INFERENCES:
+        case CMD_UPDATE_RATE_LIMIT:
             return len == 4U;  /* Max inferences is uint32_t */
         case CMD_ECDH_HANDSHAKE:
             return len == 65U;  /* Uncompressed P-256 public key: 0x04 || x || y */
@@ -402,6 +408,9 @@ static void handle_get_sau_state(void);
 static void handle_get_enclave_state(void);
 static void handle_run_inference_no_sau(void);
 static void handle_read_protected_mem(void);
+static void handle_create_enclave(void);
+static void handle_destroy_enclave(void);
+static void handle_update_rate_limit(const uint8_t *data, uint32_t len);
 
 int uart_protocol_init(void)
 {
@@ -641,6 +650,18 @@ static void process_command(void)
             handle_get_enclave_state();
             break;
 
+        case CMD_CREATE_ENCLAVE:
+            handle_create_enclave();
+            break;
+
+        case CMD_DESTROY_ENCLAVE:
+            handle_destroy_enclave();
+            break;
+
+        case CMD_UPDATE_RATE_LIMIT:
+            handle_update_rate_limit(rx_buffer, rx_len);
+            break;
+
         case CMD_RUN_INFERENCE_NO_SAU:
             handle_run_inference_no_sau();
             break;
@@ -847,6 +868,7 @@ static void handle_run_inference(void)
      * Legacy mode (rx_len == 0): no M_inf, plain RESP_OK (backward compatible)
      */
     bool verified_mode = (rx_len == 128U);
+    g_benchmark_metrics.inference_requests_total++;
 
     uint8_t  nonce_inf[32] = {0};
     uint32_t req_model_id  = 0U;
@@ -945,9 +967,17 @@ static void handle_run_inference(void)
      * From EnclaveInfo runtime check up to RAM-close/inference completion and
      * host response send, keep IRQ masked for strict sequential execution.
      */
+    uint32_t irq_atomic_start = benchmark_get_cycles();
     unsigned int irq_key_atomic = irq_lock();
 
     if (validate_enclave_info_before_inference() != 0) {
+        uint32_t irq_atomic_elapsed = benchmark_get_cycles() - irq_atomic_start;
+        BENCHMARK_ACCUMULATE(irq_atomic_elapsed,
+                             g_benchmark_metrics.irq_atomic_sum_cycles,
+                             g_benchmark_metrics.irq_atomic_min_cycles,
+                             g_benchmark_metrics.irq_atomic_max_cycles,
+                             g_benchmark_metrics.irq_atomic_count);
+        g_benchmark_metrics.enclave_info_validation_failures++;
         irq_unlock(irq_key_atomic);
         printk("[UART] EnclaveInfo runtime validation failed, inference denied\n");
         uart_protocol_send_response(RESP_ERROR, NULL, 0);
@@ -956,13 +986,32 @@ static void handle_run_inference(void)
 
     /* Run the enclave (NS+S integrated architecture) */
     run_enclave();
-    mock_inference_count++;
 
     uint8_t output_class = get_last_prediction();
+    uint8_t expected_class = get_last_expected_label();
+    if (output_class == 255U || expected_class == 255U) {
+        uint32_t irq_atomic_elapsed = benchmark_get_cycles() - irq_atomic_start;
+        BENCHMARK_ACCUMULATE(irq_atomic_elapsed,
+                             g_benchmark_metrics.irq_atomic_sum_cycles,
+                             g_benchmark_metrics.irq_atomic_min_cycles,
+                             g_benchmark_metrics.irq_atomic_max_cycles,
+                             g_benchmark_metrics.irq_atomic_count);
+        irq_unlock(irq_key_atomic);
+        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+        return;
+    }
+
+    mock_inference_count++;
 
     if (!verified_mode) {
         /* Legacy path: no PoX, plain confirmation */
         uart_protocol_send_response(RESP_OK, NULL, 0);
+        uint32_t irq_atomic_elapsed = benchmark_get_cycles() - irq_atomic_start;
+        BENCHMARK_ACCUMULATE(irq_atomic_elapsed,
+                             g_benchmark_metrics.irq_atomic_sum_cycles,
+                             g_benchmark_metrics.irq_atomic_min_cycles,
+                             g_benchmark_metrics.irq_atomic_max_cycles,
+                             g_benchmark_metrics.irq_atomic_count);
         irq_unlock(irq_key_atomic);
         return;
     }
@@ -1007,6 +1056,12 @@ static void handle_run_inference(void)
     memcpy(response_plain + 1U, pox_sig, 64U);
 
     uart_send_encrypted_response(RESP_OK, response_plain, sizeof(response_plain));
+    uint32_t irq_atomic_elapsed = benchmark_get_cycles() - irq_atomic_start;
+    BENCHMARK_ACCUMULATE(irq_atomic_elapsed,
+                         g_benchmark_metrics.irq_atomic_sum_cycles,
+                         g_benchmark_metrics.irq_atomic_min_cycles,
+                         g_benchmark_metrics.irq_atomic_max_cycles,
+                         g_benchmark_metrics.irq_atomic_count);
     irq_unlock(irq_key_atomic);
 }
 
@@ -1051,11 +1106,9 @@ static void handle_run_inference_no_sau(void)
     printk("[UART TEST] CMD_RUN_INFERENCE_NO_SAU received\n");
 
     if (!is_enclave_created()) {
-        printk("[UART TEST] enclave not created -> creating now\n");
-        if (create_enclave() != 0) {
-            uart_protocol_send_response(RESP_ERROR, NULL, 0);
-            return;
-        }
+        printk("[UART TEST] enclave not created -> reject (create explicitly first)\n");
+        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+        return;
     }
 
     /* Keep policy semantics aligned with normal path. */
@@ -1089,15 +1142,7 @@ static void handle_read_protected_mem(void)
     printk("[UART TEST] CMD_READ_PROTECTED_MEM received\n");
 
     if (!is_enclave_created()) {
-        printk("[UART TEST] enclave not created -> creating now\n");
-        if (create_enclave() != 0) {
-            uart_protocol_send_response(RESP_ERROR, NULL, 0);
-            return;
-        }
-    }
-
-    /* Ensure SAU is closed before direct read attempt. */
-    if (enclave_sau_close() != 0) {
+        printk("[UART TEST] enclave not created -> reject (create explicitly first)\n");
         uart_protocol_send_response(RESP_ERROR, NULL, 0);
         return;
     }
@@ -1295,7 +1340,12 @@ static void handle_get_inference_result(void)
     uint8_t result[2];
     result[0] = get_last_prediction();
     result[1] = get_last_expected_label();
-    
+
+    if (result[0] == 255U || result[1] == 255U) {
+        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+        return;
+    }
+
     uart_protocol_send_response(RESP_OK, result, 2);
 }
 
@@ -1372,4 +1422,75 @@ static void handle_get_enclave_state(void)
 {
     uint8_t created = is_enclave_created() ? 1U : 0U;
     uart_protocol_send_response(RESP_OK, &created, sizeof(created));
+}
+
+static void handle_create_enclave(void)
+{
+    if (is_enclave_created()) {
+        uart_protocol_send_response(RESP_OK, NULL, 0);
+        return;
+    }
+
+    uint32_t atomic_start = benchmark_get_cycles();
+    unsigned int irq_key_atomic = irq_lock();
+    int create_ret = create_enclave();
+    irq_unlock(irq_key_atomic);
+    uint32_t atomic_elapsed = benchmark_get_cycles() - atomic_start;
+    BENCHMARK_ACCUMULATE(atomic_elapsed,
+                         g_benchmark_metrics.create_atomic_sum_cycles,
+                         g_benchmark_metrics.create_atomic_min_cycles,
+                         g_benchmark_metrics.create_atomic_max_cycles,
+                         g_benchmark_metrics.create_atomic_count);
+
+    if (create_ret == 0) {
+        uart_protocol_send_response(RESP_OK, NULL, 0);
+    } else {
+        int32_t detail = get_last_create_secure_status();
+        uart_protocol_send_response(RESP_ERROR, (const uint8_t *)&detail, sizeof(detail));
+    }
+}
+
+static void handle_destroy_enclave(void)
+{
+    if (!is_enclave_created()) {
+        uart_protocol_send_response(RESP_OK, NULL, 0);
+        return;
+    }
+
+    uint32_t atomic_start = benchmark_get_cycles();
+    unsigned int irq_key_atomic = irq_lock();
+    int destroy_ret = destroy_enclave();
+    irq_unlock(irq_key_atomic);
+    uint32_t atomic_elapsed = benchmark_get_cycles() - atomic_start;
+    BENCHMARK_ACCUMULATE(atomic_elapsed,
+                         g_benchmark_metrics.destroy_atomic_sum_cycles,
+                         g_benchmark_metrics.destroy_atomic_min_cycles,
+                         g_benchmark_metrics.destroy_atomic_max_cycles,
+                         g_benchmark_metrics.destroy_atomic_count);
+
+    if (destroy_ret == 0) {
+        mock_inference_count = 0U;
+        mock_max_inferences = 0U;
+        uart_protocol_send_response(RESP_OK, NULL, 0);
+    } else {
+        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+    }
+}
+
+static void handle_update_rate_limit(const uint8_t *data, uint32_t len)
+{
+    if (data == NULL || len != 4U) {
+        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+        return;
+    }
+
+    uint32_t new_limit = data[0] | (data[1] << 8) | (data[2] << 16) | (data[3] << 24);
+
+    if (update_rate_limit(new_limit) == 0) {
+        mock_max_inferences = new_limit;
+        mock_inference_count = 0U;
+        uart_protocol_send_response(RESP_OK, NULL, 0);
+    } else {
+        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+    }
 }

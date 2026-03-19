@@ -27,6 +27,9 @@ extern "C" {
 #define CMD_RUN_INFERENCE_NO_SAU    0x0E  /* DANGEROUS TEST: run inference path without SAU open */
 #define CMD_READ_PROTECTED_MEM      0x0F  /* DANGEROUS TEST: direct read from protected enclave memory */
 #define CMD_GET_ENCLAVE_STATE       0x10  /* Return enclave created state: created(1) */
+#define CMD_CREATE_ENCLAVE          0x11  /* Secure lifecycle create */
+#define CMD_DESTROY_ENCLAVE         0x12  /* Secure lifecycle destroy */
+#define CMD_UPDATE_RATE_LIMIT       0x13  /* Secure lifecycle rate-limit update (u32 LE) */
 
 /* Response Codes (Device → Mac) */
 #define RESP_OK                     0x00

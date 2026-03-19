@@ -420,6 +420,11 @@ static void run_early_layers(const int8_t *input_data, int8_t *output_data, int8
     memcpy(output_data, early_buf2, output_size_conv2d_6);
     
     BENCHMARK_END(early, g_benchmark_metrics.early_layers_cycles);
+    BENCHMARK_ACCUMULATE(g_benchmark_metrics.early_layers_cycles,
+                         g_benchmark_metrics.early_layers_sum_cycles,
+                         g_benchmark_metrics.early_layers_min_cycles,
+                         g_benchmark_metrics.early_layers_max_cycles,
+                         g_benchmark_metrics.early_layers_count);
     printk("[EARLY] ✓ Early layers complete (%u cycles, %u ms)\n",
            g_benchmark_metrics.early_layers_cycles,
            benchmark_cycles_to_ms(g_benchmark_metrics.early_layers_cycles));
@@ -468,6 +473,11 @@ static int8_t run_late_layers(const int8_t *main_data, const int8_t *skip_data)
     }
 
     BENCHMARK_END(late, g_benchmark_metrics.late_layers_cycles);
+    BENCHMARK_ACCUMULATE(g_benchmark_metrics.late_layers_cycles,
+                         g_benchmark_metrics.late_layers_sum_cycles,
+                         g_benchmark_metrics.late_layers_min_cycles,
+                         g_benchmark_metrics.late_layers_max_cycles,
+                         g_benchmark_metrics.late_layers_count);
     printk("[LATE] ✓ Late layers complete (pred=%d, %u cycles, %u ms)\n",
            prediction,
            g_benchmark_metrics.late_layers_cycles,
@@ -563,6 +573,11 @@ void run_split_inference(void)
         last_expected_label = (uint8_t)expected_label;
 
         BENCHMARK_END(total_inf, g_benchmark_metrics.total_inference_cycles);
+        BENCHMARK_ACCUMULATE(g_benchmark_metrics.total_inference_cycles,
+                     g_benchmark_metrics.total_inference_sum_cycles,
+                     g_benchmark_metrics.total_inference_min_cycles,
+                     g_benchmark_metrics.total_inference_max_cycles,
+                     g_benchmark_metrics.total_inference_count);
         printk("[SPLIT] Prediction = %d (total inference: %u cycles, %u ms)\n", 
                pred,
                total_inf_start - total_inf_start + g_benchmark_metrics.total_inference_cycles,

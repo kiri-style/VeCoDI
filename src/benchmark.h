@@ -104,6 +104,56 @@ typedef struct {
     // Counter metrics
     uint32_t inference_count;
     uint32_t enclave_recreations;
+
+    // Request / security counters
+    uint32_t inference_requests_total;
+    uint32_t enclave_info_validation_failures;
+
+    // Aggregate cycle stats (for paper reporting)
+    uint64_t enclave_create_sum_cycles;
+    uint64_t enclave_destroy_sum_cycles;
+    uint64_t aes_decrypt_sum_cycles;
+    uint64_t early_layers_sum_cycles;
+    uint64_t late_layers_sum_cycles;
+    uint64_t total_inference_sum_cycles;
+    uint64_t run_enclave_sum_cycles;
+    uint64_t irq_atomic_sum_cycles;
+
+    uint32_t enclave_create_min_cycles;
+    uint32_t enclave_create_max_cycles;
+    uint32_t enclave_destroy_min_cycles;
+    uint32_t enclave_destroy_max_cycles;
+    uint32_t aes_decrypt_min_cycles;
+    uint32_t aes_decrypt_max_cycles;
+    uint32_t early_layers_min_cycles;
+    uint32_t early_layers_max_cycles;
+    uint32_t late_layers_min_cycles;
+    uint32_t late_layers_max_cycles;
+    uint32_t total_inference_min_cycles;
+    uint32_t total_inference_max_cycles;
+    uint32_t run_enclave_min_cycles;
+    uint32_t run_enclave_max_cycles;
+    uint32_t irq_atomic_min_cycles;
+    uint32_t irq_atomic_max_cycles;
+
+    uint32_t enclave_create_count;
+    uint32_t enclave_destroy_count;
+    uint32_t aes_decrypt_count;
+    uint32_t early_layers_count;
+    uint32_t late_layers_count;
+    uint32_t total_inference_count;
+    uint32_t run_enclave_count;
+    uint32_t irq_atomic_count;
+
+    // Dedicated atomic operation stats (UART lifecycle critical sections)
+    uint64_t create_atomic_sum_cycles;
+    uint64_t destroy_atomic_sum_cycles;
+    uint32_t create_atomic_min_cycles;
+    uint32_t create_atomic_max_cycles;
+    uint32_t destroy_atomic_min_cycles;
+    uint32_t destroy_atomic_max_cycles;
+    uint32_t create_atomic_count;
+    uint32_t destroy_atomic_count;
 } benchmark_metrics_t;
 
 extern benchmark_metrics_t g_benchmark_metrics;
@@ -147,6 +197,19 @@ void benchmark_reset_metrics(void);
         BENCHMARK_START(bench); \
         operation; \
         BENCHMARK_END(bench, target_field); \
+    } while(0)
+
+#define BENCHMARK_ACCUMULATE(sample_cycles, sum_field, min_field, max_field, count_field) \
+    do { \
+        uint32_t __bench_sample = (sample_cycles); \
+        (sum_field) += (uint64_t)__bench_sample; \
+        if ((count_field) == 0U || __bench_sample < (min_field)) { \
+            (min_field) = __bench_sample; \
+        } \
+        if ((count_field) == 0U || __bench_sample > (max_field)) { \
+            (max_field) = __bench_sample; \
+        } \
+        (count_field)++; \
     } while(0)
 
 #ifdef __cplusplus

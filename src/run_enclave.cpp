@@ -16,89 +16,79 @@ void run_enclave(void)
 {
     BENCHMARK_START(run_enc);
     bool should_execute_inference = true;
-    bool secure_denied = false;
     
     printk("[ENCLAVE] ===== ENTER =====\n");
     
-    /* Check if enclave exists, if not create it */
-    if (!is_enclave_created()) {
-        printk("[ENCLAVE] Enclave not created, creating new enclave...\n");
-        if (create_enclave() != 0) {
-            printk("[ENCLAVE] ✗ Failed to create enclave\n");
-            should_execute_inference = false;
-        }
-        if (should_execute_inference) {
-            printk("[ENCLAVE] ✓ New enclave created\n");
-            
-            /* Configure split inference with decrypted late weights */
-            printk("[ENCLAVE] Configuring split inference...\n");
-            uint8_t* late_wt_buf = get_enclave_region();
-            size_t late_wt_size = get_enclave_region_size();
-            set_late_weights_buffer(late_wt_buf, late_wt_size);
-            printk("[ENCLAVE] ✓ Late weights buffer configured: %p (%zu bytes)\n", 
-                   (void*)late_wt_buf, late_wt_size);
-            
-            /* Pre-compute hash of code pointers + late weights */
-            if (precompute_late_weights_hash() != 0) {
-                printk("[ENCLAVE] ✗ Failed to pre-compute late weights hash\n");
-                should_execute_inference = false;
-            }
-            if (should_execute_inference) {
-                printk("[ENCLAVE] ✓ Late weights hash pre-computed\n");
-            }
-        }
-    }
-
     if (should_execute_inference) {
-        /* Ask Secure partition to verify and increment counter atomically */
-        printk("[ENCLAVE] Calling Secure: DP_CMD_RUN_INFERENCE (check + increment)...\n");
+        /* Secure precheck only: no counter increment here. */
+        printk("[ENCLAVE] Calling Secure: DP_CMD_RUN_INFERENCE precheck...\n");
 
         psa_handle_t handle = psa_connect(ENCLAVE_SID, ENCLAVE_VER);
         if (handle <= 0) {
-            printk("[ENCLAVE] ⚠ psa_connect failed (handle=%d), continuing in NS benchmark mode\n", (int)handle);
-            secure_denied = true;
+            printk("[ENCLAVE] ✗ psa_connect failed (handle=%d)\n", (int)handle);
+            should_execute_inference = false;
         } else {
             uint32_t cmd = 9; /* DP_CMD_RUN_INFERENCE */
-            psa_invec in_vec = { &cmd, sizeof(cmd) };
+            uint8_t phase = 0U; /* precheck */
+            psa_invec in_vec[2] = {
+                { &cmd, sizeof(cmd) },
+                { &phase, sizeof(phase) }
+            };
             uint32_t allowed = 0;
             psa_outvec out_vec = { &allowed, sizeof(allowed) };
 
-            psa_status_t status = psa_call(handle, PSA_IPC_CALL, &in_vec, 1, &out_vec, 1);
+            psa_status_t status = psa_call(handle, PSA_IPC_CALL, in_vec, 2, &out_vec, 1);
             psa_close(handle);
 
             if (status != PSA_SUCCESS) {
-                printk("[ENCLAVE] ⚠ DP_CMD_RUN_INFERENCE failed (status=%d), continuing in NS benchmark mode\n", status);
-                secure_denied = true;
+                printk("[ENCLAVE] ✗ Precheck failed (status=%d)\n", status);
+                should_execute_inference = false;
             } else {
                 printk("[ENCLAVE] Secure response: allowed=%u\n", allowed);
                 if (allowed == 0) {
-                    printk("[ENCLAVE] ⚠ Secure denied inference, continuing in NS benchmark mode\n");
-                    secure_denied = true;
+                    printk("[ENCLAVE] ✗ Secure denied inference\n");
+                    should_execute_inference = false;
                 }
             }
         }
     }
 
-    /* Execute inference (counter already incremented by Secure) */
+    /* Execute inference */
     if (should_execute_inference) {
-        if (secure_denied) {
-            printk("[ENCLAVE] NS fallback mode active for benchmarking\n");
-        }
-        /* Open the SAU enclave window: late weights must be NS-accessible. */
-        printk("[ENCLAVE] Opening SAU enclave window for inference...\n");
-        enclave_sau_open();
-
         printk("[ENCLAVE] Executing split inference...\n");
         run_split_inference();
         g_benchmark_metrics.inference_count++;
 
-        /* Close the SAU enclave window: weights are Secure again. */
-        enclave_sau_close();
-        printk("[ENCLAVE] SAU enclave window closed (weights Secure).\n");
+        /* Secure commit: increment only after successful execution. */
+        psa_handle_t handle = psa_connect(ENCLAVE_SID, ENCLAVE_VER);
+        if (handle <= 0) {
+            printk("[ENCLAVE] ✗ Commit connect failed (handle=%d)\n", (int)handle);
+            should_execute_inference = false;
+        } else {
+            uint32_t cmd = 9; /* DP_CMD_RUN_INFERENCE */
+            uint8_t phase = 1U; /* commit */
+            psa_invec in_vec[2] = {
+                { &cmd, sizeof(cmd) },
+                { &phase, sizeof(phase) }
+            };
+            uint32_t allowed = 0;
+            psa_outvec out_vec = { &allowed, sizeof(allowed) };
+            psa_status_t status = psa_call(handle, PSA_IPC_CALL, in_vec, 2, &out_vec, 1);
+            psa_close(handle);
+            if (status != PSA_SUCCESS || allowed == 0U) {
+                printk("[ENCLAVE] ✗ Commit failed (status=%d, allowed=%u)\n", status, allowed);
+                should_execute_inference = false;
+            }
+        }
     }
     
     /* Update metrics */
     BENCHMARK_END(run_enc, g_benchmark_metrics.run_enclave_cycles);
+    BENCHMARK_ACCUMULATE(g_benchmark_metrics.run_enclave_cycles,
+                         g_benchmark_metrics.run_enclave_sum_cycles,
+                         g_benchmark_metrics.run_enclave_min_cycles,
+                         g_benchmark_metrics.run_enclave_max_cycles,
+                         g_benchmark_metrics.run_enclave_count);
 
     printk("[ENCLAVE] ===== EXIT (total: %u cycles, %u ms) =====\n",
            g_benchmark_metrics.run_enclave_cycles,
