@@ -22,7 +22,7 @@ Session/Auth:
 
 Quota/Counters:
 - `5` Get max inferences
-- `6` Set max inferences (manual override command)
+- `6` Update rate limit (secure API)
 - `7` Get inference count
 - `8` Get remaining inferences
 
@@ -35,12 +35,16 @@ Bench/Debug:
 - `12` Get NS benchmark metrics
 - `13` Get Secure benchmark metrics
 - `14` Read console output
-- `15` Deterministic SAU state (UNREGISTERED/OPEN/CLOSED + base + size)
+- `15` SAU state (best-effort; may be blocked by hardened policy)
 - `16` Raw UART command
 - `17` Session status (`dynamic session`, `cached EnclaveInfo`, `pk_d`, `model_id`, `cert_len`, `enclave created`)
 - `18` Security tests (unitary or combined: ex `1,4,6`)
-- `19` DANGER: inference without SAU open
+- `19` DANGER: inference without explicit create
 - `20` DANGER: direct read of protected memory
+
+Enclave lifecycle:
+- `21` Create enclave
+- `22` Destroy enclave
 
 ## Session status details
 
@@ -63,9 +67,11 @@ Bench/Debug:
 - `9` requires:
   - successful `1` (ECDH)
   - successful `3` (M_update accepted)
+  - enclave created via `21`
 - Anti-replay is enforced by device: `M_update` is rejected when `c_limit <= current max`.
 - If `3` is rejected, resend with higher `c_limit`.
 - Before enclave creation, the device also checks that the current Secure recomputation of `EnclaveInfo` still matches the boot-time sealed reference.
+- `9`, `19`, and `20` no longer auto-create the enclave.
 
 ## Security tests (option 18)
 
@@ -95,7 +101,7 @@ Bench/Debug:
 
 ## Danger tests
 
-- **19 / 0x0E** inference without SAU open
+- **19 / 0x0E** inference without explicit create
   - Validation path for forbidden access behavior
 - **20 / 0x0F** direct protected-memory read
   - With SAU closed: may cause HardFault/reset/no response

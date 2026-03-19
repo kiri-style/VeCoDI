@@ -35,10 +35,13 @@ The current menu includes:
 - `1` ECDH handshake
 - `2` Compute EnclaveInfo (attested)
 - `3` Send M_update (quota custom)
+- `6` Update rate limit (secure API)
+- `21` Create enclave
+- `22` Destroy enclave
 - `9` Verified inference
-- `15` SAU state
+- `15` SAU state (best-effort; may be blocked by hardened policy)
 - `18` Security tests (single or combined)
-- `19` DANGER: inference without SAU open
+- `19` DANGER: inference without explicit create
 - `20` DANGER: direct protected-memory read
 
 ## Recommended Test Scenario
@@ -46,9 +49,11 @@ The current menu includes:
 1. **Command 1**: ECDH handshake
 2. **Command 2**: Compute EnclaveInfo (attestation)
 3. **Command 3**: Send M_update (`c_limit` > current max)
-4. **Command 9**: Run verified inference
-5. **Command 15**: Check SAU state = `CLOSED`
-6. **Command 18**: Run security tests (example: `1,4,5`)
+4. **Command 21**: Create enclave (explicit lifecycle)
+5. **Command 9**: Run verified inference
+6. **Command 15**: Check SAU state (if available)
+7. **Command 22**: Destroy enclave
+8. **Command 18**: Run security tests (example: `1,4,5`)
 
 ## Full Documentation
 

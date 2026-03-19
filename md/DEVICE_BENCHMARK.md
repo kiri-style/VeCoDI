@@ -20,6 +20,7 @@ The benchmark response supports multiple payload versions for backward compatibi
 - **Legacy layout:** 64 bytes (`16 x uint32_t`)
 - **Extended v1 layout:** 184 bytes (`16I + 2I + 7Q + 14I + 7I`)
 - **Extended v2 layout (current):** 232 bytes (`18I + 8Q + 24I`)
+- **Extended v3 layout (current with lifecycle atomic):** 272 bytes (`v2 + 2Q + 6I`)
 
 Core metrics (all layouts):
 - Enclave lifecycle: create/destroy cycles
@@ -38,6 +39,9 @@ Extended metrics (v1/v2):
   - stages: `enclave_create`, `enclave_destroy`, `aes_decrypt`, `early_layers`, `late_layers`, `total_inference`, `run_enclave`
 - **Extended v2 adds IRQ atomic timing stage:**
   - `irq_atomic_sum_cycles`, `irq_atomic_min_cycles`, `irq_atomic_max_cycles`, `irq_atomic_count`, `irq_atomic_avg_cycles`
+- **Extended v3 adds lifecycle atomic timing stages:**
+  - `create_atomic_sum_cycles`, `create_atomic_min_cycles`, `create_atomic_max_cycles`, `create_atomic_count`, `create_atomic_avg_cycles`
+  - `destroy_atomic_sum_cycles`, `destroy_atomic_min_cycles`, `destroy_atomic_max_cycles`, `destroy_atomic_count`, `destroy_atomic_avg_cycles`
 
 ### Secure (S) Metrics - 88 bytes total
 - AES Decrypt: cycles and operation count
@@ -62,8 +66,8 @@ This will:
 4. Execute split inference
 5. Collect both NS and S metrics
 6. Benchmark all main UART operations (avg/min/max latency)
-7. Decode extended NS aggregate metrics (including IRQ-masked window timing when available)
-7. Save full report to `build/DEVICE_BENCHMARK_RESULTS.md`
+7. Decode extended NS aggregate metrics (including IRQ-masked and lifecycle atomic stages when available)
+8. Save full report to `build/DEVICE_BENCHMARK_RESULTS.md`
 
 
 ## Complete Results (16 March 2026)
@@ -167,11 +171,17 @@ Mac → Device: CMD_RUN_INFERENCE (0x04) + encrypted M_inf
 Device:
   1. Check quota (NS)
   2. Call Secure partition to verify and manage quota
-  3. Create enclave (if first inference)
-  4. Decrypt late layer weights (via Secure partition)
-  5. Execute early layers (NS)
-  6. Execute late layers with decrypted weights (NS)
+  3. Require enclave pre-created (explicit lifecycle)
+  4. Execute early layers (NS)
+  5. Execute late layers with decrypted weights (NS)
 Mac → Device: Status (0x00=OK, 0xFF=Error)
+```
+
+### Step 4a: Explicit Enclave Lifecycle (recommended)
+```
+Mac → Device: CMD_CREATE_ENCLAVE (0x11)
+... run one or more CMD_RUN_INFERENCE (0x04) ...
+Mac → Device: CMD_DESTROY_ENCLAVE (0x12)
 ```
 
 ### Step 6: Host UART Operation Benchmark
@@ -187,6 +197,9 @@ The script also benchmarks round-trip latency for all key operations:
 - `CMD_COMPUTE_ENCLAVE_INFO`
 - `CMD_VALIDATE_M_UPDATE`
 - `CMD_SET_MAX_INFERENCES`
+- `CMD_UPDATE_RATE_LIMIT`
+- `CMD_CREATE_ENCLAVE`
+- `CMD_DESTROY_ENCLAVE`
 - `CMD_RUN_INFERENCE`
 
 Report output includes per-operation: runs, OK/fail count, avg/min/max latency.
@@ -200,7 +213,7 @@ Mac → Device: CMD_GET_REMAINING_INFERENCES (0x06)
 Device → Mac: Remaining quota (4 bytes LE)
 
 Mac → Device: CMD_GET_BENCHMARK (0x08)
-Device → Mac: NS benchmark payload (64B / 184B / 232B depending on firmware)
+Device → Mac: NS benchmark payload (64B / 184B / 232B / 272B depending on firmware)
 
 Mac → Device: CMD_GET_SECURE_BENCHMARK (0x09)
 Device → Mac: Secure benchmark payload (88B)

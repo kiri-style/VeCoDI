@@ -202,9 +202,19 @@ Response: [00 04 00 00 00  11 00 00 00]  // remaining = 17 (20 - 3)
 | 0x0A | `CMD_GET_INFERENCE_RESULT`  | Read last prediction/expected pair |
 | 0x0B | `CMD_SET_MAX_INFERENCES`    | Override max quota for tests |
 | 0x0C | `CMD_GET_DEVICE_PUBKEY`     | Export `pk_d` for host PoX verification |
-| 0x0D | `CMD_GET_SAU_STATE`         | Deterministic SAU state (`state/base/size`) |
-| 0x0E | `CMD_RUN_INFERENCE_NO_SAU`  | Danger test: inference without SAU open |
+| 0x0D | `CMD_GET_SAU_STATE`         | SAU state (`state/base/size`), best-effort on hardened policy |
+| 0x0E | `CMD_RUN_INFERENCE_NO_SAU`  | Danger test: inference without explicit create |
 | 0x0F | `CMD_READ_PROTECTED_MEM`    | Danger test: direct protected-memory read |
+| 0x11 | `CMD_CREATE_ENCLAVE`        | Explicit enclave create lifecycle command |
+| 0x12 | `CMD_DESTROY_ENCLAVE`       | Explicit enclave destroy lifecycle command |
+| 0x13 | `CMD_UPDATE_RATE_LIMIT`     | Update quota via secure API (`uint32 LE`) |
+
+### Lifecycle note
+
+`CMD_RUN_INFERENCE` no longer auto-creates an enclave. The expected flow is:
+1. `CMD_CREATE_ENCLAVE` (`0x11`)
+2. `CMD_RUN_INFERENCE` (`0x04`)
+3. `CMD_DESTROY_ENCLAVE` (`0x12`) when done
 
 ---
 
@@ -262,7 +272,7 @@ After quota exhausted:
 ### 3. Inference Gating
 - **Requirement**: Valid M_update must be applied before any inference
 - **Initial State**: `max_inferences = 0` → all inferences blocked
-- **Gate Check**: `if (mock_max_inferences == 0) return ERROR;`
+- **Gate Check**: request is denied unless policy and lifecycle preconditions are met
 - **Prevents**: Unauthorized inference execution
 
 ### 4. Session and PoX Verification

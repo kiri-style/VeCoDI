@@ -51,7 +51,7 @@ flowchart LR
 
 ---
 
-## 3) Command map (`0x01..0x0F`)
+## 3) Command map (`0x01..0x13`)
 
 | CMD | Name | Purpose |
 |---|---|---|
@@ -67,9 +67,12 @@ flowchart LR
 | `0x0A` | `CMD_GET_INFERENCE_RESULT` | Last result |
 | `0x0B` | `CMD_SET_MAX_INFERENCES` | Quota override (test only) |
 | `0x0C` | `CMD_GET_DEVICE_PUBKEY` | Export `pk_d` (host PoX verification) |
-| `0x0D` | `CMD_GET_SAU_STATE` | SAU state (`state/base/size`) |
-| `0x0E` | `CMD_RUN_INFERENCE_NO_SAU` | Danger test: inference without SAU open |
+| `0x0D` | `CMD_GET_SAU_STATE` | SAU state (`state/base/size`), best-effort on hardened policy |
+| `0x0E` | `CMD_RUN_INFERENCE_NO_SAU` | Danger test: inference without explicit create |
 | `0x0F` | `CMD_READ_PROTECTED_MEM` | Danger test: direct protected memory read |
+| `0x11` | `CMD_CREATE_ENCLAVE` | Explicit enclave create lifecycle command |
+| `0x12` | `CMD_DESTROY_ENCLAVE` | Explicit enclave destroy lifecycle command |
+| `0x13` | `CMD_UPDATE_RATE_LIMIT` | Update quota via secure API (`uint32 LE`) |
 
 ---
 
@@ -163,7 +166,10 @@ stateDiagram-v2
     SessionReady --> MetadataAttested: 0x01 EnclaveInfo (+attestation)
     MetadataAttested: metadata measured\nenclave not yet created
     MetadataAttested --> PolicySet: 0x02 M_update valid
-    PolicySet --> PolicySet: 0x04 run inference (count++)
+    PolicySet --> EnclaveReady: 0x11 create enclave
+    EnclaveReady --> EnclaveReady: 0x04 run inference (count++)
+    EnclaveReady --> PolicySet: 0x12 destroy enclave
+    PolicySet --> PolicySet: 0x13 update rate limit
     PolicySet --> Blocked: quota exhausted or invalid request
     Blocked --> PolicySet: new valid 0x02 with higher c_limit
 ```
