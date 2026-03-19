@@ -61,7 +61,7 @@ This folder contains the Non-Secure (NS) application that drives the split infer
 ### Application entry
 - **main.cpp**: high-level flow; calls `create_enclave()` then `enter_enclave()`.
 - **create_enclave.cpp**: bootstraps Secure EnclaveInfo material, validates boot-time integrity before creation, allocates the NS buffer used for late weights, invokes PSA decrypt, and manages enclave state.
-- **run_enclave.cpp**: executes split inference inside the enclave thread. **[MODIFIED]** Now atomically calls `DP_CMD_RUN_INFERENCE` (Secure checks counter + increments before inference runs).
+- **run_enclave.cpp**: executes split inference inside the enclave thread. **[MODIFIED]** Uses `DP_CMD_RUN_INFERENCE` in two phases (`precheck` then `commit`) so counter increments only after successful inference.
 
 ### Split inference
 - **split_inference.cpp / split_inference.h**: CMSIS-NN early/late execution, buffer reuse, and prediction printing.
@@ -74,21 +74,22 @@ This folder contains the Non-Secure (NS) application that drives the split infer
 ## Counter Management (Dynamic Policy - Verified 27 Feb 2026)
 **Location**: `src/run_enclave.cpp` + `dummy_partition/dummy_partition.c`
 
-The counter is **atomic**, **Secure-side verified**, and **dynamically configured**:
+The counter policy is **Secure-side verified**, **dynamically configured**, and used with a two-phase inference gate:
 
 ```cpp
-// In run_enclave.cpp:
-psa_handle_t handle = psa_connect(ENCLAVE_SID, ENCLAVE_PARTITION_VERSION);
-psa_call(handle, DP_CMD_RUN_INFERENCE, NULL, 0, NULL, 0);
-psa_close(handle);
-// Returns: 1 = allowed (counter < max), 0 = blocked (limit reached)
+// In run_enclave.cpp (phase 0 = precheck, phase 1 = commit):
+uint32_t cmd = DP_CMD_RUN_INFERENCE;
+uint8_t phase = 0U; // precheck
+psa_invec in_vec[2] = { { &cmd, sizeof(cmd) }, { &phase, sizeof(phase) } };
+psa_outvec out_vec = { &allowed, sizeof(allowed) };
+psa_call(handle, PSA_IPC_CALL, in_vec, 2, &out_vec, 1);
 ```
 
 **Dynamic Policy** ✅ Verified: 
 - Initial state: `max_inferences_per_enclave = 0` (all inferences blocked)
 - After valid M_update: `max_inferences_per_enclave = c_limit` (from Model Provider)
 - Once limit reached: inference execution **blocked** (no auto-recreation)
-- All verification happens in Secure world atomically
+- Verification and quota enforcement happen in Secure world
 
 ## Secure EnclaveInfo lifecycle
 
@@ -174,7 +175,7 @@ See [DEVICE_BENCHMARK.md](../md/DEVICE_BENCHMARK.md) for benchmark collection, m
 - **model_encrypted*.h**: legacy encrypted model headers (not used by split flow).
 
 ### UART Protocol (Mac ↔ STM32)
-- **uart_protocol.h**: Protocol command definitions (0x01-0x10)
+- **uart_protocol.h**: Protocol command definitions (0x01-0x13)
 - **uart_protocol.cpp**: Binary protocol handlers
    - CMD_COMPUTE_ENCLAVE_INFO (0x01): Generate EnclaveInfo hash
    - CMD_VALIDATE_M_UPDATE (0x02): AES-256-GCM decrypt and apply quota
@@ -188,10 +189,13 @@ See [DEVICE_BENCHMARK.md](../md/DEVICE_BENCHMARK.md) for benchmark collection, m
    - CMD_GET_INFERENCE_RESULT (0x0A): Return last prediction/expected
    - CMD_SET_MAX_INFERENCES (0x0B): Manual max setting
    - CMD_GET_DEVICE_PUBKEY (0x0C): Return device public key `pk_d`
-   - CMD_GET_SAU_STATE (0x0D): Return SAU state (`state+base+size`)
-   - CMD_RUN_INFERENCE_NO_SAU (0x0E): Dangerous test path (inference without opening SAU)
+   - CMD_GET_SAU_STATE (0x0D): Return SAU state (`state+base+size`, best-effort on hardened policy)
+   - CMD_RUN_INFERENCE_NO_SAU (0x0E): Dangerous test path (inference without explicit create)
    - CMD_READ_PROTECTED_MEM (0x0F): Dangerous test path (direct read in protected enclave region)
    - CMD_GET_ENCLAVE_STATE (0x10): Return enclave lifecycle state (`created(1)`)
+   - CMD_CREATE_ENCLAVE (0x11): Explicit enclave create lifecycle command
+   - CMD_DESTROY_ENCLAVE (0x12): Explicit enclave destroy lifecycle command
+   - CMD_UPDATE_RATE_LIMIT (0x13): Secure API to update max inferences
 
 ### Provider/Verifier Host Tool
 - **tools/mac_provider.py**: Interactive Model Provider/Verifier used for hardware tests

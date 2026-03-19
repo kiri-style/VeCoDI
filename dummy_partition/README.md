@@ -45,14 +45,17 @@ Defined in [dummy_partition.c](dummy_partition.c):
 **Cryptographic Services:**
 - `DP_CMD_SECRET_DIGEST = 0` (legacy SHA-256 digest)
 - `DP_CMD_DECRYPT_MODEL = 2` (deprecated, returns NOT_SUPPORTED)
-- `DP_CMD_DECRYPT_LATE_WEIGHTS = 3` (AES-CTR decrypt late weights)
+- `DP_CMD_DECRYPT_LATE_WEIGHTS = 3` (internal helper used by create flow; command endpoint not exposed)
 
-**Secure Counter Management (ATOMIC - Verified 27 Feb 2026):**
+**Secure Counter / Lifecycle Management:**
 - `DP_CMD_GET_MAX_INFERENCES = 4` (returns **dynamic** max_inferences_per_enclave) ✅
-- `DP_CMD_CHECK_INFERENCE_ALLOWED = 5` (returns 1 if allowed, 0 if limit reached)
-- `DP_CMD_INCREMENT_COUNTER = 6` (increments inference_counter_secure)
-- `DP_CMD_RUN_INFERENCE = 9` **(NEW ATOMIC OPERATION)**: atomically checks counter < **max_inferences_per_enclave** and increments in one Secure call
-- `DP_CMD_RESET_COUNTER = 7` (resets counter to 0 during enclave creation)
+- `DP_CMD_CHECK_INFERENCE_ALLOWED = 5` (legacy endpoint, currently NOT_SUPPORTED)
+- `DP_CMD_INCREMENT_COUNTER = 6` (legacy endpoint, currently NOT_SUPPORTED)
+- `DP_CMD_RESET_COUNTER = 7` (legacy endpoint, currently NOT_SUPPORTED)
+- `DP_CMD_RUN_INFERENCE = 9` (two-phase gate: `precheck` then `commit`)
+- `DP_CMD_CREATE_ENCLAVE = 22` (decrypt/register/reset, RAM window kept open until finalize)
+- `DP_CMD_FINALIZE_CREATE_ENCLAVE = 24` (close enclave RAM window)
+- `DP_CMD_DESTROY_ENCLAVE = 23` (reset secure state, RAM window reopened for NS zeroization)
 
 **Enclave Authorization Protocol (Verified 27 Feb 2026):**
 - `DP_CMD_COMPUTE_ENCLAVE_INFO = 10` ✅ (SHA-256 hash of Model_pub || Model_secret || code || model_ID)
@@ -68,7 +71,7 @@ Defined in [dummy_partition.c](dummy_partition.c):
 **Security Policy:**
 - `max_inferences_per_enclave` is **dynamic** (starts at 0, updated on valid M_update)
 - `inference_counter_secure = 0` (protected counter in Secure world)
-- Counter incremented **BEFORE** inference execution (atomic operation)
+- Counter incremented only during `RUN_INFERENCE` commit phase (after successful inference execution)
 
 ## Benchmark System (Dual-World DWT Monitoring)
 
@@ -110,13 +113,13 @@ Secure then computes:
 
 The result is stored in Secure as the boot-time reference and never depends on host-provided model bytes.
 
-### 1. Decryption Flow (cmd=3)
+### 1. Create flow (cmd=22 + cmd=24)
 NS calls `psa_call()` with:
 
 ```
-in_vec[0] = cmd (DP_CMD_DECRYPT_LATE_WEIGHTS)
+in_vec[0] = cmd (DP_CMD_CREATE_ENCLAVE)
 in_vec[1] = encrypted late weights (flash)
-in_vec[2] = IV (16 bytes)
+in_vec[2] = IV + enclave RAM metadata
 out_vec[0] = NS RAM buffer (decrypted output)
 ```
 
@@ -125,8 +128,9 @@ The secure partition:
 2. Applies the IV from `in_vec[2]`
 3. Decrypts in chunks using `psa_cipher_update()`
 4. Writes plaintext into the NS output buffer
+5. Waits for `DP_CMD_FINALIZE_CREATE_ENCLAVE` to close enclave RAM window
 
-### 2. Counter Management Flow (cmd=4,5,6,7)
+### 2. Policy + run gate flow (cmd=4,9)
 
 **Get Policy (cmd=4):**
 ```
@@ -134,30 +138,21 @@ in_vec[0] = cmd (DP_CMD_GET_MAX_INFERENCES)
 out_vec[0] = max_inferences (uint32_t, returns dynamic value)
 ```
 
-**Check Allowed (cmd=5):**
+**Run gate (cmd=9):**
 ```
-in_vec[0] = cmd (DP_CMD_CHECK_INFERENCE_ALLOWED)
-out_vec[0] = allowed (uint32_t, 1=allowed, 0=denied)
+in_vec[0] = cmd (DP_CMD_RUN_INFERENCE)
+in_vec[1] = phase (uint8_t): 0=precheck, 1=commit
+out_vec[0] = allowed (uint32_t)
 ```
-Secure logic: `allowed = (inference_counter_secure < max_inferences_per_enclave) ? 1 : 0`
-
-**Increment Counter (cmd=6):**
-```
-in_vec[0] = cmd (DP_CMD_INCREMENT_COUNTER)
-```
-Secure logic: `inference_counter_secure++` (no output)
-
-**Reset Counter (cmd=7):**
-```
-in_vec[0] = cmd (DP_CMD_RESET_COUNTER)
-```
-Secure logic: `inference_counter_secure = 0` (called during enclave creation)
+Secure logic:
+- phase 0: validates authorization and opens RAM window for run path
+- phase 1: increments counter if allowed and recloses RAM window
 
 **Security Properties:**
 - Counter state protected in Secure world
 - All operations logged to Secure console
 - NS cannot bypass limit checks
-- Automatic enclave refresh via destroy→recreate pattern
+- Explicit enclave lifecycle via create/finalize/destroy commands
 
 ### 3. Pre-create integrity gate
 - Before NS creates an enclave, it asks Secure to recompute current `EnclaveInfo` from the registered ROM/code windows and encrypted late blob digest.

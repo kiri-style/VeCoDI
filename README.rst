@@ -21,13 +21,16 @@ For interactive manual testing, use:
 1. ``1`` ECDH handshake
 2. ``2`` Compute EnclaveInfo
 3. ``3`` Send M_update (**must use c_limit > current max**, anti-replay)
-4. ``9`` Verified inference (requires 1 + successful 3)
-5. ``15`` Deterministic SAU status (UNREGISTERED / OPEN / CLOSED)
+4. ``21`` Create enclave
+5. ``9`` Verified inference (requires 1 + successful 3 + 21)
+6. ``15`` SAU status (best-effort on hardened policy)
+7. ``22`` Destroy enclave
 
 **Current protocol notes**
 
-- ``CMD_GET_SAU_STATE (0x0D)`` is available and returns ``state(1) + base(4) + size(4)``.
+- ``CMD_GET_SAU_STATE (0x0D)`` is available in best-effort mode and returns ``state(1) + base(4) + size(4)`` when exposed by policy.
 - ``CMD_GET_ENCLAVE_STATE (0x10)`` returns ``created(1)`` and is shown by Mac menu ``17`` as ``Enclave created: YES/NO``.
+- ``CMD_CREATE_ENCLAVE (0x11)``, ``CMD_DESTROY_ENCLAVE (0x12)``, and ``CMD_UPDATE_RATE_LIMIT (0x13)`` are part of the current lifecycle/quota API.
 - ``M_update`` rejection with ``RESP_ERROR`` is expected if ``c_limit`` is not strictly increasing.
 - SAU can be ``UNREGISTERED`` before enclave creation; after first enclave lifecycle it typically reports ``CLOSED``.
 
@@ -79,10 +82,10 @@ Host (Mac) → NS (Zephyr) → S (TF-M) split:
 
 4. **Memory protection checks**
 
-   - ``CMD_GET_SAU_STATE (0x0D)`` returns deterministic SAU state (`UNREGISTERED/OPEN/CLOSED`) + region.
+   - ``CMD_GET_SAU_STATE (0x0D)`` returns SAU state (`UNREGISTERED/OPEN/CLOSED`) + region when available.
   - ``CMD_GET_ENCLAVE_STATE (0x10)`` returns whether the enclave is currently created.
    - Danger test commands:
-     - ``0x0E``: inference path without explicit SAU open
+     - ``0x0E``: inference path without explicit create
      - ``0x0F``: direct protected-memory read (expected fault/reset when SAU closed)
 
 Security Test Matrix (Mac option 18)
