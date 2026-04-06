@@ -4,7 +4,7 @@
 
 Implementation of cryptographic inference protocol enabling **Verifier-to-Device inference requests** with **Proof-of-Execution (PoX)** from the Device back to Verifier.
 
-**Status**: ✅ **WORKING** - Tested on STM32L552 hardware and integrated with host interactive verification flow
+**Status**: ✅ **WORKING (updated flow)** - Verified inference path now uses Secure START/COMPLETE transaction with Secure-side decrypt/verify/sign.
 
 ## Protocol Definition
 
@@ -14,12 +14,18 @@ Implementation of cryptographic inference protocol enabling **Verifier-to-Device
 **Recipient**: Device (Physical Device)
 
 ```
-Structure:
-  nonce       [12 bytes]  - Random nonce per request
-  model_id    [4 bytes]   - Model identifier
-  signature   [64 bytes]  - ECDSA P-256 sig: Sign(sk_v, nonce || model_id)
-  
-Total: 80 bytes
+Plaintext structure:
+   nonce       [32 bytes]  - Random nonce per request
+   model_id    [4 bytes]   - Model identifier (LE)
+   signature   [64 bytes]  - ECDSA P-256 sig over SHA256(nonce || model_id)
+
+Plaintext total: 100 bytes
+
+Transport on UART (CMD_RUN_INFERENCE):
+   packet = aes_gcm_encrypt(session_key, plaintext)
+             = nonce_gcm(12) || ciphertext(100) || tag(16)
+
+Transport total: 128 bytes
 ```
 
 **Note**: Input image is **not** transmitted — the device uses its own stored test image.
@@ -151,10 +157,11 @@ Total: 97 bytes
    - M_update generation with AES-256-GCM
    - Real host/device flow over UART with ECDH session setup
 
-2. **Phase 2: Inference Protocol** (This implementation)
-   - M_inf: Verifier-signed inference request
-   - PoX: Device-signed proof of execution
-   - ECDSA P-256 signatures
+2. **Phase 2: Inference Protocol** (Current runtime path)
+   - `CMD_RUN_INFERENCE` accepts encrypted packet only (`len=128`)
+   - Secure START decrypts + verifies `M_inf`, then opens enclave RAM window
+   - NS executes split inference atomically
+   - Secure COMPLETE closes RAM window, commits counter, signs PoX
 
 3. **Phase 3: CIFAR-10 Inference** (Already working)
    - Split inference (early + late layers)
@@ -164,16 +171,17 @@ Total: 97 bytes
 
 ## Current Validation Scope
 
-- Device validates signed inference requests before secure path execution.
-- Device generates PoX signatures with `sk_d`.
+- Device validates encrypted/signed inference requests in Secure world (`DP_CMD_INF_START`).
+- Device generates PoX signatures in Secure world (`DP_CMD_INF_COMPLETE`).
+- Device public key (`pk_d`) is served by Secure partition (`DP_CMD_GET_DEVICE_PUBKEY`).
+- Legacy unverified inference mode (`CMD_RUN_INFERENCE` len=0) is disabled.
 - Host retrieves `pk_d` and verifies PoX in interactive flow (option `9`).
-- Negative PoX validation is covered by security test T6 (altered message must fail).
 
 ## Remaining Improvements
 
-- Move from reduced payload test shape to full production payload format where required.
-- Extend end-to-end tests with broader adversarial vectors and persistent replay windows.
-- Consolidate this module and `uart_protocol.cpp` paths into a single canonical protocol implementation surface.
+- Add replay-window hardening for `M_inf` nonces in Secure state.
+- Strengthen result-integrity guarantees if NS-compromise is in threat model (inference still executes in NS).
+- Optionally migrate inference compute path to Secure world for strongest end-to-end integrity.
 
 ## Memory Optimization
 
@@ -184,24 +192,14 @@ Total: 97 bytes
 ## API Usage Example
 
 ```cpp
-// Verifier: Generate M_inf
-m_inf_t m_inf = {};
-generate_m_inf(model_id, verifier_sk, &m_inf);
+// Host: send encrypted M_inf packet via CMD_RUN_INFERENCE (128 bytes)
+// packet = nonce_gcm(12) || ciphertext(100) || tag(16)
 
-// Device: Verify M_inf signature
-if (verify_m_inf(&m_inf, verifier_pk)) {
-    // Execute inference
-   uint8_t result = execute_inference();
-    
-    // Generate PoX
-    proof_of_execution_t pox = {};
-    generate_proof_of_execution(&m_inf, result, device_sk, cert, &pox);
-}
-
-// Verifier: Verify PoX
-if (verify_proof_of_execution(&pox, device_pk, provider_pk)) {
-    printf("Inference result verified: %d\n", pox.output);
-}
+// Device runtime path:
+// 1) Secure START: decrypt + verify M_inf, open enclave RAM window
+// 2) NS executes split inference atomically
+// 3) Secure COMPLETE: commit counter + sign PoX
+// 4) Device returns encrypted response: output(1) || pox_sig(64)
 ```
 
 ## Testing
@@ -230,6 +228,6 @@ Expected output confirms all 5 protocol steps execute successfully.
 
 ---
 
-**Last Updated**: 13 March 2026  
-**Status**: ✅ Production-ready protocol path with active negative/positive verification in test workflow  
+**Last Updated**: 30 March 2026  
+**Status**: ✅ Production path uses Secure START/COMPLETE for decrypt/verify/sign; inference compute remains NS  
 **Hardware**: STM32L552ZE-Q, ARM Cortex-M33 with TrustZone-M

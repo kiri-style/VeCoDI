@@ -36,6 +36,10 @@ extern "C" {
 #define DP_CMD_SET_LATE_SECRET_HASH 20  /* Hash encrypted late weights into secure model_secret */
 #define DP_CMD_GET_SAU_ROM_STATE    21  /* Return ROM SAU state: state(1)+base(4)+size(4) */
 #define DP_CMD_FINALIZE_CREATE_ENCLAVE 24 /* Close enclave RAM after create-time setup */
+#define DP_CMD_INF_START            25  /* Verify M_inf in Secure and open transaction window */
+#define DP_CMD_INF_COMPLETE         26  /* Commit secure transaction and sign PoX */
+#define DP_CMD_GET_DEVICE_PUBKEY    27  /* Return secure device public key (65-byte uncompressed) */
+#define DP_CMD_SIGN_ATTEST_MSG      28  /* Sign SHA256(nonce||enclave_info) with secure device key */
 
 /* M_update auth-state response returned to NS after validate:
  * c_limit(4) + pk_v(64) + model_id(4) + cert_len(4) + cert(n, max 128) = 204 bytes */

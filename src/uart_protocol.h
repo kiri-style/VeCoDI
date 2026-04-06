@@ -30,13 +30,14 @@ extern "C" {
 #define CMD_CREATE_ENCLAVE          0x11  /* Secure lifecycle create */
 #define CMD_DESTROY_ENCLAVE         0x12  /* Secure lifecycle destroy */
 #define CMD_UPDATE_RATE_LIMIT       0x13  /* Secure lifecycle rate-limit update (u32 LE) */
+#define CMD_RUN_INFERENCE_WITH_IMAGE 0x14  /* Upload CIFAR photo + run verified inference */
 
 /* Response Codes (Device → Mac) */
 #define RESP_OK                     0x00
 #define RESP_ERROR                  0xFF
 
 /* Protocol Limits */
-#define MAX_COMMAND_DATA_SIZE       256  // Maximum data in one command
+#define MAX_COMMAND_DATA_SIZE       3201  // Maximum data in one command (label + CIFAR image + encrypted M_inf)
 #define MAX_RESPONSE_DATA_SIZE      256  // Maximum data in one response
 
 /* Packet Structure:

@@ -18,6 +18,13 @@
 #define DP_CMD_COMPUTE_ENCLAVE_INFO 10U
 #define DP_CMD_VALIDATE_M_UPDATE    11U
 #define DP_CMD_SET_SESSION_KEY      13U
+#define DP_CMD_INF_START            25U
+#define DP_CMD_INF_COMPLETE         26U
+#define DP_CMD_GET_DEVICE_PUBKEY    27U
+#define DP_CMD_SIGN_ATTEST_MSG      28U
+#define CIFAR_IMAGE_SIZE_BYTES      3072U
+#define VERIFIED_MINF_SIZE_BYTES    128U
+#define RUN_WITH_IMAGE_DATA_SIZE    (1U + CIFAR_IMAGE_SIZE_BYTES + VERIFIED_MINF_SIZE_BYTES)
 #include "benchmark.h"
 #include "secure_benchmark_ns.h"
 #include "split_inference.h"
@@ -67,9 +74,8 @@ static const uint8_t fallback_session_key[32] = {
 
 /* ========== KEY SCHEME: Dev(sk_d,pk_d)  Pvd(sk_p,pk_p)  Vrf(sk_v,pk_v) ========== */
 
-/* Device signing key pair (sk_d / pk_d) — generated once at init, used for PoX */
-static psa_key_id_t device_signing_key_id = 0;
-static uint8_t      device_pk_d[65] = {0};   /* 0x04 || x(32) || y(32), uncompressed P-256 */
+/* Device public key cache (owned by Secure partition). */
+static uint8_t      device_pk_d[65] = {0};
 static bool         device_key_ready = false;
 
 /* Verifier public key pk_v — extracted from M_update plaintext after Provider authorization */
@@ -188,36 +194,22 @@ static int process_m_update_payload(const uint8_t *data, uint32_t len, uint32_t 
 }
 
 /*
- * Generate device signing key pair (sk_d, pk_d) using P-256 ECDSA.
- * Called once at uart_protocol_init().  sk_d stays volatile; pk_d is exported
- * to device_pk_d[65] for retrieval via CMD_GET_DEVICE_PUBKEY.
+ * Fetch secure-owned device public signing key (pk_d) from TF-M partition.
  */
-static int init_device_signing_key(void)
+static int fetch_device_pubkey_from_secure(void)
 {
-    psa_status_t status = psa_crypto_init();
-    if (status != PSA_SUCCESS) {
+    psa_handle_t handle = psa_connect(TFM_DP_SERVICE_SID, 1);
+    if (handle <= 0) {
         return -1;
     }
 
-    psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
-    psa_set_key_type(&attr, PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_SECP_R1));
-    psa_set_key_bits(&attr, 256);
-    psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_SIGN_HASH);
-    psa_set_key_algorithm(&attr, PSA_ALG_ECDSA(PSA_ALG_SHA_256));
-    psa_set_key_lifetime(&attr, PSA_KEY_LIFETIME_VOLATILE);
+    uint32_t cmd = DP_CMD_GET_DEVICE_PUBKEY;
+    psa_invec in_vec = { &cmd, sizeof(cmd) };
+    psa_outvec out_vec = { device_pk_d, sizeof(device_pk_d) };
+    psa_status_t status = psa_call(handle, PSA_IPC_CALL, &in_vec, 1, &out_vec, 1);
+    psa_close(handle);
 
-    status = psa_generate_key(&attr, &device_signing_key_id);
-    psa_reset_key_attributes(&attr);
-    if (status != PSA_SUCCESS) {
-        return -1;
-    }
-
-    size_t pk_len = 0;
-    status = psa_export_public_key(device_signing_key_id,
-                                   device_pk_d, sizeof(device_pk_d), &pk_len);
-    if (status != PSA_SUCCESS || pk_len != 65U) {
-        psa_destroy_key(device_signing_key_id);
-        device_signing_key_id = 0;
+    if (status != PSA_SUCCESS || out_vec.len != sizeof(device_pk_d)) {
         return -1;
     }
 
@@ -343,6 +335,7 @@ static bool is_valid_cmd(uint8_t cmd)
             cmd == CMD_GET_SECURE_BENCHMARK ||
             cmd == CMD_GET_INFERENCE_RESULT ||
             cmd == CMD_SET_MAX_INFERENCES ||
+            cmd == CMD_RUN_INFERENCE_WITH_IMAGE ||
             cmd == CMD_GET_DEVICE_PUBKEY ||
             cmd == CMD_GET_SAU_STATE ||
             cmd == CMD_GET_ENCLAVE_STATE ||
@@ -378,8 +371,11 @@ static bool is_valid_len_for_cmd(uint8_t cmd, uint32_t len)
         case CMD_READ_PROTECTED_MEM:
             return len == 0U;
         case CMD_RUN_INFERENCE:
-            /* len=0: legacy (no M_inf);  len=128: new protocol (encrypted M_inf) */
-            return (len == 0U) || (len == 128U);
+            /* Verified-only protocol: encrypted M_inf packet nonce(12)+ciphertext(100)+tag(16). */
+            return (len == 128U);
+        case CMD_RUN_INFERENCE_WITH_IMAGE:
+            /* Photo upload + verified inference: label(1) + image(3072) + encrypted M_inf(128). */
+            return len == RUN_WITH_IMAGE_DATA_SIZE;
         case CMD_SET_MAX_INFERENCES:
         case CMD_UPDATE_RATE_LIMIT:
             return len == 4U;  /* Max inferences is uint32_t */
@@ -396,6 +392,7 @@ static void handle_compute_enclave_info(const uint8_t *data, uint32_t len);
 static void handle_validate_m_update(const uint8_t *data, uint32_t len);
 static void handle_get_max_inferences(void);
 static void handle_run_inference(void);
+static void handle_run_inference_with_image(const uint8_t *data, uint32_t len);
 static void handle_get_inference_count(void);
 static void handle_get_remaining_inferences(void);
 static void handle_ecdh_handshake(const uint8_t *data, uint32_t len);
@@ -451,8 +448,8 @@ int uart_protocol_init(void)
         }
     }
 
-    /* Generate device signing key pair (sk_d, pk_d) for PoX */
-    init_device_signing_key();
+    /* Cache secure-owned device public signing key (sk_d never leaves Secure). */
+    (void)fetch_device_pubkey_from_secure();
 
     /* Boot-time Secure EnclaveInfo materialization (all components). */
     if (initialize_secure_enclave_info_boot() != 0) {
@@ -609,6 +606,10 @@ static void process_command(void)
         case CMD_RUN_INFERENCE:
             handle_run_inference();
             break;
+
+        case CMD_RUN_INFERENCE_WITH_IMAGE:
+            handle_run_inference_with_image(rx_buffer, rx_len);
+            break;
         
         case CMD_GET_INFERENCE_COUNT:
             handle_get_inference_count();
@@ -717,33 +718,28 @@ static void handle_compute_enclave_info(const uint8_t *data, uint32_t len)
         return;
     }
 
-    /* Attested mode: sign SHA256(nonce(32) || enclave_info(32)) with device signing key. */
+    /* Attested mode: sign SHA256(nonce(32) || enclave_info(32)) in Secure. */
     if (len == 32U) {
-        if (!device_key_ready) {
-            uart_send_encrypted_response(RESP_ERROR, NULL, 0);
-            return;
-        }
-
         uint8_t msg[64];
         memcpy(msg, data, 32U);
         memcpy(msg + 32U, enclave_info, 32U);
 
-        uint8_t msg_hash[32];
-        size_t hash_len = 0U;
-        if (psa_hash_compute(PSA_ALG_SHA_256, msg, sizeof(msg),
-                             msg_hash, sizeof(msg_hash), &hash_len) != PSA_SUCCESS
-            || hash_len != 32U) {
+        uint8_t sig_d[64] = {0};
+        psa_handle_t sign_h = psa_connect(TFM_DP_SERVICE_SID, 1);
+        if (sign_h <= 0) {
             uart_send_encrypted_response(RESP_ERROR, NULL, 0);
             return;
         }
 
-        uint8_t sig_d[64] = {0};
-        size_t sig_d_len = 0U;
-        if (psa_sign_hash(device_signing_key_id,
-                          PSA_ALG_ECDSA(PSA_ALG_SHA_256),
-                          msg_hash, sizeof(msg_hash),
-                          sig_d, sizeof(sig_d), &sig_d_len) != PSA_SUCCESS
-            || sig_d_len != 64U) {
+        uint32_t sign_cmd = DP_CMD_SIGN_ATTEST_MSG;
+        psa_invec in_sign[2] = {
+            { &sign_cmd, sizeof(sign_cmd) },
+            { msg, sizeof(msg) }
+        };
+        psa_outvec out_sign = { sig_d, sizeof(sig_d) };
+        psa_status_t sign_st = psa_call(sign_h, PSA_IPC_CALL, in_sign, 2, &out_sign, 1);
+        psa_close(sign_h);
+        if (sign_st != PSA_SUCCESS || out_sign.len != sizeof(sig_d)) {
             uart_send_encrypted_response(RESP_ERROR, NULL, 0);
             return;
         }
@@ -850,106 +846,25 @@ static void handle_get_max_inferences(void)
     uart_protocol_send_response(RESP_OK, (const uint8_t *)&mock_max_inferences, sizeof(mock_max_inferences));
 }
 
-static void handle_run_inference(void)
+static void handle_run_inference_common(const uint8_t *minf_data, uint32_t minf_len)
 {
     /*
      * PHASE 2 – Inference  (Verifier ↔ Device)
      *
-     * New mode (rx_len == 128):  encrypted M_inf
-     *   M_inf plaintext = nonce_inf(32) || model_id(4) || Sign(sk_v, SHA256(nonce_inf||model_id))(64)
+     * Verified-only mode: encrypted M_inf packet.
      *   Device:
-     *     1. Decrypt M_inf with session_key
-     *     2. Verify model_id matches stored authorization
-     *     3. Verify Verifier signature using stored pk_v
-     *     4. Run inference
-     *     5. PoX = Sign(sk_d, SHA256(model_id||cert||nonce_inf||output))
-     *     6. Return encrypted: output_class(1) || pox_sig(64)
-     *
-     * Legacy mode (rx_len == 0): no M_inf, plain RESP_OK (backward compatible)
+     *     1. Forward encrypted payload to Secure START
+     *     2. Secure decrypts + verifies M_inf signature
+     *     3. NS executes inference atomically
+     *     4. Return to Secure COMPLETE for PoX signing + commit
+     *     5. Return encrypted response: output_class(1) || pox_sig(64)
      */
-    bool verified_mode = (rx_len == 128U);
     g_benchmark_metrics.inference_requests_total++;
+    uint32_t tx_id = 0U;
 
-    uint8_t  nonce_inf[32] = {0};
-    uint32_t req_model_id  = 0U;
-
-    if (verified_mode) {
-        /* --- Decrypt M_inf --- */
-        uint8_t minf_plain[128];
-        size_t  minf_plain_len = 0U;
-
-        if (!session_key_established) {
-            uart_protocol_send_response(RESP_ERROR, NULL, 0);
-            return;
-        }
-        if (uart_decrypt(rx_buffer, rx_len,
-                         minf_plain, sizeof(minf_plain), &minf_plain_len) != 0
-            || minf_plain_len < 100U) {
-            uart_protocol_send_response(RESP_ERROR, NULL, 0);
-            return;
-        }
-
-        /* M_inf plaintext: nonce_inf(32) || model_id(4) || sig_v(64) */
-        memcpy(nonce_inf, minf_plain, 32U);
-        req_model_id = (uint32_t)minf_plain[32]
-                     | ((uint32_t)minf_plain[33] << 8)
-                     | ((uint32_t)minf_plain[34] << 16)
-                     | ((uint32_t)minf_plain[35] << 24);
-        const uint8_t *sig_v = minf_plain + 36U;  /* 64-byte raw r||s ECDSA P-256 */
-
-        /* Verify model_id matches stored authorization */
-        if (stored_model_id != 0U && req_model_id != stored_model_id) {
-            uart_protocol_send_response(RESP_ERROR, NULL, 0);
-            return;
-        }
-
-        /* --- Verify Verifier signature: Sign(sk_v, SHA256(nonce_inf || model_id)) --- */
-        if (pk_v_valid) {
-            uint8_t msg[36];
-            memcpy(msg, nonce_inf, 32U);
-            msg[32] = minf_plain[32];
-            msg[33] = minf_plain[33];
-            msg[34] = minf_plain[34];
-            msg[35] = minf_plain[35];
-
-            uint8_t msg_hash[32];
-            size_t  hash_len = 0U;
-            if (psa_hash_compute(PSA_ALG_SHA_256, msg, 36U,
-                                 msg_hash, sizeof(msg_hash), &hash_len) != PSA_SUCCESS
-                || hash_len != 32U) {
-                uart_protocol_send_response(RESP_ERROR, NULL, 0);
-                return;
-            }
-
-            /* Import pk_v: prepend 0x04 uncompressed-point prefix */
-            uint8_t pk_v_full[65];
-            pk_v_full[0] = 0x04U;
-            memcpy(pk_v_full + 1U, stored_pk_v, 64U);
-
-            psa_key_attributes_t vattr = PSA_KEY_ATTRIBUTES_INIT;
-            psa_set_key_type(&vattr, PSA_KEY_TYPE_ECC_PUBLIC_KEY(PSA_ECC_FAMILY_SECP_R1));
-            psa_set_key_bits(&vattr, 256);
-            psa_set_key_usage_flags(&vattr, PSA_KEY_USAGE_VERIFY_HASH);
-            psa_set_key_algorithm(&vattr, PSA_ALG_ECDSA(PSA_ALG_SHA_256));
-
-            psa_key_id_t pk_v_handle = 0;
-            psa_status_t vst = psa_import_key(&vattr, pk_v_full, 65U, &pk_v_handle);
-            psa_reset_key_attributes(&vattr);
-            if (vst != PSA_SUCCESS) {
-                uart_protocol_send_response(RESP_ERROR, NULL, 0);
-                return;
-            }
-
-            vst = psa_verify_hash(pk_v_handle,
-                                  PSA_ALG_ECDSA(PSA_ALG_SHA_256),
-                                  msg_hash, 32U,
-                                  sig_v, 64U);
-            psa_destroy_key(pk_v_handle);
-            if (vst != PSA_SUCCESS) {
-                uart_protocol_send_response(RESP_ERROR, NULL, 0);
-                return;
-            }
-        }
+    if (!session_key_established || minf_len != VERIFIED_MINF_SIZE_BYTES) {
+        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+        return;
     }
 
     /* Must have a valid M_update first (quota > 0) */
@@ -962,30 +877,59 @@ static void handle_run_inference(void)
         return;
     }
 
+    /* Pre-check secure EnclaveInfo before entering the atomic run window. */
+    if (validate_enclave_info_before_inference() != 0) {
+        g_benchmark_metrics.enclave_info_validation_failures++;
+        printk("[UART] EnclaveInfo runtime validation failed, inference denied\n");
+        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+        return;
+    }
+
     /*
      * ATOMIC INFERENCE SECTION:
-     * From EnclaveInfo runtime check up to RAM-close/inference completion and
-     * host response send, keep IRQ masked for strict sequential execution.
+     * Keep IRQ masked from Secure START (opens enclave RAM to NS) until
+     * Secure COMPLETE (closes enclave RAM + signs PoX).
      */
     uint32_t irq_atomic_start = benchmark_get_cycles();
     unsigned int irq_key_atomic = irq_lock();
 
-    if (validate_enclave_info_before_inference() != 0) {
+    /* START in Secure: decrypt + verify M_inf and open transaction window. */
+    psa_handle_t handle_start = psa_connect(TFM_DP_SERVICE_SID, 1);
+    if (handle_start <= 0) {
         uint32_t irq_atomic_elapsed = benchmark_get_cycles() - irq_atomic_start;
         BENCHMARK_ACCUMULATE(irq_atomic_elapsed,
                              g_benchmark_metrics.irq_atomic_sum_cycles,
                              g_benchmark_metrics.irq_atomic_min_cycles,
                              g_benchmark_metrics.irq_atomic_max_cycles,
                              g_benchmark_metrics.irq_atomic_count);
-        g_benchmark_metrics.enclave_info_validation_failures++;
         irq_unlock(irq_key_atomic);
-        printk("[UART] EnclaveInfo runtime validation failed, inference denied\n");
         uart_protocol_send_response(RESP_ERROR, NULL, 0);
         return;
     }
 
-    /* Run the enclave (NS+S integrated architecture) */
-    run_enclave();
+    uint32_t cmd = DP_CMD_INF_START;
+    psa_invec in_vec[2] = {
+        { &cmd, sizeof(cmd) },
+        { minf_data, minf_len }
+    };
+    psa_outvec out_vec = { &tx_id, sizeof(tx_id) };
+    psa_status_t st = psa_call(handle_start, PSA_IPC_CALL, in_vec, 2, &out_vec, 1);
+    psa_close(handle_start);
+    if (st != PSA_SUCCESS || out_vec.len != sizeof(tx_id) || tx_id == 0U) {
+        uint32_t irq_atomic_elapsed = benchmark_get_cycles() - irq_atomic_start;
+        BENCHMARK_ACCUMULATE(irq_atomic_elapsed,
+                             g_benchmark_metrics.irq_atomic_sum_cycles,
+                             g_benchmark_metrics.irq_atomic_min_cycles,
+                             g_benchmark_metrics.irq_atomic_max_cycles,
+                             g_benchmark_metrics.irq_atomic_count);
+        irq_unlock(irq_key_atomic);
+        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+        return;
+    }
+
+    /* Inference executes in NS during the active secure transaction window. */
+    run_split_inference();
+    g_benchmark_metrics.inference_count++;
 
     uint8_t output_class = get_last_prediction();
     uint8_t expected_class = get_last_expected_label();
@@ -1001,11 +945,17 @@ static void handle_run_inference(void)
         return;
     }
 
-    mock_inference_count++;
+    /* COMPLETE in Secure: increments secure counter, closes SAU, returns PoX signature. */
+    uint8_t pox_sig[64] = {0};
+    uint8_t complete_req[5];
+    complete_req[0] = (uint8_t)(tx_id & 0xFFU);
+    complete_req[1] = (uint8_t)((tx_id >> 8) & 0xFFU);
+    complete_req[2] = (uint8_t)((tx_id >> 16) & 0xFFU);
+    complete_req[3] = (uint8_t)((tx_id >> 24) & 0xFFU);
+    complete_req[4] = output_class;
 
-    if (!verified_mode) {
-        /* Legacy path: no PoX, plain confirmation */
-        uart_protocol_send_response(RESP_OK, NULL, 0);
+    psa_handle_t handle_complete = psa_connect(TFM_DP_SERVICE_SID, 1);
+    if (handle_complete <= 0) {
         uint32_t irq_atomic_elapsed = benchmark_get_cycles() - irq_atomic_start;
         BENCHMARK_ACCUMULATE(irq_atomic_elapsed,
                              g_benchmark_metrics.irq_atomic_sum_cycles,
@@ -1013,42 +963,31 @@ static void handle_run_inference(void)
                              g_benchmark_metrics.irq_atomic_max_cycles,
                              g_benchmark_metrics.irq_atomic_count);
         irq_unlock(irq_key_atomic);
+        uart_protocol_send_response(RESP_ERROR, NULL, 0);
         return;
     }
 
-    /* ---- Generate PoX = Sign(sk_d, SHA256(model_id(4)||cert(n)||nonce_inf(32)||output(1))) ---- */
-    uint8_t  pox_msg[4U + sizeof(stored_cert) + 32U + 1U];
-    uint32_t pox_msg_len = 0U;
-
-    pox_msg[0] = (req_model_id >> 0)  & 0xFFU;
-    pox_msg[1] = (req_model_id >> 8)  & 0xFFU;
-    pox_msg[2] = (req_model_id >> 16) & 0xFFU;
-    pox_msg[3] = (req_model_id >> 24) & 0xFFU;
-    pox_msg_len = 4U;
-
-    if (stored_cert_len > 0U && stored_cert_len <= sizeof(stored_cert)) {
-        memcpy(pox_msg + pox_msg_len, stored_cert, stored_cert_len);
-        pox_msg_len += stored_cert_len;
+    uint32_t cmd_complete = DP_CMD_INF_COMPLETE;
+    psa_invec in_vec_complete[2] = {
+        { &cmd_complete, sizeof(cmd_complete) },
+        { complete_req, sizeof(complete_req) }
+    };
+    psa_outvec out_vec_complete = { pox_sig, sizeof(pox_sig) };
+    psa_status_t st_complete = psa_call(handle_complete, PSA_IPC_CALL, in_vec_complete, 2, &out_vec_complete, 1);
+    psa_close(handle_complete);
+    if (st_complete != PSA_SUCCESS || out_vec_complete.len != sizeof(pox_sig)) {
+        uint32_t irq_atomic_elapsed = benchmark_get_cycles() - irq_atomic_start;
+        BENCHMARK_ACCUMULATE(irq_atomic_elapsed,
+                             g_benchmark_metrics.irq_atomic_sum_cycles,
+                             g_benchmark_metrics.irq_atomic_min_cycles,
+                             g_benchmark_metrics.irq_atomic_max_cycles,
+                             g_benchmark_metrics.irq_atomic_count);
+        irq_unlock(irq_key_atomic);
+        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+        return;
     }
-    memcpy(pox_msg + pox_msg_len, nonce_inf, 32U);
-    pox_msg_len += 32U;
-    pox_msg[pox_msg_len++] = output_class;
 
-    uint8_t pox_sig[64] = {0};
-    size_t  pox_sig_len  = 0U;
-
-    if (device_key_ready) {
-        uint8_t pox_hash[32];
-        size_t  pox_hash_len = 0U;
-        if (psa_hash_compute(PSA_ALG_SHA_256, pox_msg, pox_msg_len,
-                             pox_hash, sizeof(pox_hash), &pox_hash_len) == PSA_SUCCESS
-            && pox_hash_len == 32U) {
-            psa_sign_hash(device_signing_key_id,
-                          PSA_ALG_ECDSA(PSA_ALG_SHA_256),
-                          pox_hash, 32U,
-                          pox_sig, sizeof(pox_sig), &pox_sig_len);
-        }
-    }
+    mock_inference_count++;
 
     /* Response plaintext: output_class(1) || pox_sig(64) */
     uint8_t response_plain[65];
@@ -1063,6 +1002,30 @@ static void handle_run_inference(void)
                          g_benchmark_metrics.irq_atomic_max_cycles,
                          g_benchmark_metrics.irq_atomic_count);
     irq_unlock(irq_key_atomic);
+}
+
+static void handle_run_inference(void)
+{
+    handle_run_inference_common(rx_buffer, rx_len);
+}
+
+static void handle_run_inference_with_image(const uint8_t *data, uint32_t len)
+{
+    if (data == NULL || len != RUN_WITH_IMAGE_DATA_SIZE) {
+        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+        return;
+    }
+
+    uint8_t label = data[0];
+    const uint8_t *image = data + 1U;
+    const uint8_t *minf_data = data + 1U + CIFAR_IMAGE_SIZE_BYTES;
+
+    if (set_custom_test_image(image, label) != 0) {
+        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+        return;
+    }
+
+    handle_run_inference_common(minf_data, VERIFIED_MINF_SIZE_BYTES);
 }
 
 static void handle_get_inference_count(void)
@@ -1382,10 +1345,13 @@ static void handle_get_device_pubkey(void)
      * Called by the Verifier/Provider to enable off-device PoX verification.
      * Public keys do not require encryption.
      */
-    if (!device_key_ready) {
+    if (!device_key_ready && fetch_device_pubkey_from_secure() != 0) {
         uart_protocol_send_response(RESP_ERROR, NULL, 0);
         return;
     }
+
+    /* Refresh cache in case secure side rotated on reboot. */
+    (void)fetch_device_pubkey_from_secure();
     uart_protocol_send_response(RESP_OK, device_pk_d, sizeof(device_pk_d));
 }
 

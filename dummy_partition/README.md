@@ -52,10 +52,16 @@ Defined in [dummy_partition.c](dummy_partition.c):
 - `DP_CMD_CHECK_INFERENCE_ALLOWED = 5` (legacy endpoint, currently NOT_SUPPORTED)
 - `DP_CMD_INCREMENT_COUNTER = 6` (legacy endpoint, currently NOT_SUPPORTED)
 - `DP_CMD_RESET_COUNTER = 7` (legacy endpoint, currently NOT_SUPPORTED)
-- `DP_CMD_RUN_INFERENCE = 9` (two-phase gate: `precheck` then `commit`)
+- `DP_CMD_RUN_INFERENCE = 9` (legacy two-phase gate)
 - `DP_CMD_CREATE_ENCLAVE = 22` (decrypt/register/reset, RAM window kept open until finalize)
 - `DP_CMD_FINALIZE_CREATE_ENCLAVE = 24` (close enclave RAM window)
 - `DP_CMD_DESTROY_ENCLAVE = 23` (reset secure state, RAM window reopened for NS zeroization)
+
+**Verified Inference Transaction (Current):**
+- `DP_CMD_INF_START = 25` (decrypt encrypted M_inf, verify ECDSA request, open enclave RAM, create tx)
+- `DP_CMD_INF_COMPLETE = 26` (commit tx, close enclave RAM, sign PoX)
+- `DP_CMD_GET_DEVICE_PUBKEY = 27` (return secure-owned `pk_d`)
+- `DP_CMD_SIGN_ATTEST_MSG = 28` (sign SHA256(nonce||enclave_info) in Secure)
 
 **Enclave Authorization Protocol (Verified 27 Feb 2026):**
 - `DP_CMD_COMPUTE_ENCLAVE_INFO = 10` ✅ (SHA-256 hash of Model_pub || Model_secret || code || model_ID)
@@ -130,7 +136,7 @@ The secure partition:
 4. Writes plaintext into the NS output buffer
 5. Waits for `DP_CMD_FINALIZE_CREATE_ENCLAVE` to close enclave RAM window
 
-### 2. Policy + run gate flow (cmd=4,9)
+### 2. Policy + verified run transaction (cmd=25,26)
 
 **Get Policy (cmd=4):**
 ```
@@ -138,20 +144,33 @@ in_vec[0] = cmd (DP_CMD_GET_MAX_INFERENCES)
 out_vec[0] = max_inferences (uint32_t, returns dynamic value)
 ```
 
-**Run gate (cmd=9):**
+**START (cmd=25):**
 ```
-in_vec[0] = cmd (DP_CMD_RUN_INFERENCE)
-in_vec[1] = phase (uint8_t): 0=precheck, 1=commit
-out_vec[0] = allowed (uint32_t)
+in_vec[0] = cmd (DP_CMD_INF_START)
+in_vec[1] = encrypted M_inf packet (128B)
+out_vec[0] = tx_id (uint32_t)
 ```
 Secure logic:
-- phase 0: validates authorization and opens RAM window for run path
-- phase 1: increments counter if allowed and recloses RAM window
+- decrypts M_inf with secure session key
+- verifies verifier signature using secure `pk_v`
+- validates policy/quota and opens enclave RAM window
+- creates transaction state (`tx_id`, nonce, model_id)
+
+**COMPLETE (cmd=26):**
+```
+in_vec[0] = cmd (DP_CMD_INF_COMPLETE)
+in_vec[1] = tx_id(4) || output(1)
+out_vec[0] = pox_sig (64B)
+```
+Secure logic:
+- validates active transaction and tx_id
+- signs PoX with secure-only device signing key
+- increments secure counter and closes enclave RAM window
 
 **Security Properties:**
+- Request decrypt/verify and PoX signing happen in Secure world
 - Counter state protected in Secure world
-- All operations logged to Secure console
-- NS cannot bypass limit checks
+- Verified inference request path cannot use legacy unverified mode
 - Explicit enclave lifecycle via create/finalize/destroy commands
 
 ### 3. Pre-create integrity gate

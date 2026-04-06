@@ -95,6 +95,9 @@ static const uint8_t all_labels[19] = {
 // Current test selection (will be randomized)
 static const uint8_t *test_images[NUM_TEST_IMAGES];
 static uint8_t test_labels[NUM_TEST_IMAGES];
+static const uint8_t *custom_test_image = nullptr;
+static uint8_t custom_test_label = 255;
+static bool custom_test_image_ready = false;
 static uint8_t last_integrity_hash[32];  /* Store last computed hash */
 static uint8_t late_weights_hash[32];     /* Pre-computed hash of code+late weights */
 static bool late_hash_computed = false;  /* Flag to track if late hash is ready */
@@ -513,12 +516,40 @@ static void shuffle_indices(uint8_t *array, int n) {
 
 /* Select 1 random image from the 19 available */
 static void select_random_test_image(void) {
+    if (custom_test_image_ready) {
+        test_images[0] = custom_test_image;
+        test_labels[0] = custom_test_label;
+        custom_test_image = nullptr;
+        custom_test_image_ready = false;
+        printk("[SPLIT] Using custom image uploaded from UART (label=%d)\n", test_labels[0]);
+        return;
+    }
+
     uint8_t index = simple_rand() % 19;
     
     test_images[0] = all_images[index];
     test_labels[0] = all_labels[index];
     
     printk("[SPLIT] Selected image: img_%d (label=%d)\n", index, test_labels[0]);
+}
+
+int set_custom_test_image(const uint8_t *image, uint8_t label)
+{
+    if (image == nullptr) {
+        return -1;
+    }
+
+    custom_test_image = image;
+    custom_test_label = label;
+    custom_test_image_ready = true;
+    return 0;
+}
+
+void clear_custom_test_image(void)
+{
+    custom_test_image = nullptr;
+    custom_test_image_ready = false;
+    custom_test_label = 255;
 }
 
 void run_split_inference(void)

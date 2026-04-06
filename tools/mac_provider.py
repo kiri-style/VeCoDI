@@ -14,6 +14,7 @@ import sys
 import time
 import struct
 import hashlib
+import re
 from typing import Optional, Set, Tuple
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives import hashes
@@ -24,6 +25,11 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature, encode_dss_signature
 from cryptography.exceptions import InvalidSignature
 import os
+
+try:
+    from PIL import Image
+except ImportError:
+    Image = None
 
 # ========== HARDCODED KEYS (MUST MATCH DEVICE) ==========
 # These keys must match the ones in provider_sim.cpp and dummy_partition.c
@@ -94,6 +100,11 @@ CMD_GET_ENCLAVE_STATE = 0x10
 CMD_CREATE_ENCLAVE = 0x11
 CMD_DESTROY_ENCLAVE = 0x12
 CMD_UPDATE_RATE_LIMIT = 0x13
+CMD_RUN_INFERENCE_WITH_IMAGE = 0x14
+
+CUSTOM_IMAGE_SIZE = 32 * 32 * 3
+MINF_PACKET_SIZE = 128
+TEST_IMAGES_C_PATH = os.path.join(os.path.dirname(__file__), "..", "src", "test_images.c")
 
 # Response codes
 RESP_OK = 0x00
@@ -330,7 +341,8 @@ def print_menu():
     print("  8) Get remaining inferences")
     print("\n Inference:")
     print("  9) Run inference (verified mode, encrypted M_inf)")
-    print(" 10) Run inference (legacy mode, empty payload)")
+    print(" 23) Run inference with existing sample image (repo copy + encrypted M_inf)")
+    print(" 10) Legacy inference mode disabled")
     print(" 11) Get last inference result (pred/expected)")
     print("\n Bench / debug:")
     print(" 12) Get NS benchmark metrics")
@@ -565,6 +577,68 @@ def decode_maybe_encrypted(payload: bytes) -> Optional[bytes]:
     return payload
 
 
+def load_local_photo(photo_path: str) -> bytes:
+    """Load a local photo and convert it to 32x32 RGB bytes for CIFAR input."""
+    if not os.path.exists(photo_path):
+        raise FileNotFoundError(photo_path)
+
+    ext = os.path.splitext(photo_path)[1].lower()
+    if ext in (".bin", ".raw", ".rgb", ".cifar"):
+        with open(photo_path, "rb") as handle:
+            data = handle.read()
+        if len(data) != CUSTOM_IMAGE_SIZE:
+            raise ValueError(f"expected {CUSTOM_IMAGE_SIZE} bytes, got {len(data)}")
+        return data
+
+    if Image is None:
+        raise RuntimeError("Pillow is required to load PNG/JPEG photos; install pillow or use a 3072-byte raw file")
+
+    with Image.open(photo_path) as img:
+        img = img.convert("RGB").resize((32, 32))
+        return img.tobytes()
+
+
+def load_existing_device_sample(sample_index: int) -> Tuple[bytes, int]:
+    """Load one of the existing device-side images from src/test_images.c."""
+    if sample_index < 0 or sample_index >= 20:
+        raise ValueError("sample index must be between 0 and 19")
+
+    if not os.path.exists(TEST_IMAGES_C_PATH):
+        raise FileNotFoundError(TEST_IMAGES_C_PATH)
+
+    with open(TEST_IMAGES_C_PATH, "r", encoding="utf-8") as handle:
+        content = handle.read()
+
+    img_pattern = re.compile(
+        r"const\s+uint8_t\s+img_(\d+)\[3072\]\s*=\s*\{(.*?)\};",
+        re.DOTALL,
+    )
+    label_pattern = re.compile(r"const\s+uint8_t\s+label_(\d+)\s*=\s*(\d+)\s*;")
+
+    images = {}
+    labels = {}
+
+    for match in img_pattern.finditer(content):
+        idx = int(match.group(1))
+        raw_values = [token.strip() for token in match.group(2).split(",") if token.strip()]
+        values = [int(token, 10) for token in raw_values]
+        if len(values) != CUSTOM_IMAGE_SIZE:
+            raise ValueError(f"img_{idx} expected {CUSTOM_IMAGE_SIZE} values, got {len(values)}")
+        if any(value < 0 or value > 255 for value in values):
+            raise ValueError(f"img_{idx} contains values outside uint8 range")
+        images[idx] = bytes(values)
+
+    for match in label_pattern.finditer(content):
+        labels[int(match.group(1))] = int(match.group(2))
+
+    if sample_index not in images:
+        raise ValueError(f"img_{sample_index} not found in test_images.c")
+    if sample_index not in labels:
+        raise ValueError(f"label_{sample_index} not found in test_images.c")
+
+    return images[sample_index], labels[sample_index]
+
+
 def verify_attested_enclave_info(device_pk_d: bytes, nonce: bytes, enclave_info: bytes, sig_raw: bytes) -> bool:
     if len(device_pk_d) != 65 or len(nonce) != 32 or len(enclave_info) != 32 or len(sig_raw) != 64:
         return False
@@ -637,6 +711,98 @@ def request_enclave_info_attested(device: 'STM32Device', device_pk_d: Optional[b
         return plain, device_pk_d
 
     return None, device_pk_d
+
+
+def run_verified_inference(
+    device: 'STM32Device',
+    verifier_key,
+    model_id: int,
+    cert: bytes,
+    device_pk_d: Optional[bytes],
+    photo_payload: Optional[bytes] = None,
+    expected_label: Optional[int] = None,
+) -> Tuple[bool, Optional[bytes]]:
+    """Run a verified inference, optionally uploading a photo in the same packet."""
+    if DYNAMIC_SESSION_KEY is None:
+        print("✗ Do ECDH first (command 1)")
+        return False, device_pk_d
+
+    if verifier_key is None:
+        print("✗ Send a successful M_update first (command 3) to provision verifier key")
+        return False, device_pk_d
+
+    if photo_payload is not None and len(photo_payload) != CUSTOM_IMAGE_SIZE:
+        print(f"✗ Photo payload must be {CUSTOM_IMAGE_SIZE} bytes")
+        return False, device_pk_d
+
+    enclave_state = get_enclave_state(device)
+    if enclave_state is None:
+        print("✗ Could not query enclave state")
+        return False, device_pk_d
+    if enclave_state is False:
+        print("✗ Enclave not created. Run command 21 first.")
+        return False, device_pk_d
+
+    nonce_inf = os.urandom(32)
+    model_id_bytes = struct.pack('<I', model_id)
+    msg_to_sign = nonce_inf + model_id_bytes
+    sig_der = verifier_key.sign(msg_to_sign, ec.ECDSA(hashes.SHA256()))
+    r_v, s_v = decode_dss_signature(sig_der)
+    sig_v_raw = r_v.to_bytes(32, 'big') + s_v.to_bytes(32, 'big')
+    minf_plain = nonce_inf + model_id_bytes + sig_v_raw
+    minf_enc = encrypt_command(DYNAMIC_SESSION_KEY, minf_plain)
+
+    if photo_payload is None:
+        if not device.send_command(CMD_RUN_INFERENCE, minf_enc):
+            print("✗ verified inference send failed")
+            return False, device_pk_d
+    else:
+        if expected_label is None:
+            expected_label = 0
+        packet = bytes([expected_label & 0xFF]) + photo_payload + minf_enc
+        if not device.send_command(CMD_RUN_INFERENCE_WITH_IMAGE, packet):
+            print("✗ photo+inference send failed")
+            return False, device_pk_d
+
+    resp = device.read_response()
+    if not resp or resp[0] != RESP_OK:
+        print("✗ verified inference failed (quota/signature/model_id?)")
+        return False, device_pk_d
+
+    if len(resp[1]) == 0:
+        print("✓ verified inference OK")
+        return True, device_pk_d
+
+    dec = decrypt_response(DYNAMIC_SESSION_KEY, resp[1])
+    if not dec or len(dec) < 65:
+        print("✓ verified inference OK (response not decoded)")
+        return True, device_pk_d
+
+    pred = dec[0]
+    pox_sig = dec[1:65]
+
+    if device_pk_d is None:
+        device_pk_d = get_device_pubkey(device)
+
+    if device_pk_d is not None and verify_pox_signature(
+        device_pk_d=device_pk_d,
+        model_id=model_id,
+        cert=cert,
+        nonce_inf=nonce_inf,
+        output_class=pred,
+        sig_raw=pox_sig,
+    ):
+        if photo_payload is None:
+            print(f"✓ verified inference OK, pred={pred}, PoX=VALID")
+        else:
+            print(f"✓ photo inference OK, pred={pred}, PoX=VALID")
+    else:
+        if photo_payload is None:
+            print(f"! verified inference OK, pred={pred}, PoX=INVALID")
+        else:
+            print(f"! photo inference OK, pred={pred}, PoX=INVALID")
+
+    return True, device_pk_d
 
 
 def perform_ecdh_handshake(device: 'STM32Device') -> bool:
@@ -1130,75 +1296,46 @@ def main():
                         print("✗ Failed")
 
             elif choice == '9':
-                if DYNAMIC_SESSION_KEY is None:
-                    print("✗ Do ECDH first (command 1)")
-                    continue
-                if verifier_key is None:
-                    print("✗ Send a successful M_update first (command 3) to provision verifier key")
-                    continue
-
-                enclave_state = get_enclave_state(device)
-                if enclave_state is None:
-                    print("✗ Could not query enclave state")
-                    continue
-                if enclave_state is False:
-                    print("✗ Enclave not created. Run command 21 first.")
+                success, device_pk_d = run_verified_inference(
+                    device=device,
+                    verifier_key=verifier_key,
+                    model_id=model_id,
+                    cert=cert,
+                    device_pk_d=device_pk_d,
+                )
+                if not success:
                     continue
 
-                nonce_inf = os.urandom(32)
-                model_id_bytes = struct.pack('<I', model_id)
-                msg_to_sign = nonce_inf + model_id_bytes
-                sig_der = verifier_key.sign(msg_to_sign, ec.ECDSA(hashes.SHA256()))
-                r_v, s_v = decode_dss_signature(sig_der)
-                sig_v_raw = r_v.to_bytes(32, 'big') + s_v.to_bytes(32, 'big')
-                minf_plain = nonce_inf + model_id_bytes + sig_v_raw
-                minf_enc = encrypt_command(DYNAMIC_SESSION_KEY, minf_plain)
+            elif choice == '23':
+                print("\n[23] Existing sample image + verified inference")
+                sample_raw = input("sample index [0-19] (default 0): ").strip()
+                try:
+                    sample_index = int(sample_raw) if sample_raw else 0
+                except ValueError:
+                    print("✗ invalid sample index")
+                    continue
 
-                if device.send_command(CMD_RUN_INFERENCE, minf_enc):
-                    resp = device.read_response()
-                    if resp and resp[0] == RESP_OK:
-                        if len(resp[1]) > 0:
-                            dec = decrypt_response(DYNAMIC_SESSION_KEY, resp[1])
-                            if dec and len(dec) >= 65:
-                                pred = dec[0]
-                                pox_sig = dec[1:65]
+                try:
+                    photo_payload, expected_label = load_existing_device_sample(sample_index)
+                except Exception as exc:
+                    print(f"✗ Failed to load existing sample image: {exc}")
+                    continue
 
-                                if device_pk_d is None:
-                                    device_pk_d = get_device_pubkey(device)
-
-                                if device_pk_d is not None and verify_pox_signature(
-                                    device_pk_d=device_pk_d,
-                                    model_id=model_id,
-                                    cert=cert,
-                                    nonce_inf=nonce_inf,
-                                    output_class=pred,
-                                    sig_raw=pox_sig,
-                                ):
-                                    print(f"✓ verified inference OK, pred={pred}, PoX=VALID")
-                                else:
-                                    print(f"! verified inference OK, pred={pred}, PoX=INVALID")
-                            else:
-                                print("✓ verified inference OK (response not decoded)")
-                        else:
-                            print("✓ verified inference OK")
-                    else:
-                        print("✗ verified inference failed (quota/signature/model_id?)")
+                print(f"  Loaded sample image {sample_index}: label={expected_label}, bytes={len(photo_payload)}")
+                success, device_pk_d = run_verified_inference(
+                    device=device,
+                    verifier_key=verifier_key,
+                    model_id=model_id,
+                    cert=cert,
+                    device_pk_d=device_pk_d,
+                    photo_payload=photo_payload,
+                    expected_label=expected_label,
+                )
+                if not success:
+                    continue
 
             elif choice == '10':
-                enclave_state = get_enclave_state(device)
-                if enclave_state is None:
-                    print("✗ Could not query enclave state")
-                    continue
-                if enclave_state is False:
-                    print("✗ Enclave not created. Run command 21 first.")
-                    continue
-
-                if device.send_command(CMD_RUN_INFERENCE):
-                    resp = device.read_response()
-                    if resp and resp[0] == RESP_OK:
-                        print("✓ legacy inference accepted")
-                    else:
-                        print("✗ legacy inference rejected")
+                print("✗ Legacy inference mode is disabled. Use 9 for verified inference or 23 for photo upload.")
 
             elif choice == '11':
                 if device.send_command(CMD_GET_INFERENCE_RESULT):

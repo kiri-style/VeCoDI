@@ -74,9 +74,12 @@ Host (Mac) → NS (Zephyr) → S (TF-M) split:
 
 3. **Verified inference + PoX**
 
-   - Mac sends ``CMD_RUN_INFERENCE (0x04)`` with encrypted ``M_inf`` (nonce + model_id + verifier signature).
-   - Device verifies request, executes inference, returns encrypted response:
-     ``pred(1) || pox_sig(64)``.
+   - Mac sends ``CMD_RUN_INFERENCE (0x04)`` with encrypted ``M_inf`` packet:
+     ``nonce_gcm(12) || ciphertext(100) || tag(16)``.
+   - Secure START (``DP_CMD_INF_START``) decrypts + verifies ``M_inf`` and opens enclave RAM window.
+   - NS executes split inference in an atomic section.
+   - Secure COMPLETE (``DP_CMD_INF_COMPLETE``) closes RAM window, commits counter, and signs PoX.
+   - Device returns encrypted response: ``pred(1) || pox_sig(64)``.
    - Mac verifies PoX signature over:
      ``model_id(4 LE) || cert || nonce_inf(32) || pred(1)``.
 
@@ -84,6 +87,7 @@ Host (Mac) → NS (Zephyr) → S (TF-M) split:
 
    - ``CMD_GET_SAU_STATE (0x0D)`` returns SAU state (`UNREGISTERED/OPEN/CLOSED`) + region when available.
   - ``CMD_GET_ENCLAVE_STATE (0x10)`` returns whether the enclave is currently created.
+  - ``CMD_RUN_INFERENCE`` verified mode is enforced (legacy len=0 mode disabled).
    - Danger test commands:
      - ``0x0E``: inference path without explicit create
      - ``0x0F``: direct protected-memory read (expected fault/reset when SAU closed)
@@ -257,14 +261,12 @@ Inference Phase
      - ``early_output``: Main path feature map
      - ``early_skip``: Residual connection from conv2d_5
 
-4. **Inference Counter Management** (``DP_CMD_RUN_INFERENCE``)
-   
-   - Secure world atomically checks and increments counter
-   - **Limit**: 3 inferences per enclave
-   - **Behavior**: 
-     - Inferences 1-3: ✅ Allowed
-     - Inference 4+: ✅ BLOCKED (no auto-recreation)
-   - Response: 1 (allowed) or 0 (denied)
+4. **Verified Inference Transaction** (``DP_CMD_INF_START`` / ``DP_CMD_INF_COMPLETE``)
+
+  - Secure START decrypts/verifies request and authorizes one transaction
+  - NS executes inference in atomic section while enclave RAM window is open
+  - Secure COMPLETE commits counter, recloses enclave RAM, and signs PoX
+  - **Limit**: dynamic (`c_limit` from validated M_update)
 
 5. **Benchmark Reporting** (``benchmark_print_report()``)
    
@@ -327,10 +329,15 @@ Architecture
     ├─ Input: Encrypted weights, IV
     └─ Output: Decrypted weights in NS enclave
 
-    DP_CMD_RUN_INFERENCE (NEW - atomic check + increment)
-    ├─ Checks: inference_counter < max_inferences_per_enclave (dynamic)
-    ├─ Action: Increments counter if allowed
-    └─ Response: 1 (allowed) or 0 (blocked)
+    DP_CMD_INF_START (25)
+    ├─ Input: encrypted M_inf packet (128 bytes)
+    ├─ Action: decrypt + verify request, open enclave RAM window
+    └─ Output: tx_id (uint32)
+
+    DP_CMD_INF_COMPLETE (26)
+    ├─ Input: tx_id(4) || output(1)
+    ├─ Action: commit counter, close enclave RAM window, sign PoX
+    └─ Output: pox_sig(64)
 
     DP_CMD_GET_BENCHMARK (8)
     ├─ Action: Reads linker symbols for memory usage
@@ -355,26 +362,25 @@ Counter Management
 
 ::
 
-    NS run_enclave() call
+        NS verified inference call
            ↓
     [Create enclave? → Yes → Secure decrypt late weights]
            ↓
-    Call DP_CMD_RUN_INFERENCE (Secure)
+        Call DP_CMD_INF_START (Secure)
            ↓
         ┌──────────────────────────┐
         │ Secure World             │
-        │ ├─ Check counter < max?  │
-        │ ├─ If yes: increment+1   │
-        │ │         return 1       │
-        │ └─ If no:  return 0      │
+       │ ├─ Decrypt M_inf (AES-GCM) │
+       │ ├─ Verify verifier signature│
+       │ ├─ Check policy/quota       │
+       │ └─ Open enclave RAM + tx_id │
         └──────────────────────────┘
            ↓
-        (response: 0 or 1)
+       NS run_split_inference() (atomic)
            ↓
-        ┌──────────────┐
-        │ If 0: BLOCK  │  ← Application must handle
-        │ If 1: Execute│
-        └──────────────┘
+        Call DP_CMD_INF_COMPLETE (Secure)
+          ↓
+        PoX signature + counter commit + RAM close
 
 Architecture
 ============
@@ -621,144 +627,60 @@ This section describes the active **Provider-Device Enclave Authorization Protoc
 Inference Protocol (M_inf / PoX)
 =================================
 
-**New Feature (Phase B)**: Cryptographic Inference Request/Response Protocol
+Current Runtime Protocol
+------------------------
 
-Overview
---------
+This project now uses a **Secure START/COMPLETE transaction** for verified inference:
 
-This phase implements a **Verifier-to-Device Inference Protocol** with cryptographically signed requests and proof-of-execution responses. The protocol ensures:
+- NS receives ``CMD_RUN_INFERENCE`` encrypted packet (128 bytes)
+- Secure START decrypts and verifies ``M_inf``
+- NS executes split inference in an atomic section
+- Secure COMPLETE commits policy/counter and signs PoX
+- NS returns encrypted ``pred(1) || pox_sig(64)`` to host
 
-- **Authenticity**: Verifier-signed inference requests (M_inf)
-- **Non-repudiation**: Device-signed proof of execution (PoX)
-- **Integrity**: ECDSA P-256 signatures on all messages
-- **Anti-replay**: Fresh random nonce per request
+Request/Response Format (Current)
+---------------------------------
 
-**Protocol Flow**
-
-::
-
-    Verifier                          Device
-    --------                          ------
-    Gen keypair (P-256)               Gen keypair (P-256)
-        |                                 |
-        ├─ Generate M_inf:            ├─ Verify M_inf signature ✓
-        │  - Random nonce (12B)       │
-        │  - Model ID (4B)            ├─ Execute inference → result=6
-        │  - ECDSA sig over           │
-        │    (nonce || model_id)       └─ Generate PoX:
-        │  - Total: 80 bytes             - Echo nonce
-        └─ Verify PoX signature ←────    - Output (1B)
-           ✓ Execution verified          - Cert (16B)
-                                         - ECDSA sig over
-                                           (model_id || cert || nonce || output)
-                                         - Total: 97 bytes
-
-**Message Formats**
-
-M_inf (Verifier Request):
+``CMD_RUN_INFERENCE`` payload (host -> device):
 
 ::
 
-    Structure (80 bytes total):
-      nonce       [12 bytes]  - Random nonce per request
-      model_id    [4 bytes]   - Model identifier
-      signature   [64 bytes]  - ECDSA P-256: Sign(sk_v, nonce || model_id)
+    Encrypted packet (128 bytes):
+      nonce_gcm   [12 bytes]
+      ciphertext  [100 bytes]  // plaintext = nonce_inf(32) || model_id(4) || sig_v(64)
+      tag         [16 bytes]
 
-PoX (Device Proof of Execution):
+Secure START (``DP_CMD_INF_START``):
 
 ::
 
-    Structure (97 bytes total):
-      model_id    [4 bytes]   - Model identifier
-      cert        [16 bytes]  - Provider certificate
-      nonce       [12 bytes]  - Nonce echoed from M_inf
-      output      [1 byte]    - Inference result (0-9 for CIFAR-10)
-      signature   [64 bytes]  - ECDSA P-256: Sign(sk_d, above fields)
+    Input : encrypted packet (128)
+    Action: AES-GCM decrypt + ECDSA verify + policy/quota check + open RAM window
+    Output: tx_id (uint32)
 
-**Cryptography**
+Secure COMPLETE (``DP_CMD_INF_COMPLETE``):
 
-- **Algorithm**: ECDSA P-256 (secp256r1)
-- **Hash Function**: SHA-256
-- **Key Size**: 256 bits (32 bytes)
-- **Nonce Generation**: Cryptographically secure random
-- **Implementation**: PSA Crypto API (via TF-M)
+::
 
-**Implementation Status**
+    Input : tx_id(4) || output(1)
+    Action: commit counter + close RAM window + sign PoX
+    Output: pox_sig(64)
 
-✅ **Completed**:
+PoX Signed Message
+------------------
 
-- ``src/inference_protocol.h``: Protocol structures and API definitions
-- ``src/inference_protocol.cpp``: PSA Crypto implementation (~400 lines)
-  
-  * M_inf generation with ECDSA P-256 signing
-  * PoX generation with ECDSA P-256 signing
-  * Signature verification functions
+PoX signature is generated in Secure world over:
 
-- ``src/test_inference_protocol.cpp``: Complete test harness (~250 lines)
-  
-  * PSA-generated keypairs (verifier, device)
-  * Full 5-step protocol execution:
-    1. Generate Verifier keypair
-    2. Generate Device keypair
-    3. Verifier creates signed M_inf
-    4. Device executes inference
-    5. Device creates signed PoX
+::
 
-- ``main.cpp``: Integration as Phase 2 (after Enclave Authorization)
-- ``CMakeLists.txt``: Compilation of new files
+    SHA256(model_id_LE(4) || cert(n) || nonce_inf(32) || output(1))
 
-✅ **Tested on Hardware**:
+Security Notes
+--------------
 
-- STM32L552 firmware built successfully (201.4 KB FLASH, 128.0 KB RAM - 97.67%)
-- Device flashed and executing all protocol steps
-- **Test Output**: All 5 phases complete successfully
-  
-  ::
-  
-    [TEST] ===== STEP 1: GENERATE VERIFIER KEYPAIR =====
-    [TEST] ✓ Verifier keypair generated
-    
-    [TEST] ===== STEP 2: GENERATE DEVICE KEYPAIR =====
-    [TEST] ✓ Device keypair generated
-    
-    [TEST] ===== STEP 3: VERIFIER GENERATES M_INF =====
-    [TEST] ✓ M_inf generated and signed (80 bytes total)
-    [PROTO] Nonce: E5 C7 F7 21 44 A7 B5 49 FF 99 D4 6F
-    [PROTO] Signature (first 16B): FD 01 5F 14 47 7C 55 09 A4 E6 D4 4C 63 70 44 2E
-    
-    [TEST] ===== STEP 4: DEVICE EXECUTES INFERENCE =====
-    [DEVICE] Inference result: 6
-    
-    [TEST] ===== STEP 5: DEVICE GENERATES PoX =====
-    [TEST] ✓ PoX generated and signed (97 bytes total)
-    [PROTO] Output: 6
-    [PROTO] Signature (first 16B): 59 84 E7 7A AD EA 03 55 43 67 85 42 F0 88 8F 30
-    
-    ╔════════════════════════════════════════════════════════╗
-    ║         INFERENCE PROTOCOL TEST PASSED ✓               ║
-    ║                                                        ║
-    ║  ✓ Verifier keypair generated                         ║
-    ║  ✓ Device keypair generated                           ║
-    ║  ✓ M_inf generated and signed                         ║
-    ║  ✓ Device executed inference                          ║
-    ║  ✓ PoX generated and signed                           ║
-    ╚════════════════════════════════════════════════════════╝
-
-**Integration with Other Phases**
-
-- **Phase 1 (Enclave Authorization)**: EnclaveInfo + M_update (AES-256-GCM)
-- **Phase 2 (Inference Protocol)**: M_inf + PoX (ECDSA P-256) ← **You are here**
-- **Phase 3 (CIFAR-10 Inference)**: Split inference with encrypted late weights
-  
-  * Early layers: 395 ms (43.4M cycles)
-  * Late layers: 74 ms (8.2M cycles)
-  * Total: 504 ms, prediction verified correct (5 = expected)
-
-**Known Constraints**
-
-- Protocol payload no longer includes inference input image in ``M_inf``
-- Current RAM usage: 97.67% (128 KB total) - suitable for embedded devices
-- Keys generated fresh per test (not persistence across resets)
+- Legacy unverified mode (``CMD_RUN_INFERENCE`` with len=0) is disabled.
+- Request decrypt/verify and PoX signing are Secure-side.
+- Inference compute remains NS-side by design (TF-M IPC model).
 
 Build & Flash
 =============
@@ -862,38 +784,17 @@ Expected Serial Output
 
 ::
 
-    ╔════════════════════════════════════════════════════════╗
-    ║    INFERENCE PROTOCOL TEST (M_inf / PoX)              ║
-    ╚════════════════════════════════════════════════════════╝
-    
-    [TEST] ===== STEP 1: GENERATE VERIFIER KEYPAIR =====
-    [TEST] ✓ Verifier keypair generated
-    
-    [TEST] ===== STEP 2: GENERATE DEVICE KEYPAIR =====
-    [TEST] ✓ Device keypair generated
-    
-    [TEST] ===== STEP 3: VERIFIER GENERATES M_INF =====
-    [TEST] ✓ M_inf generated and signed (80 bytes total)
-    [PROTO] Nonce: E5 C7 F7 21 44 A7 B5 49 FF 99 D4 6F
-    [PROTO] Signature (first 16B): FD 01 5F 14 47 7C 55 09 A4 E6 D4 4C 63 70 44 2E
-    
-    [TEST] ===== STEP 4: DEVICE EXECUTES INFERENCE =====
-    [DEVICE] Inference result: 6
-    
-    [TEST] ===== STEP 5: DEVICE GENERATES PoX =====
-    [TEST] ✓ PoX generated and signed (97 bytes total)
-    [PROTO] Output: 6
-    [PROTO] Signature (first 16B): 59 84 E7 7A AD EA 03 55 43 67 85 42 F0 88 8F 30
-    
-    ╔════════════════════════════════════════════════════════╗
-    ║         INFERENCE PROTOCOL TEST PASSED ✓               ║
-    ║                                                        ║
-    ║  ✓ Verifier keypair generated                         ║
-    ║  ✓ Device keypair generated                           ║
-    ║  ✓ M_inf generated and signed                         ║
-    ║  ✓ Device executed inference                          ║
-    ║  ✓ PoX generated and signed                           ║
-    ╚════════════════════════════════════════════════════════╝
+  [HOST] CMD_RUN_INFERENCE payload len=128 (AES-GCM packet)
+  [SECURE] DP_CMD_INF_START received
+  [SECURE]   - decrypt M_inf with session key: OK
+  [SECURE]   - verify verifier signature: OK
+  [SECURE]   - open enclave RAM window + tx_id: OK
+  [NS] run_split_inference() in atomic section
+  [SECURE] DP_CMD_INF_COMPLETE received
+  [SECURE]   - verify tx_id: OK
+  [SECURE]   - commit counter + close RAM window: OK
+  [SECURE]   - sign PoX: OK
+  [HOST] receives encrypted response: pred(1) || pox_sig(64)
 
 **Phase 3: Single Inference in Enclave**
 
@@ -1079,16 +980,13 @@ Notes
   * Dynamic policy: max_inferences starts at 0, updated to c_limit after validation
 
 - **Phase 2 (Inference Protocol)**:
-  
-  * M_inf = ECDSA_sign(SHA-256(nonce || model_id), sk_verifier)
-  * PoX = ECDSA_sign(SHA-256(model_id || cert || nonce || output), sk_device)
 
-- **Phase 2**: ECDSA P-256 keypairs for Verifier and Device
-  
-  * M_inf = Verifier-signed (nonce || model_id) - 80 bytes
-  * PoX = Device-signed (model_id || cert || nonce || output) - 97 bytes
+  * Host packet = AES-GCM encrypted M_inf (`12 + 100 + 16 = 128 bytes`)
+  * Secure START decrypts/verifies verifier signature
+  * Secure COMPLETE signs PoX with secure-owned device key
+  * PoX signature input = model_id || cert || nonce_inf(32) || output
 
-- **Anti-replay**: Fresh random nonce (12 bytes) per M_inf request
+- **Anti-replay**: Fresh random nonce per verifier request (`nonce_inf` inside encrypted M_inf)
 
 **Constraints & Optimization**:
 

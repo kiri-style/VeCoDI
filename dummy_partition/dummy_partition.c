@@ -69,6 +69,10 @@ static void print_secure_memory_stats(void)
 #define DP_CMD_CREATE_ENCLAVE       22  /* Secure create: decrypt + register + reset counter (RAM still open) */
 #define DP_CMD_DESTROY_ENCLAVE      23  /* Secure destroy: close SAU + reset state */
 #define DP_CMD_FINALIZE_CREATE_ENCLAVE 24 /* Secure finalize create: close enclave RAM */
+#define DP_CMD_INF_START            25  /* Verify M_inf in Secure and open transaction window */
+#define DP_CMD_INF_COMPLETE         26  /* Commit secure transaction and sign PoX */
+#define DP_CMD_GET_DEVICE_PUBKEY    27  /* Return secure device public key (65-byte uncompressed) */
+#define DP_CMD_SIGN_ATTEST_MSG      28  /* Sign SHA256(nonce||enclave_info) with secure device key */
 
 /* EnclaveInfo size (SHA-256 hash) */
 #define ENCLAVE_INFO_SIZE 32
@@ -135,6 +139,56 @@ static uint32_t s_model_id    = 0;
 static uint8_t  s_cert[128]   = {0};
 static uint32_t s_cert_len    = 0;
 static bool     s_auth_valid  = false;
+
+/* Secure-only device signing key and transient inference transaction state. */
+static psa_key_id_t s_device_sign_key_id = 0;
+static uint8_t      s_device_pubkey[65] = {0};
+static bool         s_device_key_ready = false;
+static bool         s_tx_active = false;
+static uint32_t     s_tx_id = 0U;
+static uint8_t      s_tx_nonce[32] = {0};
+static uint32_t     s_tx_model_id = 0U;
+
+static psa_status_t init_secure_device_signing_key(void)
+{
+    psa_status_t st = psa_crypto_init();
+    if (st != PSA_SUCCESS) {
+        return st;
+    }
+
+    if (s_device_key_ready && s_device_sign_key_id != 0U) {
+        return PSA_SUCCESS;
+    }
+
+    psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
+    psa_set_key_type(&attr, PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_SECP_R1));
+    psa_set_key_bits(&attr, 256);
+    psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_SIGN_HASH | PSA_KEY_USAGE_EXPORT);
+    psa_set_key_algorithm(&attr, PSA_ALG_ECDSA(PSA_ALG_SHA_256));
+    psa_set_key_lifetime(&attr, PSA_KEY_LIFETIME_VOLATILE);
+
+    st = psa_generate_key(&attr, &s_device_sign_key_id);
+    psa_reset_key_attributes(&attr);
+    if (st != PSA_SUCCESS) {
+        return st;
+    }
+
+    size_t pk_len = 0U;
+    st = psa_export_public_key(s_device_sign_key_id,
+                               s_device_pubkey,
+                               sizeof(s_device_pubkey),
+                               &pk_len);
+    if (st != PSA_SUCCESS || pk_len != sizeof(s_device_pubkey)) {
+        if (s_device_sign_key_id != 0U) {
+            psa_destroy_key(s_device_sign_key_id);
+            s_device_sign_key_id = 0;
+        }
+        return (st == PSA_SUCCESS) ? PSA_ERROR_GENERIC_ERROR : st;
+    }
+
+    s_device_key_ready = true;
+    return PSA_SUCCESS;
+}
 
 /* Fixed-size secret container used for digest service. */
 struct dp_secret {
@@ -1504,6 +1558,269 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
     case DP_CMD_GET_SAU_ROM_STATE:
         return PSA_ERROR_NOT_SUPPORTED;
 
+    case DP_CMD_INF_START:
+        {
+            uint8_t packet[128];
+            uint8_t m_inf[100];
+            uint8_t msg_hash[32];
+            size_t hash_len = 0U;
+            uint32_t tx_id = 0U;
+            size_t plaintext_len = 0U;
+
+            if (msg->in_size[1] != sizeof(packet) || msg->out_size[0] != sizeof(tx_id)) {
+                return PSA_ERROR_INVALID_ARGUMENT;
+            }
+            if (!s_auth_valid || !enclave_created_secure || !secure_session_key_set) {
+                return PSA_ERROR_BAD_STATE;
+            }
+            if (s_tx_active) {
+                return PSA_ERROR_BAD_STATE;
+            }
+            if (inference_counter_secure + 1U > max_inferences_per_enclave_secure) {
+                return PSA_ERROR_NOT_PERMITTED;
+            }
+
+            psa_read(msg->handle, 1, packet, sizeof(packet));
+
+            /* Decrypt M_inf in Secure: nonce(12) || ciphertext(100) || tag(16). */
+            psa_status_t st = psa_crypto_init();
+            if (st != PSA_SUCCESS) {
+                return st;
+            }
+
+            psa_key_attributes_t dec_attr = PSA_KEY_ATTRIBUTES_INIT;
+            psa_set_key_type(&dec_attr, PSA_KEY_TYPE_AES);
+            psa_set_key_bits(&dec_attr, 256);
+            psa_set_key_usage_flags(&dec_attr, PSA_KEY_USAGE_DECRYPT);
+            psa_set_key_algorithm(&dec_attr, PSA_ALG_GCM);
+
+            psa_key_id_t dec_key = 0;
+            st = psa_import_key(&dec_attr, secure_session_key, 32U, &dec_key);
+            psa_reset_key_attributes(&dec_attr);
+            if (st != PSA_SUCCESS) {
+                return st;
+            }
+
+            st = psa_aead_decrypt(dec_key,
+                                  PSA_ALG_GCM,
+                                  packet,
+                                  12U,
+                                  NULL,
+                                  0U,
+                                  packet + 12U,
+                                  116U,
+                                  m_inf,
+                                  sizeof(m_inf),
+                                  &plaintext_len);
+            psa_destroy_key(dec_key);
+            if (st != PSA_SUCCESS || plaintext_len != sizeof(m_inf)) {
+                secure_memzero(m_inf, sizeof(m_inf));
+                secure_memzero(packet, sizeof(packet));
+                return PSA_ERROR_INVALID_SIGNATURE;
+            }
+
+            uint32_t req_model_id = (uint32_t)m_inf[32]
+                                  | ((uint32_t)m_inf[33] << 8)
+                                  | ((uint32_t)m_inf[34] << 16)
+                                  | ((uint32_t)m_inf[35] << 24);
+
+            if (s_model_id != 0U && req_model_id != s_model_id) {
+                return PSA_ERROR_INVALID_ARGUMENT;
+            }
+
+            st = psa_hash_compute(PSA_ALG_SHA_256,
+                                  m_inf,
+                                  36U,
+                                  msg_hash,
+                                  sizeof(msg_hash),
+                                  &hash_len);
+            if (st != PSA_SUCCESS || hash_len != sizeof(msg_hash)) {
+                secure_memzero(m_inf, sizeof(m_inf));
+                secure_memzero(packet, sizeof(packet));
+                return PSA_ERROR_GENERIC_ERROR;
+            }
+
+            uint8_t pk_v_full[65];
+            pk_v_full[0] = 0x04U;
+            memcpy(pk_v_full + 1U, s_pk_v, 64U);
+
+            psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
+            psa_set_key_type(&attr, PSA_KEY_TYPE_ECC_PUBLIC_KEY(PSA_ECC_FAMILY_SECP_R1));
+            psa_set_key_bits(&attr, 256);
+            psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_VERIFY_HASH);
+            psa_set_key_algorithm(&attr, PSA_ALG_ECDSA(PSA_ALG_SHA_256));
+
+            psa_key_id_t pk_v_id = 0;
+            st = psa_import_key(&attr, pk_v_full, sizeof(pk_v_full), &pk_v_id);
+            psa_reset_key_attributes(&attr);
+            if (st != PSA_SUCCESS) {
+                secure_memzero(m_inf, sizeof(m_inf));
+                secure_memzero(packet, sizeof(packet));
+                return PSA_ERROR_INVALID_SIGNATURE;
+            }
+
+            st = psa_verify_hash(pk_v_id,
+                                 PSA_ALG_ECDSA(PSA_ALG_SHA_256),
+                                 msg_hash,
+                                 sizeof(msg_hash),
+                                 m_inf + 36U,
+                                 64U);
+            psa_destroy_key(pk_v_id);
+            if (st != PSA_SUCCESS) {
+                secure_memzero(m_inf, sizeof(m_inf));
+                secure_memzero(packet, sizeof(packet));
+                return PSA_ERROR_INVALID_SIGNATURE;
+            }
+
+            if (sau_enclave_registered && !sau_enclave_open) {
+                st = sau_open_enclave();
+                if (st != PSA_SUCCESS) {
+                    return st;
+                }
+            }
+
+            s_tx_active = true;
+            s_tx_id++;
+            if (s_tx_id == 0U) {
+                s_tx_id = 1U;
+            }
+            tx_id = s_tx_id;
+            memcpy(s_tx_nonce, m_inf, sizeof(s_tx_nonce));
+            s_tx_model_id = req_model_id;
+
+            secure_memzero(m_inf, sizeof(m_inf));
+            secure_memzero(packet, sizeof(packet));
+
+            psa_write(msg->handle, 0, &tx_id, sizeof(tx_id));
+            return PSA_SUCCESS;
+        }
+
+    case DP_CMD_INF_COMPLETE:
+        {
+            uint8_t req[5];
+            uint8_t pox_hash[32];
+            uint8_t pox_msg[4U + sizeof(s_cert) + sizeof(s_tx_nonce) + 1U];
+            size_t pox_hash_len = 0U;
+            size_t pox_msg_len = 0U;
+            size_t sig_len = 0U;
+
+            if (msg->in_size[1] != sizeof(req) || msg->out_size[0] != 64U) {
+                return PSA_ERROR_INVALID_ARGUMENT;
+            }
+            if (!s_tx_active || !s_device_key_ready) {
+                return PSA_ERROR_BAD_STATE;
+            }
+
+            psa_read(msg->handle, 1, req, sizeof(req));
+            uint32_t req_tx_id = (uint32_t)req[0]
+                               | ((uint32_t)req[1] << 8)
+                               | ((uint32_t)req[2] << 16)
+                               | ((uint32_t)req[3] << 24);
+            uint8_t output_class = req[4];
+
+            if (req_tx_id != s_tx_id) {
+                return PSA_ERROR_INVALID_ARGUMENT;
+            }
+
+            pox_msg[pox_msg_len++] = (uint8_t)(s_tx_model_id & 0xFFU);
+            pox_msg[pox_msg_len++] = (uint8_t)((s_tx_model_id >> 8) & 0xFFU);
+            pox_msg[pox_msg_len++] = (uint8_t)((s_tx_model_id >> 16) & 0xFFU);
+            pox_msg[pox_msg_len++] = (uint8_t)((s_tx_model_id >> 24) & 0xFFU);
+
+            if (s_cert_len > 0U && s_cert_len <= sizeof(s_cert)) {
+                memcpy(pox_msg + pox_msg_len, s_cert, s_cert_len);
+                pox_msg_len += s_cert_len;
+            }
+
+            memcpy(pox_msg + pox_msg_len, s_tx_nonce, sizeof(s_tx_nonce));
+            pox_msg_len += sizeof(s_tx_nonce);
+            pox_msg[pox_msg_len++] = output_class;
+
+            psa_status_t st = psa_hash_compute(PSA_ALG_SHA_256,
+                                               pox_msg,
+                                               pox_msg_len,
+                                               pox_hash,
+                                               sizeof(pox_hash),
+                                               &pox_hash_len);
+            if (st != PSA_SUCCESS || pox_hash_len != sizeof(pox_hash)) {
+                return PSA_ERROR_GENERIC_ERROR;
+            }
+
+            uint8_t sig[64];
+            st = psa_sign_hash(s_device_sign_key_id,
+                               PSA_ALG_ECDSA(PSA_ALG_SHA_256),
+                               pox_hash,
+                               sizeof(pox_hash),
+                               sig,
+                               sizeof(sig),
+                               &sig_len);
+            if (st != PSA_SUCCESS || sig_len != sizeof(sig)) {
+                return PSA_ERROR_GENERIC_ERROR;
+            }
+
+            inference_counter_secure++;
+            g_secure_metrics.counter_operations++;
+
+            if (sau_enclave_registered && sau_enclave_open) {
+                (void)sau_close_enclave();
+            }
+
+            s_tx_active = false;
+            memset(s_tx_nonce, 0, sizeof(s_tx_nonce));
+            s_tx_model_id = 0U;
+
+            psa_write(msg->handle, 0, sig, sizeof(sig));
+            return PSA_SUCCESS;
+        }
+
+    case DP_CMD_GET_DEVICE_PUBKEY:
+        {
+            if (msg->out_size[0] != sizeof(s_device_pubkey) || !s_device_key_ready) {
+                return PSA_ERROR_INVALID_ARGUMENT;
+            }
+            psa_write(msg->handle, 0, s_device_pubkey, sizeof(s_device_pubkey));
+            return PSA_SUCCESS;
+        }
+
+    case DP_CMD_SIGN_ATTEST_MSG:
+        {
+            uint8_t msg_buf[64];
+            uint8_t digest[32];
+            uint8_t sig[64];
+            size_t digest_len = 0U;
+            size_t sig_len = 0U;
+
+            if (msg->in_size[1] != sizeof(msg_buf) || msg->out_size[0] != sizeof(sig) || !s_device_key_ready) {
+                return PSA_ERROR_INVALID_ARGUMENT;
+            }
+
+            psa_read(msg->handle, 1, msg_buf, sizeof(msg_buf));
+
+            psa_status_t st = psa_hash_compute(PSA_ALG_SHA_256,
+                                               msg_buf,
+                                               sizeof(msg_buf),
+                                               digest,
+                                               sizeof(digest),
+                                               &digest_len);
+            if (st != PSA_SUCCESS || digest_len != sizeof(digest)) {
+                return PSA_ERROR_GENERIC_ERROR;
+            }
+
+            st = psa_sign_hash(s_device_sign_key_id,
+                               PSA_ALG_ECDSA(PSA_ALG_SHA_256),
+                               digest,
+                               sizeof(digest),
+                               sig,
+                               sizeof(sig),
+                               &sig_len);
+            if (st != PSA_SUCCESS || sig_len != sizeof(sig)) {
+                return PSA_ERROR_GENERIC_ERROR;
+            }
+
+            psa_write(msg->handle, 0, sig, sizeof(sig));
+            return PSA_SUCCESS;
+        }
+
     default:
         return PSA_ERROR_NOT_SUPPORTED;
     }
@@ -1553,6 +1870,12 @@ psa_status_t tfm_dp_req_mngr_init(void)
 
     /* Initialize secure-only model identity and cache EnclaveInfo in S world. */
     init_secure_model_identity();
+
+    psa_status_t key_st = init_secure_device_signing_key();
+    if (key_st != PSA_SUCCESS) {
+        printf("[SECURE INIT] Device signing key init failed: %d\n", (int)key_st);
+        return key_st;
+    }
 
     /* Scan and save TF-M's NS-RAM SAU region limits for runtime splits. */
     sau_partition_init();
