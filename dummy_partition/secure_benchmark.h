@@ -26,12 +26,38 @@ typedef struct {
     uint64_t check_allowed_cycles;
     uint64_t increment_cycles;
     uint64_t reset_cycles;
+
+    /* Secure lifecycle / transaction operations */
+    uint64_t create_enclave_cycles;
+    uint64_t finalize_create_cycles;
+    uint64_t destroy_enclave_cycles;
+    uint64_t inf_start_cycles;
+    uint64_t inf_complete_cycles;
+
+    /* SAU management operations */
+    uint64_t sau_sync_open_cycles;
+    uint64_t sau_sync_close_cycles;
+    uint64_t sau_flash_close_cycles;
+    uint64_t sau_flash_open_cycles;
+    uint64_t sau_flash_pulse_cycles;
     
     /* Operation counts */
     uint32_t aes_decrypt_count;
     uint32_t late_hash_count;
     uint32_t digest_count;
     uint32_t counter_operations;
+
+    /* Operation counts for lifecycle / SAU */
+    uint32_t create_enclave_count;
+    uint32_t finalize_create_count;
+    uint32_t destroy_enclave_count;
+    uint32_t inf_start_count;
+    uint32_t inf_complete_count;
+    uint32_t sau_sync_open_count;
+    uint32_t sau_sync_close_count;
+    uint32_t sau_flash_close_count;
+    uint32_t sau_flash_open_count;
+    uint32_t sau_flash_pulse_count;
     
     /* Memory usage (Secure partition) */
     uint32_t ram_used_bytes;

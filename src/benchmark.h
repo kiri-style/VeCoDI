@@ -154,6 +154,12 @@ typedef struct {
     uint32_t destroy_atomic_max_cycles;
     uint32_t create_atomic_count;
     uint32_t destroy_atomic_count;
+
+    // UART flow counters for critical feature coverage
+    uint32_t run_inference_with_image_count;
+    uint32_t dangerous_inference_no_sau_count;
+    uint32_t dangerous_read_ram_count;
+    uint32_t dangerous_read_rom_count;
 } benchmark_metrics_t;
 
 extern benchmark_metrics_t g_benchmark_metrics;

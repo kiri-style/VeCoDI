@@ -30,6 +30,9 @@ void sau_test_isolation(void);
 /* Non-destructive variant: prints OPEN/CLOSE checks without triggering HardFault. */
 void sau_test_isolation_print_only(void);
 
+/* ROM/flash SAU toggle test driven by secure cmd=5/cmd=6. */
+void sau_test_rom_protection(void);
+
 #ifdef __cplusplus
 }
 #endif

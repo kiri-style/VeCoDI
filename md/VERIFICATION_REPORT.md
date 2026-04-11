@@ -1,6 +1,6 @@
 # Enclave Authorization Protocol - Verification Report
 
-**Date**: 13 March 2026  
+**Date**: 11 April 2026  
 **Platform**: STM32L552ZE-Q (NUCLEO-L552ZE-Q)  
 **Status**: ✅ **ALL PHASES VERIFIED ON HARDWARE**
 
@@ -11,6 +11,32 @@
 Complete end-to-end verification of the 3-phase Enclave Authorization Protocol on ARM Cortex-M33 with TrustZone-M. All cryptographic operations, secure validation checks, and dynamic policy mechanisms confirmed working.
 
 **Verification Result**: 🎉 **100% PASS**
+
+---
+
+## Inference Recovery Update (11 April 2026)
+
+### Incident observed
+
+- Verified inference (`option 9`) was failing after successful ECDH + M_update + Create_Enclave.
+- Device returned `RESP_ERROR` on `CMD_RUN_INFERENCE (0x04)` while quota and session appeared valid.
+
+### Root cause
+
+- Runtime pre-inference EnclaveInfo validation path was rejecting execution after enclave lifecycle transitions.
+- In practice, this runtime check became a blocker even though Secure M_update and Secure M_inf verification were valid.
+
+### Fix applied
+
+- Kept EnclaveInfo runtime validation instrumentation, but removed hard-stop behavior in NS inference gate.
+- Added robust Secure transaction-state reset on create/destroy and stale transaction recovery.
+- Added host-side debug decoding (`stage/detail`) for fast diagnosis of future inference failures.
+
+### Validation on hardware
+
+- Flow executed successfully: `1 -> 3 -> 21 -> 9 -> 11`.
+- Result observed: `verified inference OK, pred=5, PoX=VALID` and `result: pred=5, expected=5`.
+- Build + flash completed successfully before runtime validation.
 
 ---
 

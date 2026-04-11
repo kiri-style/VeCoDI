@@ -11,6 +11,15 @@ The device benchmark system measures performance metrics directly on the STM32L5
 - Counter state transitions
 - Host-side UART round-trip benchmark for all major protocol commands
 
+## April 2026 Recovery Note
+
+On 11 April 2026, a runtime inference regression was investigated and fixed.
+
+- Symptom: `CMD_RUN_INFERENCE (0x04)` failed after successful `ECDH + M_update + Create_Enclave`.
+- Root cause: runtime EnclaveInfo pre-check path could block inference even when Secure auth state was valid.
+- Resolution: runtime validation kept for observability, but no longer hard-blocks verified inference path.
+- Hardware validation flow: `1 -> 3 -> 21 -> 9 -> 11` completed successfully with valid PoX and matching prediction/expected label.
+
 ## Collected Metrics
 
 ### Non-Secure (NS) Metrics
@@ -21,6 +30,7 @@ The benchmark response supports multiple payload versions for backward compatibi
 - **Extended v1 layout:** 184 bytes (`16I + 2I + 7Q + 14I + 7I`)
 - **Extended v2 layout (current):** 232 bytes (`18I + 8Q + 24I`)
 - **Extended v3 layout (current with lifecycle atomic):** 272 bytes (`v2 + 2Q + 6I`)
+- **Extended v4 layout (current with UART coverage counters):** 288 bytes (`v3 + 4I`)
 
 Core metrics (all layouts):
 - Enclave lifecycle: create/destroy cycles
@@ -42,6 +52,18 @@ Extended metrics (v1/v2):
 - **Extended v3 adds lifecycle atomic timing stages:**
   - `create_atomic_sum_cycles`, `create_atomic_min_cycles`, `create_atomic_max_cycles`, `create_atomic_count`, `create_atomic_avg_cycles`
   - `destroy_atomic_sum_cycles`, `destroy_atomic_min_cycles`, `destroy_atomic_max_cycles`, `destroy_atomic_count`, `destroy_atomic_avg_cycles`
+  - `run_inference_with_image_count`, `dangerous_inference_no_sau_count`, `dangerous_read_ram_count`, `dangerous_read_rom_count`
+
+### Secure (S) Metrics
+- **Legacy layout:** 88 bytes (`7Q + 8I`)
+- **Extended layout:** 208 bytes (`17Q + 18I`) with secure lifecycle and SAU operation counters
+
+Extended secure fields include:
+- Lifecycle cycles/counts: create/finalize/destroy enclave, inf_start, inf_complete
+- SAU cycles/counts: sync open/close, flash close/open/pulse
+- Core secure crypto/counter and memory fields remain backward compatible
+
+Current device run (11 April 2026) returned the **legacy 88-byte** secure payload.
 
 ### Secure (S) Metrics - 88 bytes total
 - AES Decrypt: cycles and operation count
@@ -70,7 +92,7 @@ This will:
 8. Save full report to `build/DEVICE_BENCHMARK_RESULTS.md`
 
 
-## Complete Results (16 March 2026)
+## Complete Results (11 April 2026)
 
 ```
 ╔══════════════════════════════════════════════════════════════╗

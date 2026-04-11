@@ -288,6 +288,8 @@ NS_BENCHMARK_LEGACY_SIZE = 64    # 16 x uint32
 NS_BENCHMARK_EXT_V1_SIZE = 184   # 16I + 2I + 7Q + 14I + 7I
 NS_BENCHMARK_EXT_V2_SIZE = 232   # 18I + 8Q + 24I
 NS_BENCHMARK_EXT_V3_SIZE = 272   # V2 + (2Q + 6I) for create/destroy atomic lifecycle stats
+NS_BENCHMARK_EXT_V4_SIZE = 288   # V3 + (4I) UART coverage counters
+SECURE_BENCHMARK_EXT_SIZE = 208  # 17Q + 18I
 
 
 def _set_stage_stats(metrics: dict, stage: str, sum_cycles: int, min_cycles: int, max_cycles: int, count: int):
@@ -381,6 +383,20 @@ def parse_ns_benchmark_payload(data: bytes, metrics: dict):
                 destroy_atomic_max,
                 destroy_atomic_count,
             )
+
+        if len(data) >= NS_BENCHMARK_EXT_V4_SIZE:
+            off = NS_BENCHMARK_EXT_V3_SIZE
+            (
+                run_with_image_count,
+                dangerous_no_sau_count,
+                dangerous_read_ram_count,
+                dangerous_read_rom_count,
+            ) = struct.unpack_from('<4I', data, off)
+
+            metrics['run_inference_with_image_count'] = run_with_image_count
+            metrics['dangerous_inference_no_sau_count'] = dangerous_no_sau_count
+            metrics['dangerous_read_ram_count'] = dangerous_read_ram_count
+            metrics['dangerous_read_rom_count'] = dangerous_read_rom_count
         return
 
     # Extended v1 layout (older firmware): 16I + 2I + 7Q + 14I + 7I = 184 bytes
@@ -820,43 +836,107 @@ def run_benchmark_on_device(port: str, baudrate: int = 115200) -> dict:
 
         if status == RESP_OK and s_data and len(s_data) >= 88:
             vprint(f"    raw ({len(s_data)}B): [{s_data[:16].hex()}...]")
-            # 7 x uint64_t + 8 x uint32_t = 88 bytes
-            s_values = struct.unpack('<7Q8I', s_data[:88])
+            if len(s_data) >= SECURE_BENCHMARK_EXT_SIZE:
+                s_values = struct.unpack('<17Q18I', s_data[:SECURE_BENCHMARK_EXT_SIZE])
 
-            # Cycle counts (7 x uint64_t)
-            metrics['s_aes_decrypt_cycles']       = s_values[0]
-            metrics['s_late_hash_cycles']         = s_values[1]
-            metrics['s_digest_compute_cycles']    = s_values[2]
-            metrics['s_get_max_cycles']           = s_values[3]
-            metrics['s_check_allowed_cycles']     = s_values[4]
-            metrics['s_counter_increment_cycles'] = s_values[5]
-            metrics['s_reset_cycles']             = s_values[6]
+                # Core cycle totals
+                metrics['s_aes_decrypt_cycles']       = s_values[0]
+                metrics['s_late_hash_cycles']         = s_values[1]
+                metrics['s_digest_compute_cycles']    = s_values[2]
+                metrics['s_get_max_cycles']           = s_values[3]
+                metrics['s_check_allowed_cycles']     = s_values[4]
+                metrics['s_counter_increment_cycles'] = s_values[5]
+                metrics['s_reset_cycles']             = s_values[6]
 
-            # Operation counts and memory (8 x uint32_t)
-            metrics['s_aes_operations']   = s_values[7]
-            metrics['s_hash_operations']  = s_values[8]
-            metrics['s_digest_operations']= s_values[9]
-            metrics['s_counter_operations']= s_values[10]
-            metrics['s_ram_used']         = s_values[11]
-            metrics['s_ram_total']        = s_values[12]
-            metrics['s_flash_used']       = s_values[13]
-            metrics['s_flash_total']      = s_values[14]
+                # Extended lifecycle / SAU cycle totals
+                metrics['s_create_enclave_cycles']    = s_values[7]
+                metrics['s_finalize_create_cycles']   = s_values[8]
+                metrics['s_destroy_enclave_cycles']   = s_values[9]
+                metrics['s_inf_start_cycles']         = s_values[10]
+                metrics['s_inf_complete_cycles']      = s_values[11]
+                metrics['s_sau_sync_open_cycles']     = s_values[12]
+                metrics['s_sau_sync_close_cycles']    = s_values[13]
+                metrics['s_sau_flash_close_cycles']   = s_values[14]
+                metrics['s_sau_flash_open_cycles']    = s_values[15]
+                metrics['s_sau_flash_pulse_cycles']   = s_values[16]
 
-            vprint(f"    aes_decrypt:       {s_values[0]:>14,} cy  ({_cy2ms(s_values[0]):.2f} ms) x{s_values[7]}")
-            vprint(f"    late_hash:         {s_values[1]:>14,} cy  ({_cy2ms(s_values[1]):.2f} ms) x{s_values[8]}")
-            vprint(f"    digest_compute:    {s_values[2]:>14,} cy  ({_cy2ms(s_values[2]):.2f} ms) x{s_values[9]}")
-            vprint(f"    get_max:           {s_values[3]:>14,} cy  ({_cy2ms(s_values[3]):.2f} ms)")
-            vprint(f"    check_allowed:     {s_values[4]:>14,} cy  ({_cy2ms(s_values[4]):.2f} ms)")
-            vprint(f"    counter_incr:      {s_values[5]:>14,} cy  ({_cy2ms(s_values[5]):.2f} ms)")
-            vprint(f"    reset:             {s_values[6]:>14,} cy  ({_cy2ms(s_values[6]):.2f} ms)")
-            vprint(f"    counter_ops total: {s_values[10]:>14,}")
-            vprint(f"    S RAM:  {s_values[11]:,} / {s_values[12]:,} B  ({s_values[11]/s_values[12]*100:.1f}%)")
-            vprint(f"    S Flash:{s_values[13]:,} / {s_values[14]:,} B  ({s_values[13]/s_values[14]*100:.1f}%)")
+                # Counts and memory
+                metrics['s_aes_operations']            = s_values[17]
+                metrics['s_hash_operations']           = s_values[18]
+                metrics['s_digest_operations']         = s_values[19]
+                metrics['s_counter_operations']        = s_values[20]
+                metrics['s_create_enclave_count']      = s_values[21]
+                metrics['s_finalize_create_count']     = s_values[22]
+                metrics['s_destroy_enclave_count']     = s_values[23]
+                metrics['s_inf_start_count']           = s_values[24]
+                metrics['s_inf_complete_count']        = s_values[25]
+                metrics['s_sau_sync_open_count']       = s_values[26]
+                metrics['s_sau_sync_close_count']      = s_values[27]
+                metrics['s_sau_flash_close_count']     = s_values[28]
+                metrics['s_sau_flash_open_count']      = s_values[29]
+                metrics['s_sau_flash_pulse_count']     = s_values[30]
+                metrics['s_ram_used']                  = s_values[31]
+                metrics['s_ram_total']                 = s_values[32]
+                metrics['s_flash_used']                = s_values[33]
+                metrics['s_flash_total']               = s_values[34]
+            else:
+                # 7 x uint64_t + 8 x uint32_t = 88 bytes (legacy)
+                s_values = struct.unpack('<7Q8I', s_data[:88])
+
+                # Cycle counts (7 x uint64_t)
+                metrics['s_aes_decrypt_cycles']       = s_values[0]
+                metrics['s_late_hash_cycles']         = s_values[1]
+                metrics['s_digest_compute_cycles']    = s_values[2]
+                metrics['s_get_max_cycles']           = s_values[3]
+                metrics['s_check_allowed_cycles']     = s_values[4]
+                metrics['s_counter_increment_cycles'] = s_values[5]
+                metrics['s_reset_cycles']             = s_values[6]
+
+                # Operation counts and memory (8 x uint32_t)
+                metrics['s_aes_operations']   = s_values[7]
+                metrics['s_hash_operations']  = s_values[8]
+                metrics['s_digest_operations']= s_values[9]
+                metrics['s_counter_operations']= s_values[10]
+                metrics['s_ram_used']         = s_values[11]
+                metrics['s_ram_total']        = s_values[12]
+                metrics['s_flash_used']       = s_values[13]
+                metrics['s_flash_total']      = s_values[14]
+
+            vprint(f"    aes_decrypt:       {metrics.get('s_aes_decrypt_cycles', 0):>14,} cy  ({_cy2ms(metrics.get('s_aes_decrypt_cycles', 0)):.2f} ms) x{metrics.get('s_aes_operations', 0)}")
+            vprint(f"    late_hash:         {metrics.get('s_late_hash_cycles', 0):>14,} cy  ({_cy2ms(metrics.get('s_late_hash_cycles', 0)):.2f} ms) x{metrics.get('s_hash_operations', 0)}")
+            vprint(f"    digest_compute:    {metrics.get('s_digest_compute_cycles', 0):>14,} cy  ({_cy2ms(metrics.get('s_digest_compute_cycles', 0)):.2f} ms) x{metrics.get('s_digest_operations', 0)}")
+            vprint(f"    get_max:           {metrics.get('s_get_max_cycles', 0):>14,} cy  ({_cy2ms(metrics.get('s_get_max_cycles', 0)):.2f} ms)")
+            vprint(f"    check_allowed:     {metrics.get('s_check_allowed_cycles', 0):>14,} cy  ({_cy2ms(metrics.get('s_check_allowed_cycles', 0)):.2f} ms)")
+            vprint(f"    counter_incr:      {metrics.get('s_counter_increment_cycles', 0):>14,} cy  ({_cy2ms(metrics.get('s_counter_increment_cycles', 0)):.2f} ms)")
+            vprint(f"    reset:             {metrics.get('s_reset_cycles', 0):>14,} cy  ({_cy2ms(metrics.get('s_reset_cycles', 0)):.2f} ms)")
+            vprint(f"    counter_ops total: {metrics.get('s_counter_operations', 0):>14,}")
+            s_ram_total = metrics.get('s_ram_total', 0)
+            s_flash_total = metrics.get('s_flash_total', 0)
+            s_ram_pct = (metrics.get('s_ram_used', 0) / s_ram_total * 100.0) if s_ram_total else 0.0
+            s_flash_pct = (metrics.get('s_flash_used', 0) / s_flash_total * 100.0) if s_flash_total else 0.0
+            vprint(f"    S RAM:  {metrics.get('s_ram_used', 0):,} / {s_ram_total:,} B  ({s_ram_pct:.1f}%)")
+            vprint(f"    S Flash:{metrics.get('s_flash_used', 0):,} / {s_flash_total:,} B  ({s_flash_pct:.1f}%)")
             print(f"    ✓ aes_decrypt={metrics['s_aes_decrypt_cycles']:,} cy ({_cy2ms(metrics['s_aes_decrypt_cycles']):.1f} ms) x{metrics['s_aes_operations']}")
             print(f"    ✓ S RAM {metrics['s_ram_used']:,}/{metrics['s_ram_total']:,} B "
                   f"({metrics['s_ram_used']/metrics['s_ram_total']*100:.1f}%)  "
                   f"S Flash {metrics['s_flash_used']:,}/{metrics['s_flash_total']:,} B "
                   f"({metrics['s_flash_used']/metrics['s_flash_total']*100:.1f}%)")
+
+            if 's_inf_start_count' in metrics:
+                print(
+                    f"    ✓ Secure lifecycle: create={metrics.get('s_create_enclave_count', 0)}, "
+                    f"finalize={metrics.get('s_finalize_create_count', 0)}, "
+                    f"destroy={metrics.get('s_destroy_enclave_count', 0)}, "
+                    f"inf_start={metrics.get('s_inf_start_count', 0)}, "
+                    f"inf_complete={metrics.get('s_inf_complete_count', 0)}"
+                )
+                print(
+                    f"    ✓ Secure SAU ops: sync_open={metrics.get('s_sau_sync_open_count', 0)}, "
+                    f"sync_close={metrics.get('s_sau_sync_close_count', 0)}, "
+                    f"flash_close={metrics.get('s_sau_flash_close_count', 0)}, "
+                    f"flash_open={metrics.get('s_sau_flash_open_count', 0)}, "
+                    f"flash_pulse={metrics.get('s_sau_flash_pulse_count', 0)}"
+                )
         else:
             print(f"    ✗ Secure benchmark not available (status={status}, data={len(s_data) if s_data else 0}B)")
 

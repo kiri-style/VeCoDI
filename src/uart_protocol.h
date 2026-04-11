@@ -31,6 +31,7 @@ extern "C" {
 #define CMD_DESTROY_ENCLAVE         0x12  /* Secure lifecycle destroy */
 #define CMD_UPDATE_RATE_LIMIT       0x13  /* Secure lifecycle rate-limit update (u32 LE) */
 #define CMD_RUN_INFERENCE_WITH_IMAGE 0x14  /* Upload CIFAR photo + run verified inference */
+#define CMD_READ_PROTECTED_ROM      0x18  /* DANGEROUS TEST: direct read from protected model ROM */
 
 /* Response Codes (Device → Mac) */
 #define RESP_OK                     0x00

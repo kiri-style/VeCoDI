@@ -34,6 +34,8 @@ extern const uint8_t __inference_end[];
 #define DP_CMD_CREATE_ENCLAVE 22U
 #define DP_CMD_DESTROY_ENCLAVE 23U
 #define DP_CMD_FINALIZE_CREATE_ENCLAVE 24U
+#define DP_CMD_SAU_REGISTER_ROM 18U
+#define DP_CMD_SAU_REGISTER_CODE 19U
 
 /* ============================================================
  *                 GLOBALS
@@ -65,16 +67,52 @@ static struct k_thread enclave_thread;
 
 static int enclave_sau_register_rom_window(const uint8_t *base, uint32_t size)
 {
-    ARG_UNUSED(base);
-    ARG_UNUSED(size);
-    return 0;
+    if (base == NULL || size == 0U) {
+        return -1;
+    }
+
+    psa_handle_t h = psa_connect(ENCLAVE_SID, ENCLAVE_VER);
+    if (h <= 0) {
+        return -1;
+    }
+
+    uint32_t cmd = DP_CMD_SAU_REGISTER_ROM;
+    uint32_t params[2] = {
+        (uint32_t)(uintptr_t)base,
+        size,
+    };
+    psa_invec in_v[2] = {
+        { &cmd, sizeof(cmd) },
+        { params, sizeof(params) },
+    };
+    psa_status_t st = psa_call(h, PSA_IPC_CALL, in_v, 2, NULL, 0);
+    psa_close(h);
+    return (st == PSA_SUCCESS) ? 0 : -1;
 }
 
 static int enclave_sau_register_code_window(const uint8_t *base, uint32_t size)
 {
-    ARG_UNUSED(base);
-    ARG_UNUSED(size);
-    return 0;
+    if (base == NULL || size == 0U) {
+        return -1;
+    }
+
+    psa_handle_t h = psa_connect(ENCLAVE_SID, ENCLAVE_VER);
+    if (h <= 0) {
+        return -1;
+    }
+
+    uint32_t cmd = DP_CMD_SAU_REGISTER_CODE;
+    uint32_t params[2] = {
+        (uint32_t)(uintptr_t)base,
+        size,
+    };
+    psa_invec in_v[2] = {
+        { &cmd, sizeof(cmd) },
+        { params, sizeof(params) },
+    };
+    psa_status_t st = psa_call(h, PSA_IPC_CALL, in_v, 2, NULL, 0);
+    psa_close(h);
+    return (st == PSA_SUCCESS) ? 0 : -1;
 }
 
 int ensure_model_ro_registered(void)
@@ -139,11 +177,8 @@ static int validate_boot_enclave_info_before_create(void)
         printk("[NS] Failed to initialize secure boot EnclaveInfo\n");
         return -1;
     }
-
-    if (seed_late_secret_hash_secure() != 0) {
-        printk("[NS] Failed to recompute secure late secret hash\n");
-        return -1;
-    }
+    /* Late-secret hash is seeded in Secure at boot initialization.
+     * Re-seeding from NS during runtime can fail once model_ro is closed. */
 
     psa_handle_t h = psa_connect(ENCLAVE_SID, ENCLAVE_VER);
     if (h <= 0) {

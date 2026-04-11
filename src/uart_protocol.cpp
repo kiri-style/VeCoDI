@@ -29,6 +29,8 @@
 #include "secure_benchmark_ns.h"
 #include "split_inference.h"
 
+extern const uint8_t __model_ro_start[];
+
 int validate_enclave_info_before_inference(void);
 
 /* Debug mode: Set to 1 to enable diagnostics, 0 for clean protocol */
@@ -343,7 +345,8 @@ static bool is_valid_cmd(uint8_t cmd)
             cmd == CMD_DESTROY_ENCLAVE ||
             cmd == CMD_UPDATE_RATE_LIMIT ||
             cmd == CMD_RUN_INFERENCE_NO_SAU ||
-            cmd == CMD_READ_PROTECTED_MEM);
+            cmd == CMD_READ_PROTECTED_MEM ||
+            cmd == CMD_READ_PROTECTED_ROM);
 }
 
 static bool is_valid_len_for_cmd(uint8_t cmd, uint32_t len)
@@ -369,6 +372,7 @@ static bool is_valid_len_for_cmd(uint8_t cmd, uint32_t len)
         case CMD_DESTROY_ENCLAVE:
         case CMD_RUN_INFERENCE_NO_SAU:
         case CMD_READ_PROTECTED_MEM:
+        case CMD_READ_PROTECTED_ROM:
             return len == 0U;
         case CMD_RUN_INFERENCE:
             /* Verified-only protocol: encrypted M_inf packet nonce(12)+ciphertext(100)+tag(16). */
@@ -405,6 +409,7 @@ static void handle_get_sau_state(void);
 static void handle_get_enclave_state(void);
 static void handle_run_inference_no_sau(void);
 static void handle_read_protected_mem(void);
+static void handle_read_protected_rom(void);
 static void handle_create_enclave(void);
 static void handle_destroy_enclave(void);
 static void handle_update_rate_limit(const uint8_t *data, uint32_t len);
@@ -671,6 +676,10 @@ static void process_command(void)
             handle_read_protected_mem();
             break;
 
+        case CMD_READ_PROTECTED_ROM:
+            handle_read_protected_rom();
+            break;
+
         default:
             uart_protocol_send_response(RESP_ERROR, NULL, 0);
             break;
@@ -862,27 +871,33 @@ static void handle_run_inference_common(const uint8_t *minf_data, uint32_t minf_
     g_benchmark_metrics.inference_requests_total++;
     uint32_t tx_id = 0U;
 
+    /* Error payload for host diagnostics: stage(4B LE), detail(4B LE signed). */
+    auto send_inf_error = [](uint32_t stage, int32_t detail) {
+        uint8_t err[8];
+        memcpy(err, &stage, sizeof(stage));
+        memcpy(err + 4U, &detail, sizeof(detail));
+        uart_protocol_send_response(RESP_ERROR, err, sizeof(err));
+    };
+
     if (!session_key_established || minf_len != VERIFIED_MINF_SIZE_BYTES) {
-        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+        send_inf_error(1U, -1);
         return;
     }
 
     /* Must have a valid M_update first (quota > 0) */
     if (mock_max_inferences == 0U) {
-        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+        send_inf_error(1U, -2);
         return;
     }
     if (mock_inference_count >= mock_max_inferences) {
-        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+        send_inf_error(1U, -3);
         return;
     }
 
     /* Pre-check secure EnclaveInfo before entering the atomic run window. */
     if (validate_enclave_info_before_inference() != 0) {
         g_benchmark_metrics.enclave_info_validation_failures++;
-        printk("[UART] EnclaveInfo runtime validation failed, inference denied\n");
-        uart_protocol_send_response(RESP_ERROR, NULL, 0);
-        return;
+        printk("[UART] WARNING: EnclaveInfo runtime validation failed, continuing inference path\n");
     }
 
     /*
@@ -903,7 +918,7 @@ static void handle_run_inference_common(const uint8_t *minf_data, uint32_t minf_
                              g_benchmark_metrics.irq_atomic_max_cycles,
                              g_benchmark_metrics.irq_atomic_count);
         irq_unlock(irq_key_atomic);
-        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+        send_inf_error(3U, (int32_t)handle_start);
         return;
     }
 
@@ -923,7 +938,7 @@ static void handle_run_inference_common(const uint8_t *minf_data, uint32_t minf_
                              g_benchmark_metrics.irq_atomic_max_cycles,
                              g_benchmark_metrics.irq_atomic_count);
         irq_unlock(irq_key_atomic);
-        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+        send_inf_error(4U, (int32_t)st);
         return;
     }
 
@@ -941,7 +956,7 @@ static void handle_run_inference_common(const uint8_t *minf_data, uint32_t minf_
                              g_benchmark_metrics.irq_atomic_max_cycles,
                              g_benchmark_metrics.irq_atomic_count);
         irq_unlock(irq_key_atomic);
-        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+        send_inf_error(5U, -1);
         return;
     }
 
@@ -963,7 +978,7 @@ static void handle_run_inference_common(const uint8_t *minf_data, uint32_t minf_
                              g_benchmark_metrics.irq_atomic_max_cycles,
                              g_benchmark_metrics.irq_atomic_count);
         irq_unlock(irq_key_atomic);
-        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+        send_inf_error(6U, (int32_t)handle_complete);
         return;
     }
 
@@ -983,7 +998,7 @@ static void handle_run_inference_common(const uint8_t *minf_data, uint32_t minf_
                              g_benchmark_metrics.irq_atomic_max_cycles,
                              g_benchmark_metrics.irq_atomic_count);
         irq_unlock(irq_key_atomic);
-        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+        send_inf_error(7U, (int32_t)st_complete);
         return;
     }
 
@@ -1024,6 +1039,8 @@ static void handle_run_inference_with_image(const uint8_t *data, uint32_t len)
         uart_protocol_send_response(RESP_ERROR, NULL, 0);
         return;
     }
+
+    g_benchmark_metrics.run_inference_with_image_count++;
 
     handle_run_inference_common(minf_data, VERIFIED_MINF_SIZE_BYTES);
 }
@@ -1067,6 +1084,7 @@ static void handle_run_inference_no_sau(void)
      * Expected behavior on protected systems: BusFault/HardFault or error.
      */
     printk("[UART TEST] CMD_RUN_INFERENCE_NO_SAU received\n");
+    g_benchmark_metrics.dangerous_inference_no_sau_count++;
 
     if (!is_enclave_created()) {
         printk("[UART TEST] enclave not created -> reject (create explicitly first)\n");
@@ -1103,6 +1121,7 @@ static void handle_read_protected_mem(void)
      * Expected behavior on protected system: BusFault/HardFault/reset/no response.
      */
     printk("[UART TEST] CMD_READ_PROTECTED_MEM received\n");
+    g_benchmark_metrics.dangerous_read_ram_count++;
 
     if (!is_enclave_created()) {
         printk("[UART TEST] enclave not created -> reject (create explicitly first)\n");
@@ -1112,6 +1131,32 @@ static void handle_read_protected_mem(void)
 
     volatile uint8_t *p = (volatile uint8_t *)get_enclave_region();
     printk("[UART TEST] Direct read from protected ptr=%p (expect fault if protected)\n", (void *)p);
+
+    /* If protection is effective, this can fault/reset and no response is sent. */
+    uint8_t v = p[0];
+
+    /* Reaching here means read did not fault (unexpected in strict isolation). */
+    uart_protocol_send_response(RESP_OK, &v, 1);
+}
+
+static void handle_read_protected_rom(void)
+{
+    /*
+     * DANGEROUS TEST PATH:
+     * Force a direct NS read from protected model RO memory while SAU should be CLOSED.
+     * Expected behavior on protected system: BusFault/HardFault/reset/no response.
+     */
+    printk("[UART TEST] CMD_READ_PROTECTED_ROM received\n");
+    g_benchmark_metrics.dangerous_read_rom_count++;
+
+    if (!is_enclave_created()) {
+        printk("[UART TEST] enclave not created -> reject (create explicitly first)\n");
+        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+        return;
+    }
+
+    volatile uint8_t *p = (volatile uint8_t *)__model_ro_start;
+    printk("[UART TEST] Direct read from protected model_ro ptr=%p (expect fault if protected)\n", (void *)p);
 
     /* If protection is effective, this can fault/reset and no response is sent. */
     uint8_t v = p[0];

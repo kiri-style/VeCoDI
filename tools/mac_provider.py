@@ -101,6 +101,7 @@ CMD_CREATE_ENCLAVE = 0x11
 CMD_DESTROY_ENCLAVE = 0x12
 CMD_UPDATE_RATE_LIMIT = 0x13
 CMD_RUN_INFERENCE_WITH_IMAGE = 0x14
+CMD_READ_PROTECTED_ROM = 0x18
 
 CUSTOM_IMAGE_SIZE = 32 * 32 * 3
 MINF_PACKET_SIZE = 128
@@ -347,13 +348,14 @@ def print_menu():
     print("\n Bench / debug:")
     print(" 12) Get NS benchmark metrics")
     print(" 13) Get Secure benchmark metrics")
+    print(" 28) Get full benchmark snapshot (NS + Secure)")
     print(" 14) Read console output")
     print(" 15) Memory protection feedback (best-effort; may be blocked)")
     print(" 16) Raw UART command (manual)")
     print(" 17) Session status")
     print(" 18) Security tests (negative / tamper checks)")
-    print(" 19) DANGER test: run inference without SAU open")
-    print(" 20) DANGER test: direct read protected memory")
+    print(" 19) DANGER test: direct read protected ROM")
+    print(" 20) DANGER test: direct read protected RAM")
     print("\n Enclave lifecycle:")
     print(" 21) Create enclave")
     print(" 22) Destroy enclave")
@@ -442,6 +444,16 @@ def parse_ns_benchmark(data: bytes):
         print(f"    destroy_atomic_avg_cycles:      {destroy_atomic_avg}")
         print(f"    destroy_atomic_min/max_cycles:  {destroy_atomic_min}/{destroy_atomic_max}")
 
+    # Optional appended counters for UART critical paths (4 x u32)
+    if len(data) >= 288:
+        off = 272
+        run_with_image, danger_no_sau, danger_read_ram, danger_read_rom = struct.unpack_from('<4I', data, off)
+        print("  UART coverage counters:")
+        print(f"    run_inference_with_image_count: {run_with_image}")
+        print(f"    dangerous_inference_no_sau:     {danger_no_sau}")
+        print(f"    dangerous_read_ram:             {danger_read_ram}")
+        print(f"    dangerous_read_rom:             {danger_read_rom}")
+
     # Legacy extended payload parser (184 bytes total).
     # Keep this only for older firmware that returns exactly this layout.
     if len(data) == 184:
@@ -483,6 +495,57 @@ def parse_secure_benchmark(data: bytes):
     if len(data) < 88:
         print(f"  ✗ Secure benchmark payload too short: {len(data)} B")
         return
+
+    # Extended secure payload:
+    # 17Q + 18I = 208 bytes
+    if len(data) >= 208:
+        vals = struct.unpack('<17Q18I', data[:208])
+        print("  Secure metrics (extended):")
+        print(f"    aes_decrypt_cycles:      {vals[0]}")
+        print(f"    late_hash_cycles:        {vals[1]}")
+        print(f"    digest_compute_cycles:   {vals[2]}")
+        print(f"    counter_ops:             {vals[20]}")
+
+        create_cycles = vals[7]
+        finalize_cycles = vals[8]
+        destroy_cycles = vals[9]
+        inf_start_cycles = vals[10]
+        inf_complete_cycles = vals[11]
+        sau_sync_open_cycles = vals[12]
+        sau_sync_close_cycles = vals[13]
+        sau_flash_close_cycles = vals[14]
+        sau_flash_open_cycles = vals[15]
+        sau_flash_pulse_cycles = vals[16]
+
+        create_count = vals[21]
+        finalize_count = vals[22]
+        destroy_count = vals[23]
+        inf_start_count = vals[24]
+        inf_complete_count = vals[25]
+        sau_sync_open_count = vals[26]
+        sau_sync_close_count = vals[27]
+        sau_flash_close_count = vals[28]
+        sau_flash_open_count = vals[29]
+        sau_flash_pulse_count = vals[30]
+
+        print("  Secure lifecycle:")
+        print(f"    create_enclave:          {create_count} calls, total_cycles={create_cycles}")
+        print(f"    finalize_create:         {finalize_count} calls, total_cycles={finalize_cycles}")
+        print(f"    destroy_enclave:         {destroy_count} calls, total_cycles={destroy_cycles}")
+        print(f"    inf_start:               {inf_start_count} calls, total_cycles={inf_start_cycles}")
+        print(f"    inf_complete:            {inf_complete_count} calls, total_cycles={inf_complete_cycles}")
+
+        print("  Secure SAU ops:")
+        print(f"    sau_sync_open:           {sau_sync_open_count} calls, total_cycles={sau_sync_open_cycles}")
+        print(f"    sau_sync_close:          {sau_sync_close_count} calls, total_cycles={sau_sync_close_cycles}")
+        print(f"    sau_flash_close:         {sau_flash_close_count} calls, total_cycles={sau_flash_close_cycles}")
+        print(f"    sau_flash_open:          {sau_flash_open_count} calls, total_cycles={sau_flash_open_cycles}")
+        print(f"    sau_flash_pulse:         {sau_flash_pulse_count} calls, total_cycles={sau_flash_pulse_cycles}")
+
+        print(f"    RAM used/total:          {vals[31]}/{vals[32]} B")
+        print(f"    Flash used/total:        {vals[33]}/{vals[34]} B")
+        return
+
     vals = struct.unpack('<7Q4I4I', data[:88])
     print("  Secure metrics:")
     print(f"    aes_decrypt_cycles:      {vals[0]}")
@@ -766,7 +829,12 @@ def run_verified_inference(
 
     resp = device.read_response()
     if not resp or resp[0] != RESP_OK:
-        print("✗ verified inference failed (quota/signature/model_id?)")
+        print("✗ verified inference failed (quota/signature/model_id/session?)")
+        if resp and len(resp[1]) >= 8:
+            stage = struct.unpack('<I', resp[1][:4])[0]
+            detail = struct.unpack('<i', resp[1][4:8])[0]
+            print(f"  debug: stage={stage}, detail={detail}")
+        print("  hint: if remaining > 0 but 9 fails, refresh auth with 1 (ECDH) then 3 (M_update)")
         return False, device_pk_d
 
     if len(resp[1]) == 0:
@@ -1154,6 +1222,8 @@ def run_security_tests(
 
 
 def main():
+    global DYNAMIC_SESSION_KEY
+
     if len(sys.argv) < 2:
         print("Usage: python3 mac_provider.py <serial_port> [baudrate]")
         print("\nExample:")
@@ -1181,6 +1251,17 @@ def main():
     verifier_pk_raw = None
     cert = struct.pack('<I', model_id) + bytes(range(16))  # 20 B
     device_pk_d = None
+
+    def invalidate_local_session(reason: str):
+        global DYNAMIC_SESSION_KEY
+        nonlocal enclave_info_cache, verifier_key, verifier_pk_raw, device_pk_d
+        DYNAMIC_SESSION_KEY = None
+        enclave_info_cache = None
+        verifier_key = None
+        verifier_pk_raw = None
+        device_pk_d = None
+        print(f"! Local session state invalidated: {reason}")
+        print("  Re-run: 1 (ECDH) -> 2 (EnclaveInfo) -> 3 (M_update) -> 21 (Create enclave)")
     
     try:
         while True:
@@ -1213,7 +1294,6 @@ def main():
                 if current_max is not None:
                     print(f"  Current device max_inferences = {current_max}")
                     print(f"  M_update must use a strictly larger c_limit to pass anti-replay")
-
                 raw = input(f"c_limit (default {suggested}): ").strip()
                 c_limit = int(raw) if raw else suggested
                 if enclave_info_cache is None:
@@ -1291,7 +1371,9 @@ def main():
                 if device.send_command(CMD_GET_REMAINING_INFERENCES):
                     resp = device.read_response()
                     if resp and resp[0] == RESP_OK and len(resp[1]) >= 4:
-                        print(f"✓ remaining = {struct.unpack('<I', resp[1][:4])[0]}")
+                        remaining = struct.unpack('<I', resp[1][:4])[0]
+                        print(f"✓ remaining = {remaining}")
+                        print("  note: remaining is quota/counter only; it does not validate auth/signature/session")
                     else:
                         print("✗ Failed")
 
@@ -1363,9 +1445,40 @@ def main():
                     else:
                         print("✗ Failed")
 
+            elif choice == '28':
+                print("\n[28] Full benchmark snapshot (NS + Secure)")
+                ok_ns = False
+                if device.send_command(CMD_GET_BENCHMARK):
+                    resp_ns = device.read_response()
+                    if resp_ns and resp_ns[0] == RESP_OK:
+                        print("\n  --- NS ---")
+                        parse_ns_benchmark(resp_ns[1])
+                        ok_ns = True
+                    else:
+                        print("  ✗ NS benchmark failed")
+                else:
+                    print("  ✗ NS benchmark send failed")
+
+                if device.send_command(CMD_GET_SECURE_BENCHMARK):
+                    resp_s = device.read_response()
+                    if resp_s and resp_s[0] == RESP_OK:
+                        print("\n  --- SECURE ---")
+                        parse_secure_benchmark(resp_s[1])
+                    else:
+                        print("  ✗ Secure benchmark failed")
+                else:
+                    print("  ✗ Secure benchmark send failed")
+
+                if ok_ns:
+                    print("\n✓ Full benchmark snapshot complete")
+
             elif choice == '14':
                 secs = input("duration seconds (default 2): ").strip()
-                duration = float(secs) if secs else 2.0
+                try:
+                    duration = float(secs) if secs else 2.0
+                except ValueError:
+                    print("✗ Invalid duration; using default 2s")
+                    duration = 2.0
                 device.read_console_output(duration)
 
             elif choice == '15':
@@ -1470,8 +1583,8 @@ def main():
                 )
 
             elif choice == '19':
-                print("\n[19] DANGER test: inference without SAU open")
-                print("  This may trigger BusFault/HardFault reset if SAU is closed.")
+                print("\n[19] DANGER test: direct read protected ROM")
+                print("  This can trigger BusFault/HardFault reset if SAU is active.")
                 confirm = input("Type YES to continue: ").strip()
                 if confirm != 'YES':
                     print("  cancelled")
@@ -1490,20 +1603,21 @@ def main():
                     st, base, size = before
                     print(f"  SAU before: state={st}, base=0x{base:08X}, size={size}")
 
-                if not device.send_command(CMD_RUN_INFERENCE_NO_SAU):
+                if not device.send_command(CMD_READ_PROTECTED_ROM):
                     print("✗ send failed")
                     continue
 
                 resp = device.read_response(timeout=2.0)
                 if resp is None:
-                    print("! No response (possible fault/reset), reconnect then check logs")
+                    print("! No response (possible HardFault/reset), reconnect and check logs")
+                    invalidate_local_session("dangerous ROM read likely caused reset/fault")
                 elif resp[0] == RESP_OK:
                     if len(resp[1]) >= 1:
-                        print(f"✓ Command returned pred={resp[1][0]} (unexpected if SAU really closed)")
+                        print(f"! Direct protected ROM read succeeded, value=0x{resp[1][0]:02X}")
                     else:
-                        print("✓ Command returned OK")
+                        print("! Direct protected ROM read command returned OK")
                 else:
-                    print("✓ Command rejected by device")
+                    print("✓ Command rejected before direct ROM read")
 
                 after = get_sau_state(device)
                 if after is not None:
@@ -1511,7 +1625,7 @@ def main():
                     print(f"  SAU after: state={st}, base=0x{base:08X}, size={size}")
 
             elif choice == '20':
-                print("\n[20] DANGER test: direct read protected memory")
+                print("\n[20] DANGER test: direct read protected RAM")
                 print("  This can trigger BusFault/HardFault reset if SAU is active.")
                 confirm = input("Type YES to continue: ").strip()
                 if confirm != 'YES':
@@ -1538,6 +1652,7 @@ def main():
                 resp = device.read_response(timeout=2.0)
                 if resp is None:
                     print("! No response (possible HardFault/reset), reconnect and check logs")
+                    invalidate_local_session("dangerous RAM read likely caused reset/fault")
                 elif resp[0] == RESP_OK and len(resp[1]) >= 1:
                     print(f"! Direct protected read succeeded, value=0x{resp[1][0]:02X}")
                 elif resp[0] == RESP_OK:

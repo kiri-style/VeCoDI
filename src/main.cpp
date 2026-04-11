@@ -21,6 +21,9 @@
  * Runs before the UART protocol loop.  Set to 0 for normal operation. */
 #define SAU_TEST_DEMO 0
 
+/* ROM SAU protection demo (set to 1 only for focused test session). */
+#define SAU_ROM_TEST_DEMO 0
+
 /* Forward declarations for test functions */
 extern "C" int test_enclave_authorization_protocol(void);
 extern "C" int test_inference_protocol(void);
@@ -101,6 +104,14 @@ int main(void)
         k_sleep(K_FOREVER);
     }
 #endif /* SAU_TEST_DEMO */
+
+#if SAU_ROM_TEST_DEMO
+    printk("[MAIN] SAU_ROM_TEST_DEMO enabled: running ROM protection test...\n");
+    sau_test_rom_protection();
+    while (1) {
+        k_sleep(K_FOREVER);
+    }
+#endif /* SAU_ROM_TEST_DEMO */
 
     /* Initialize UART protocol */
     while (uart_protocol_init() != 0) {
