@@ -38,7 +38,6 @@ target_sources(app PRIVATE
     src/main.cpp
     src/create_enclave.cpp
     src/split_inference.cpp
-    src/test_images.c
     src/benchmark.cpp
     src/secure_benchmark_ns.cpp
     src/inference_protocol.cpp

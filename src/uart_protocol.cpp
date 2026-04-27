@@ -943,7 +943,9 @@ static void handle_run_inference_common(const uint8_t *minf_data, uint32_t minf_
     }
 
     /* Inference executes in NS during the active secure transaction window. */
+    set_atomic_inference_window_open(true);
     run_split_inference();
+    set_atomic_inference_window_open(false);
     g_benchmark_metrics.inference_count++;
 
     uint8_t output_class = get_last_prediction();

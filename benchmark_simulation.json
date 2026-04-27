@@ -1,0 +1,38 @@
+{
+  "metadata": {
+    "platform": "STM32L552ZE-Q",
+    "cpu_freq_mhz": 110,
+    "runs": 20,
+    "seed": 42
+  },
+  "results": {
+    "ns": {
+      "name": "NS (No Protection)",
+      "latency_ms": 47.87346648539749,
+      "cycles": 5266081,
+      "std_dev_ms": 1.6605641148758157,
+      "min_ms": 45.6665,
+      "max_ms": 51.258335921740496
+    },
+    "s": {
+      "name": "S (Secure World)",
+      "latency_ms": 69.49341726218742,
+      "cycles": 7644275,
+      "std_dev_ms": 2.3633086844515288,
+      "min_ms": 66.59499999999998,
+      "max_ms": 75.0340986278949
+    },
+    "savid": {
+      "name": "SAVID (Enclave)",
+      "latency_ms": 82.62737356807183,
+      "cycles": 9089011,
+      "std_dev_ms": 3.3760593905105387,
+      "min_ms": 75.30042893480966,
+      "max_ms": 87.20078094286501
+    }
+  },
+  "overhead": {
+    "overhead_ms": 34.75390708267434,
+    "overhead_percent": 72.59534275270224
+  }
+}

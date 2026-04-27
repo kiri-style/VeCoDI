@@ -9,7 +9,6 @@
 #include "benchmark.h"
 #include "secure_benchmark_ns.h"
 #include "uart_protocol.h"
-#include "sau_test.h"
 
 /* Configuration: Set to 1 for simple UART test, 0 for normal flow */
 #define SIMPLE_UART_MODE 0
@@ -17,16 +16,6 @@
 /* Configuration: Set to 1 for Mac interactive mode, 0 for auto test */
 #define MAC_INTERACTIVE_MODE 1
 
-/* SAU isolation demo (DESTRUCTIVE: crashes with HardFault at the end!).
- * Runs before the UART protocol loop.  Set to 0 for normal operation. */
-#define SAU_TEST_DEMO 0
-
-/* ROM SAU protection demo (set to 1 only for focused test session). */
-#define SAU_ROM_TEST_DEMO 0
-
-/* Forward declarations for test functions */
-extern "C" int test_enclave_authorization_protocol(void);
-extern "C" int test_inference_protocol(void);
 
 /* Linker symbols pour calculs mémoire */
 extern char __bss_start[];
@@ -96,23 +85,6 @@ int main(void)
     /* MAC INTERACTIVE MODE: Device waits for commands from Mac */
     /* All console output disabled to avoid interfering with binary protocol */
 
-#if SAU_TEST_DEMO
-    /* SAU destructive test mode: OPEN -> reads/writes -> CLOSE -> final read => HardFault. */
-    printk("[MAIN] SAU_TEST_DEMO enabled: running destructive SAU test...\n");
-    sau_test_isolation();
-    while (1) {
-        k_sleep(K_FOREVER);
-    }
-#endif /* SAU_TEST_DEMO */
-
-#if SAU_ROM_TEST_DEMO
-    printk("[MAIN] SAU_ROM_TEST_DEMO enabled: running ROM protection test...\n");
-    sau_test_rom_protection();
-    while (1) {
-        k_sleep(K_FOREVER);
-    }
-#endif /* SAU_ROM_TEST_DEMO */
-
     /* Initialize UART protocol */
     while (uart_protocol_init() != 0) {
         k_sleep(K_MSEC(100));
@@ -126,32 +98,8 @@ int main(void)
 
 #else
     /* AUTO TEST MODE: Run automated tests */
-    printk("\n[MAIN] AUTO TEST MODE\n");
-    printk("[MAIN] Starting Enclave Authorization Protocol Test...\n\n");
-
-    int auth_result = test_enclave_authorization_protocol();
-
-    if (auth_result != 0) {
-        printk("\n[MAIN] ERROR: Authorization protocol test failed\n");
-        printk("========================================\n\n");
-        while (1) {
-            k_sleep(K_FOREVER);
-        }
-    }
-
-    /* Phase 2: Test Inference Protocol (M_inf / PoX) */
-    printk("\n[MAIN] Starting Inference Protocol Test...\n\n");
-    int inference_protocol_result = test_inference_protocol();
-
-    if (inference_protocol_result != 0) {
-        printk("\n[MAIN] ERROR: Inference protocol test failed\n");
-        printk("========================================\n\n");
-        while (1) {
-            k_sleep(K_FOREVER);
-        }
-    }
-
-    /* Phase 3: Single inference in enclave */
+    printk("\n[MAIN] AUTO MODE\n");
+    /* Single inference in enclave */
     printk("\n[MAIN] Running single inference in enclave...\n");
     run_enclave();
     printk("[MAIN] ✓ Inference complete\n\n");

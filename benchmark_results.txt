@@ -1,0 +1,169 @@
+
+======================================================================
+BENCHMARK COLLECTION TEST - DEVICE TO SECURE ENCLAVE
+======================================================================
+Timestamp: 2026-04-22 14:54:02
+Device: STM32L552ZE-Q (Cortex-M33 @ 110 MHz)
+Port: /dev/cu.usbmodem1403
+======================================================================
+
+[1] ECDH Handshake...
+✓ Done
+[1b] Creating enclave...
+✓ Enclave created
+[2] Getting EnclaveInfo...
+  EnclaveInfo: 49e2002243a508331d0041d0a959904cb57bd41ed321b67276e7f57bb160d491 (32 bytes)
+✓ Done
+[3] Sending M_update...
+  Current max_inferences: 0
+  Using c_limit: 10
+  Nonce: 142517dc62be739f9f3841b8 (12 bytes)
+  Ciphertext size: 124 bytes
+  Auth tag: eaedbb203cdbb61e7e6e814ce1dd07bb (16 bytes)
+✓ Done
+
+[3b] Setting max_inferences = 4...
+✓ Done (max_inferences = 4)
+
+[4] Running multiple inferences...
+
+  [1/5] Inference count before: 0 / 4
+  Running verified inference...
+    Prediction:  5 (dog       ) ✓
+    Expected:    5 (dog       )
+
+  [2/5] Inference count before: 1 / 4
+  Running verified inference...
+    Prediction:  2 (bird      ) ✗
+    Expected:    6 (frog      )
+
+  [3/5] Inference count before: 2 / 4
+  Running verified inference...
+    Prediction:  8 (ship      ) ✓
+    Expected:    8 (ship      )
+
+  [4/5] Inference count before: 3 / 4
+  Running verified inference...
+    Prediction:  5 (dog       ) ✓
+    Expected:    5 (dog       )
+
+  [5/5] Inference count before: 4 / 4
+  Running verified inference...
+  ⚠ Inference blocked or failed
+
+✓ Inference Results Summary:
+  Executed: 4/5
+  Blocked: 1
+  Accuracy: 3/4 (75%)
+  [1] dog        → dog        ✓
+  [2] frog       → bird       ✗
+  [3] ship       → ship       ✓
+  [4] dog        → dog        ✓
+✓ Done
+
+[5] Retrieving NS benchmark metrics...
+✓ Received 288 bytes
+[6] Retrieving Secure benchmark metrics...
+✓ Received 208 bytes
+
+======================================================================
+NON-SECURE (NS) BENCHMARK RESULTS
+======================================================================
+
+Enclave Lifecycle:
+  Create:   3,148,304 cycles (28.6 ms)
+  Destroy:          0 cycles (0.0 ms)
+
+Cryptographic Operations:
+  AES Decrypt:     1,137,564 cycles (10.3 ms)
+  Late Hash:       1,193,518 cycles (10.9 ms)
+  Inference Hash:  3,521,040 cycles (32.0 ms)
+
+Inference Performance:
+  Early Layers:  5,358,828 cycles (48.7 ms)
+  Late Layers:           0 cycles (0.0 ms)
+  Total:                 0 cycles (0.0 ms)
+
+End-to-End:
+  run_enclave():          0 cycles (0.0 ms)
+
+NS Memory Usage:
+  Heap Used:       1,536 bytes (1.5 KB)
+  Heap Free:     125,127 bytes (122.2 KB)
+  Stack Used:    131,072 bytes (128.0 KB)
+  RAM Used:      141,088 / 262,144 bytes (53.8%)
+  Flash Used:          4 / 1 bytes (400.0%)
+
+Counters:
+  Inferences:   5
+  Recreations:  4
+
+======================================================================
+SECURE (S) BENCHMARK RESULTS
+======================================================================
+
+Cryptographic Operations (Secure):
+  AES Decrypt:     7,702,776 cycles (70.0 ms) [7715819 ops]
+  Late Hash:               0 cycles (0.0 ms) [0 ops]
+  Digest Compute:          0 cycles (0.0 ms) [6275 ops]
+
+Counter Management (Secure):
+  Get Max:               508 cycles (0.0 ms)
+  Check Allowed:           0 cycles (0.0 ms)
+  Increment:               0 cycles (0.0 ms)
+  Reset:                   0 cycles (0.0 ms)
+  Total Ops:      0
+
+Secure Memory Usage:
+  RAM Used:            0 / 0 bytes (N/A)
+  Flash Used: 201,603,637 / 0 bytes (N/A)
+
+======================================================================
+COMBINED SYSTEM METRICS
+======================================================================
+Total RAM:      141,088 / 262,144 bytes (53.8%)
+Total Flash: 201,603,641 / 1 bytes (20160364100.0%)
+
+======================================================================
+MEMORY FOOTPRINT ANALYSIS
+======================================================================
+
+ELF Section Analysis (ACTUAL from build):
+══════════════════════════════════════════════════════════════════════
+
+Flash (ROM) Sections:
+├─ .text (Code):             38,420 bytes (  37.5 KB)
+├─ .rodata (Constants):      99,620 bytes (  97.3 KB)
+└─ Total Flash Used:        138,040 bytes ( 134.8 KB)
+
+RAM (SRAM) Sections:
+├─ .data (Initialized):       3,979 bytes (   3.9 KB)
+├─ .bss (Zero-init):        121,147 bytes ( 118.3 KB)
+└─ Total RAM Used:          125,126 bytes ( 122.2 KB)
+
+Largest Symbols (Top 20):
+ 1. _ZL14enclave_memory                        39,552 bytes (  38.6 KB)
+ 2. late_wt_encrypted                          39,552 bytes (  38.6 KB)
+ 3. _ZL11wt_conv2d_6                           18,432 bytes (  18.0 KB)
+ 4. _ZL10early_buf0                            16,384 bytes (  16.0 KB)
+ 5. _ZL10early_buf1                            16,384 bytes (  16.0 KB)
+ 6. _ZL10early_buf2                            16,384 bytes (  16.0 KB)
+ 7. _ZL11wt_conv2d_4                            9,216 bytes (   9.0 KB)
+ 8. _ZL10early_skip                             8,192 bytes (   8.0 KB)
+ 9. _ZL13early_ctx_buf                          8,192 bytes (   8.0 KB)
+10. _ZL11wt_conv2d_3                            4,608 bytes (   4.5 KB)
+11. _ZL12early_output                           4,096 bytes (   4.0 KB)
+12. _ZL12late_ctx_buf                           4,096 bytes (   4.0 KB)
+13. arm_nn_softmax_common_s8                    3,252 bytes (   3.2 KB)
+14. _ZL9rx_buffer                               3,201 bytes (   3.1 KB)
+15. _ZL12input_buffer                           3,072 bytes (   3.0 KB)
+16. img_0                                       3,072 bytes (   3.0 KB)
+17. img_1                                       3,072 bytes (   3.0 KB)
+18. img_10                                      3,072 bytes (   3.0 KB)
+19. img_11                                      3,072 bytes (   3.0 KB)
+20. img_12                                      3,072 bytes (   3.0 KB)
+
+======================================================================
+Test completed successfully
+======================================================================
+Results saved to: benchmark_results.txt

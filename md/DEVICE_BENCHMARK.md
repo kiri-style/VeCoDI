@@ -20,6 +20,13 @@ On 11 April 2026, a runtime inference regression was investigated and fixed.
 - Resolution: runtime validation kept for observability, but no longer hard-blocks verified inference path.
 - Hardware validation flow: `1 -> 3 -> 21 -> 9 -> 11` completed successfully with valid PoX and matching prediction/expected label.
 
+### SAU window timeline used for these runs
+
+- `Create_Enclave`: SAU windows are opened by Secure for setup/decrypt/hash staging.
+- `Finalize_Create_Enclave`: SAU windows are closed.
+- Atomic inference (`INF_START` / `INF_COMPLETE`): windows open only during the execution window, then close immediately.
+- `Destroy_Enclave`: windows are reopened to allow NS memory cleanup path.
+
 ## Collected Metrics
 
 ### Non-Secure (NS) Metrics

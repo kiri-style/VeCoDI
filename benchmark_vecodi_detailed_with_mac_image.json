@@ -1,0 +1,84 @@
+{
+  "model_id": 1,
+  "timestamp_unix": 1777299375,
+  "benchmarks": [
+    {
+      "action": "provider.ecdh",
+      "status": "ok",
+      "duration_ms": 456.969,
+      "detail": ""
+    },
+    {
+      "action": "provider.enclave_info",
+      "status": "ok",
+      "duration_ms": 260.094,
+      "detail": ""
+    },
+    {
+      "action": "provider.m_update",
+      "status": "ok",
+      "duration_ms": 19.618,
+      "detail": ""
+    },
+    {
+      "action": "customer.create_enclave",
+      "status": "ok",
+      "duration_ms": 90.077,
+      "detail": ""
+    },
+    {
+      "action": "customer.verified_inference.run_1",
+      "status": "ok",
+      "duration_ms": 1459.588,
+      "detail": ""
+    },
+    {
+      "action": "customer.verified_inference.run_1.meta",
+      "status": "ok",
+      "duration_ms": 0.0,
+      "detail": "{\"pred\": 7, \"pox_valid\": true, \"used_image_upload\": true}"
+    },
+    {
+      "action": "metrics.max_before_destroy",
+      "status": "ok",
+      "duration_ms": 2.285,
+      "detail": ""
+    },
+    {
+      "action": "metrics.used_before_destroy",
+      "status": "ok",
+      "duration_ms": 1.973,
+      "detail": ""
+    },
+    {
+      "action": "metrics.remaining_before_destroy",
+      "status": "ok",
+      "duration_ms": 2.013,
+      "detail": ""
+    },
+    {
+      "action": "customer.destroy_enclave",
+      "status": "ok",
+      "duration_ms": 5.063,
+      "detail": ""
+    },
+    {
+      "action": "metrics.max_after_destroy",
+      "status": "ok",
+      "duration_ms": 1.969,
+      "detail": ""
+    },
+    {
+      "action": "metrics.used_after_destroy",
+      "status": "ok",
+      "duration_ms": 1.936,
+      "detail": ""
+    },
+    {
+      "action": "metrics.remaining_after_destroy",
+      "status": "ok",
+      "duration_ms": 1.944,
+      "detail": ""
+    }
+  ]
+}

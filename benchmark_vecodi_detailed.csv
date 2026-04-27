@@ -1,0 +1,14 @@
+action,status,duration_ms,detail
+provider.ecdh,ok,453.899,
+provider.enclave_info,ok,257.546,
+provider.m_update,ok,19.081,
+customer.create_enclave,ok,90.029,
+customer.verified_inference.run_1,ok,1193.485,
+customer.verified_inference.run_1.meta,ok,0.0,"{""pred"": 5, ""pox_valid"": true, ""used_image_upload"": false}"
+metrics.max_before_destroy,ok,2.307,
+metrics.used_before_destroy,ok,1.979,
+metrics.remaining_before_destroy,ok,1.992,
+customer.destroy_enclave,ok,4.091,
+metrics.max_after_destroy,ok,1.91,
+metrics.used_after_destroy,ok,1.976,
+metrics.remaining_after_destroy,ok,1.995,

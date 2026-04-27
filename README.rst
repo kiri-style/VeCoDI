@@ -451,7 +451,7 @@ Source Files
 - ``src/create_enclave.cpp``: Enclave memory management, PSA client
 - ``src/split_inference.cpp``: CMSIS-NN inference engine
 - ``src/run_enclave.cpp``: Enclave execution wrapper
-- ``src/test_images.c``: CIFAR-10 test samples
+- Host-side image upload via UART: ``CMD_RUN_INFERENCE_WITH_IMAGE``
 
 **Secure Partition**:
 

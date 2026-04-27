@@ -90,6 +90,12 @@
 - Runtime fix validated on hardware with flow `1 -> 3 -> 21 -> 9 -> 11`.
 - Observed result: `verified inference OK, pred=5, PoX=VALID` then `result: pred=5, expected=5`.
 
+## SAU Window Behavior (Current)
+
+- `Create_Enclave`: windows open for setup, then close at finalize.
+- Atomic inference: windows reopen at start and close at complete.
+- `Destroy_Enclave`: windows reopen for NS cleanup/zeroization path.
+
 ## Host UART Operation Benchmark
 
 | Operation | CMD | Runs | OK | Fail | Avg (ms) | Min (ms) | Max (ms) |

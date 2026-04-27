@@ -55,6 +55,7 @@ void run_enclave(void)
 
     /* Execute inference */
     if (should_execute_inference) {
+        set_atomic_inference_window_open(true);
         printk("[ENCLAVE] Executing split inference...\n");
         run_split_inference();
         g_benchmark_metrics.inference_count++;
@@ -80,6 +81,11 @@ void run_enclave(void)
                 should_execute_inference = false;
             }
         }
+
+        set_atomic_inference_window_open(false);
+    }
+    else {
+        set_atomic_inference_window_open(false);
     }
     
     /* Update metrics */

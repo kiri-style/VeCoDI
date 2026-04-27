@@ -8,7 +8,6 @@
 #include "arm_nnfunctions.h"
 
 #include "split_inference.h"
-#include "test_images.h"
 #include "benchmark.h"
 
 #include "../split_inference/early/E_nn_wt.h"
@@ -82,19 +81,7 @@ size_t get_late_weights_size(void)
     return late_wt_ram_size;
 }
 
-// All 19 available images (excluding img_8 which predicted incorrectly)
-static const uint8_t *const all_images[19] = {
-    img_0, img_1, img_2, img_3, img_4, img_5, img_6, img_7, /* skip img_8 */ img_9,
-    img_10, img_11, img_12, img_13, img_14, img_15, img_16, img_17, img_18, img_19
-};
-static const uint8_t all_labels[19] = {
-    label_0, label_1, label_2, label_3, label_4, label_5, label_6, label_7, /* skip label_8 */ label_9,
-    label_10, label_11, label_12, label_13, label_14, label_15, label_16, label_17, label_18, label_19
-};
-
-// Current test selection (will be randomized)
-static const uint8_t *test_images[NUM_TEST_IMAGES];
-static uint8_t test_labels[NUM_TEST_IMAGES];
+// Input image is provided from host UART upload for case-study runs.
 static const uint8_t *custom_test_image = nullptr;
 static uint8_t custom_test_label = 255;
 static bool custom_test_image_ready = false;
@@ -103,6 +90,17 @@ static uint8_t late_weights_hash[32];     /* Pre-computed hash of code+late weig
 static bool late_hash_computed = false;  /* Flag to track if late hash is ready */
 static uint8_t last_prediction = 255;     /* Store last inference prediction result */
 static uint8_t last_expected_label = 255; /* Store last expected label for comparison */
+static bool atomic_inference_window_open = false;
+
+void set_atomic_inference_window_open(bool open)
+{
+    atomic_inference_window_open = open;
+}
+
+bool is_atomic_inference_window_open(void)
+{
+    return atomic_inference_window_open;
+}
 
 /* ============================================================
  *                 INTEGRITY HASH (CNT)
@@ -497,40 +495,19 @@ static void load_cifar_image(const uint8_t *img, int8_t *dst)
     }
 }
 
-/* Simple pseudo-random number generator (LCG) */
-static uint32_t rand_seed = 12345;
-static uint32_t simple_rand(void) {
-    rand_seed = (1103515245 * rand_seed + 12345) & 0x7fffffff;
-    return rand_seed;
-}
-
-/* Shuffle array using Fisher-Yates algorithm */
-static void shuffle_indices(uint8_t *array, int n) {
-    for (int i = n - 1; i > 0; i--) {
-        int j = simple_rand() % (i + 1);
-        uint8_t temp = array[i];
-        array[i] = array[j];
-        array[j] = temp;
-    }
-}
-
-/* Select 1 random image from the 19 available */
-static void select_random_test_image(void) {
-    if (custom_test_image_ready) {
-        test_images[0] = custom_test_image;
-        test_labels[0] = custom_test_label;
+static int select_input_image(const uint8_t **img, int *label)
+{
+    if (custom_test_image_ready && custom_test_image != nullptr) {
+        *img = custom_test_image;
+        *label = (int)custom_test_label;
         custom_test_image = nullptr;
         custom_test_image_ready = false;
-        printk("[SPLIT] Using custom image uploaded from UART (label=%d)\n", test_labels[0]);
-        return;
+        printk("[SPLIT] Using custom image uploaded from UART (label=%d)\n", *label);
+        return 0;
     }
 
-    uint8_t index = simple_rand() % 19;
-    
-    test_images[0] = all_images[index];
-    test_labels[0] = all_labels[index];
-    
-    printk("[SPLIT] Selected image: img_%d (label=%d)\n", index, test_labels[0]);
+    printk("[SPLIT] No custom image available; refusing inference in case-study mode\n");
+    return -1;
 }
 
 int set_custom_test_image(const uint8_t *image, uint8_t label)
@@ -555,10 +532,12 @@ void clear_custom_test_image(void)
 void run_split_inference(void)
 {
     printk("\n[SPLIT] ===== CMSIS-NN SPLIT INFERENCE =====\n");
-    
-    /* Select 1 random image from the 19 available */
-    select_random_test_image();
 
+    if (!atomic_inference_window_open) {
+        printk("[SPLIT] Refusing to run outside the atomic inference window\n");
+        return;
+    }
+    
     if (!late_wt_ram || late_wt_ram_size < LATE_WT_TOTAL_SIZE) {
         printk("[SPLIT] Late weights not ready (buffer missing)\n");
         return;
@@ -581,40 +560,42 @@ void run_split_inference(void)
         return;
     }
 
-    for (int test_id = 0; test_id < NUM_TEST_IMAGES; test_id++) {
-        BENCHMARK_START(total_inf);
-        
-        const uint8_t *img = test_images[test_id];
-        int expected_label = test_labels[test_id];
+    BENCHMARK_START(total_inf);
 
-        printk("[SPLIT] Test %d | expected = %d\n", test_id, expected_label);
-        load_cifar_image(img, input_buffer);
-
-        /* Compute integrity hash (CNT) - store for final display */
-        int hash_result = compute_integrity_hash(input_buffer, last_integrity_hash);
-        if (hash_result != 0) {
-            printk("[CNT] Hash computation failed with code %d\n", hash_result);
-        }
-
-        run_early_layers(input_buffer, early_output, early_skip);
-        int pred = run_late_layers(early_output, early_skip);
-        
-        /* Store prediction and expected label for UART query */
-        last_prediction = (uint8_t)(pred & 0xFF);
-        last_expected_label = (uint8_t)expected_label;
-
-        BENCHMARK_END(total_inf, g_benchmark_metrics.total_inference_cycles);
-        BENCHMARK_ACCUMULATE(g_benchmark_metrics.total_inference_cycles,
-                     g_benchmark_metrics.total_inference_sum_cycles,
-                     g_benchmark_metrics.total_inference_min_cycles,
-                     g_benchmark_metrics.total_inference_max_cycles,
-                     g_benchmark_metrics.total_inference_count);
-        printk("[SPLIT] Prediction = %d (total inference: %u cycles, %u ms)\n", 
-               pred,
-               total_inf_start - total_inf_start + g_benchmark_metrics.total_inference_cycles,
-               benchmark_cycles_to_ms(g_benchmark_metrics.total_inference_cycles));
-        printk("[SPLIT] Loop continue\n");
+    const uint8_t *img = nullptr;
+    int expected_label = 255;
+    if (select_input_image(&img, &expected_label) != 0) {
+        last_prediction = 255;
+        last_expected_label = 255;
+        return;
     }
+
+    printk("[SPLIT] expected = %d\n", expected_label);
+    load_cifar_image(img, input_buffer);
+
+    /* Compute integrity hash (CNT) - store for final display */
+    int hash_result = compute_integrity_hash(input_buffer, last_integrity_hash);
+    if (hash_result != 0) {
+        printk("[CNT] Hash computation failed with code %d\n", hash_result);
+    }
+
+    run_early_layers(input_buffer, early_output, early_skip);
+    int pred = run_late_layers(early_output, early_skip);
+
+    /* Store prediction and expected label for UART query */
+    last_prediction = (uint8_t)(pred & 0xFF);
+    last_expected_label = (uint8_t)expected_label;
+
+    BENCHMARK_END(total_inf, g_benchmark_metrics.total_inference_cycles);
+    BENCHMARK_ACCUMULATE(g_benchmark_metrics.total_inference_cycles,
+                 g_benchmark_metrics.total_inference_sum_cycles,
+                 g_benchmark_metrics.total_inference_min_cycles,
+                 g_benchmark_metrics.total_inference_max_cycles,
+                 g_benchmark_metrics.total_inference_count);
+    printk("[SPLIT] Prediction = %d (total inference: %u cycles, %u ms)\n",
+           pred,
+           total_inf_start - total_inf_start + g_benchmark_metrics.total_inference_cycles,
+           benchmark_cycles_to_ms(g_benchmark_metrics.total_inference_cycles));
 
     printk("\n[CNT] ✓ All hash computations complete\n");
 

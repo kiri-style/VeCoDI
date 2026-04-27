@@ -48,7 +48,7 @@ This folder contains the Non-Secure (NS) application that drives the split infer
 - `src/run_enclave.cpp`: runs inference inside the enclave thread
 - `src/split_inference.cpp`: CMSIS-NN early/late inference implementation
 - `src/split_inference.h`: late-weights buffer API (`set/get`)
-- `src/test_images.c`: CIFAR-10 sample inputs
+- Host uploads input image over UART (`CMD_RUN_INFERENCE_WITH_IMAGE`)
 
 ## Where the Data Lives
 - **Encrypted late weights in flash**: `split_inference/late/L_nn_wt_encrypted_data.c`
@@ -64,7 +64,7 @@ This folder contains the Non-Secure (NS) application that drives the split infer
 - **run_enclave.cpp**: executes split inference inside the enclave thread. **[MODIFIED]** Uses `DP_CMD_RUN_INFERENCE` in two phases (`precheck` then `commit`) so counter increments only after successful inference.
 
 ### Split inference
-- **split_inference.cpp / split_inference.h**: CMSIS-NN early/late execution, buffer reuse, and prediction printing.
+- **split_inference.cpp / split_inference.h**: CMSIS-NN early/late execution for host-provided image input, buffer reuse, and prediction printing.
 
 ### Benchmarking & Performance Monitoring
 - **benchmark.h**: NS-side benchmark API with DWT cycle counter support (ARM Cortex-M33)
@@ -167,7 +167,7 @@ Memory Usage (ELF Binary Analysis):
 14. `stack_used`: Stack depth during execution
 
 See [DEVICE_BENCHMARK.md](../md/DEVICE_BENCHMARK.md) for benchmark collection, metrics, and report workflow.
-- **test_images.c / test_images.h**: CIFAR-10 sample inputs and labels.
+- Host-side image upload is required for case-study inference requests.
 
 ### Model + artifacts
 - **cifar_resnet_int8.tflite**: quantized CIFAR-10 model (reference).

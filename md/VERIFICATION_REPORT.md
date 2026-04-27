@@ -38,6 +38,15 @@ Complete end-to-end verification of the 3-phase Enclave Authorization Protocol o
 - Result observed: `verified inference OK, pred=5, PoX=VALID` and `result: pred=5, expected=5`.
 - Build + flash completed successfully before runtime validation.
 
+### SAU lifecycle clarification (current architecture)
+
+- During `Create_Enclave`, Secure opens RAM+ROM windows for setup/decrypt/hash preparation.
+- Windows are then closed at `Finalize_Create_Enclave`.
+- During verified atomic inference:
+  - `INF_START` re-opens required windows.
+  - `INF_COMPLETE` closes them immediately after commit/signature.
+- On `Destroy_Enclave`, windows are opened again to allow NS-side zeroization/cleanup flow.
+
 ---
 
 ## Latest Validation Update (13 March 2026)
