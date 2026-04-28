@@ -345,6 +345,7 @@ static bool is_valid_cmd(uint8_t cmd)
             cmd == CMD_DESTROY_ENCLAVE ||
             cmd == CMD_UPDATE_RATE_LIMIT ||
             cmd == CMD_RUN_INFERENCE_NO_SAU ||
+            cmd == CMD_GET_TCB_BENCHMARK ||
             cmd == CMD_READ_PROTECTED_MEM ||
             cmd == CMD_READ_PROTECTED_ROM);
 }
@@ -368,7 +369,9 @@ static bool is_valid_len_for_cmd(uint8_t cmd, uint32_t len)
         case CMD_GET_DEVICE_PUBKEY:
         case CMD_GET_SAU_STATE:
         case CMD_GET_ENCLAVE_STATE:
+        case CMD_GET_TCB_BENCHMARK:
         case CMD_CREATE_ENCLAVE:
+            return (len == 0U) || (len == 4U);
         case CMD_DESTROY_ENCLAVE:
         case CMD_RUN_INFERENCE_NO_SAU:
         case CMD_READ_PROTECTED_MEM:
@@ -407,10 +410,11 @@ static void handle_set_max_inferences(const uint8_t *data, uint32_t len);
 static void handle_get_device_pubkey(void);
 static void handle_get_sau_state(void);
 static void handle_get_enclave_state(void);
+static void handle_get_tcb_benchmark(void);
 static void handle_run_inference_no_sau(void);
 static void handle_read_protected_mem(void);
 static void handle_read_protected_rom(void);
-static void handle_create_enclave(void);
+static void handle_create_enclave(const uint8_t *data, uint32_t len);
 static void handle_destroy_enclave(void);
 static void handle_update_rate_limit(const uint8_t *data, uint32_t len);
 
@@ -656,8 +660,12 @@ static void process_command(void)
             handle_get_enclave_state();
             break;
 
+        case CMD_GET_TCB_BENCHMARK:
+            handle_get_tcb_benchmark();
+            break;
+
         case CMD_CREATE_ENCLAVE:
-            handle_create_enclave();
+            handle_create_enclave(rx_buffer, rx_len);
             break;
 
         case CMD_DESTROY_ENCLAVE:
@@ -1437,16 +1445,57 @@ static void handle_get_enclave_state(void)
     uart_protocol_send_response(RESP_OK, &created, sizeof(created));
 }
 
-static void handle_create_enclave(void)
+static void handle_get_tcb_benchmark(void)
+{
+    typedef struct {
+        uint32_t secure_flash_used_bytes;
+        uint32_t secure_ram_used_bytes;
+        uint32_t model_ro_bytes;
+        uint32_t inference_ro_bytes;
+        uint32_t tcb_flash_bytes;
+        uint32_t tcb_total_bytes;
+    } tcb_benchmark_ns_t;
+
+    secure_benchmark_metrics_ns_t secure_metrics;
+    if (get_secure_benchmark_metrics(&secure_metrics) != 0) {
+        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+        return;
+    }
+
+    tcb_benchmark_ns_t tcb = {0};
+    tcb.secure_flash_used_bytes = secure_metrics.flash_used_bytes;
+    tcb.secure_ram_used_bytes = secure_metrics.ram_used_bytes;
+    tcb.model_ro_bytes = (uint32_t)get_model_ro_size();
+    tcb.inference_ro_bytes = (uint32_t)get_inference_code_size();
+    tcb.tcb_flash_bytes = tcb.secure_flash_used_bytes + tcb.model_ro_bytes + tcb.inference_ro_bytes;
+    tcb.tcb_total_bytes = tcb.tcb_flash_bytes + tcb.secure_ram_used_bytes;
+
+    uart_protocol_send_response(RESP_OK, (const uint8_t *)&tcb, sizeof(tcb));
+}
+
+static void handle_create_enclave(const uint8_t *data, uint32_t len)
 {
     if (is_enclave_created()) {
         uart_protocol_send_response(RESP_OK, NULL, 0);
         return;
     }
 
+    if (len != 0U && len != 4U) {
+        uart_protocol_send_response(RESP_ERROR, NULL, 0);
+        return;
+    }
+
+    size_t decrypt_size_bytes = 0U;
+    if (len == 4U && data != NULL) {
+        decrypt_size_bytes = (size_t)data[0]
+                           | ((size_t)data[1] << 8)
+                           | ((size_t)data[2] << 16)
+                           | ((size_t)data[3] << 24);
+    }
+
     uint32_t atomic_start = benchmark_get_cycles();
     unsigned int irq_key_atomic = irq_lock();
-    int create_ret = create_enclave();
+    int create_ret = create_enclave_with_size(decrypt_size_bytes);
     irq_unlock(irq_key_atomic);
     uint32_t atomic_elapsed = benchmark_get_cycles() - atomic_start;
     BENCHMARK_ACCUMULATE(atomic_elapsed,

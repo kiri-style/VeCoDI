@@ -41,9 +41,7 @@ target_sources(app PRIVATE
     src/benchmark.cpp
     src/secure_benchmark_ns.cpp
     src/inference_protocol.cpp
-    src/test_inference_protocol.cpp
     src/uart_protocol.cpp
-    src/sau_test.cpp
     split_inference/late/L_nn_wt_encrypted_data.c
     src/run_enclave.cpp
 )

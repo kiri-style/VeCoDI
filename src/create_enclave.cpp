@@ -14,6 +14,22 @@ extern const uint8_t __model_ro_end[];
 extern const uint8_t __inference_start[];
 extern const uint8_t __inference_end[];
 
+static size_t align_up_32(size_t value)
+{
+    return (value + 31U) & ~((size_t)31U);
+}
+
+static size_t resolve_requested_decrypt_size(size_t requested_size)
+{
+    const size_t full_size = (size_t)LATE_WT_TOTAL_SIZE;
+
+    if (requested_size == 0U || requested_size >= full_size) {
+        return full_size;
+    }
+
+    return requested_size;
+}
+
 /* ============================================================
  *                 CONFIGURATION
  * ============================================================ */
@@ -247,19 +263,24 @@ int initialize_secure_enclave_info_boot(void)
     return 0;
 }
 
-static int create_enclave_secure_into_ns(void)
+static int create_enclave_secure_into_ns(size_t decrypt_size_bytes)
 {
     BENCHMARK_START(decrypt);
     
     uint8_t *out_buf = enclave_region_base;
     size_t out_size = enclave_region_size;
+    size_t send_size = decrypt_size_bytes;
+
+    if (send_size > (size_t)late_wt_encrypted_len) {
+        send_size = (size_t)late_wt_encrypted_len;
+    }
 
     printk("[NS] Requesting late weights decryption...\n");
     printk("[NS] → Encrypted late weights ptr=%p, len=%u\n",
-           (void*)late_wt_encrypted, (unsigned)late_wt_encrypted_len);
+           (void*)late_wt_encrypted, (unsigned)send_size);
     printk("[NS] → Output buffer ptr=%p, size=%zu\n", (void*)out_buf, out_size);
 
-    if (late_wt_encrypted_len > out_size) {
+    if (send_size == 0U || send_size > out_size) {
         printk("[NS] ✗ Late weights buffer too small\n");
         return -1;
     }
@@ -280,7 +301,7 @@ static int create_enclave_secure_into_ns(void)
 
     psa_invec in_vec[3] = {
         { &cmd, sizeof(cmd) },
-        { late_wt_encrypted, late_wt_encrypted_len },
+        { late_wt_encrypted, send_size },
         { iv_and_meta, sizeof(iv_and_meta) }
     };
 
@@ -343,9 +364,13 @@ static int finalize_create_enclave_secure(void)
  *                 ENCLAVE CREATION
  * ============================================================ */
 
-int create_enclave(void)
+int create_enclave_with_size(size_t decrypt_size_bytes)
 {
     BENCHMARK_START(create_enc);
+
+    const size_t requested_decrypt_size = resolve_requested_decrypt_size(decrypt_size_bytes);
+    const size_t aligned_decrypt_size = align_up_32(requested_decrypt_size);
+    const size_t full_late_size = (size_t)LATE_WT_TOTAL_SIZE;
     
     if (enclave_created) {
         printk("[NS] Enclave already created\n");
@@ -361,9 +386,13 @@ int create_enclave(void)
 
         printk("\n--- CREATE ENCLAVE ---\n");
         enclave_region_base = enclave_memory;
-        enclave_region_size = ENCLAVE_MEMORY_SIZE;
+        enclave_region_size = aligned_decrypt_size;
         printk("[NS] Enclave region reserved: base=%p size=%zu\n",
             (void*)enclave_region_base, enclave_region_size);
+        if (requested_decrypt_size != full_late_size) {
+            printk("[NS] Benchmark mode: decrypting %zu bytes (full blob=%zu bytes)\n",
+                   requested_decrypt_size, full_late_size);
+        }
 
     printk("[NS] Configuration:\n");
         printk("      Enclave memory size: %zu bytes\n", enclave_region_size);
@@ -374,7 +403,7 @@ int create_enclave(void)
         memset(enclave_region_base, 0, enclave_region_size);
     printk("[NS] \u2713 Memory cleared\n");
 
-    if (create_enclave_secure_into_ns() != 0) {
+    if (create_enclave_secure_into_ns(requested_decrypt_size) != 0) {
         printk("[NS] \u2717 Secure Create_Enclave failed\n");
         return -1;
     }
@@ -383,11 +412,15 @@ int create_enclave(void)
      * RAM remains open until finalize step so we can compute hash now. */
     set_late_weights_buffer(enclave_region_base, enclave_region_size);
 
-    if (precompute_late_weights_hash() != 0) {
-        printk("[NS] ✗ Late-weights hash precompute failed during create\n");
-        (void)finalize_create_enclave_secure();
-        last_create_secure_status = -2;
-        return -1;
+    if (requested_decrypt_size == full_late_size) {
+        if (precompute_late_weights_hash() != 0) {
+            printk("[NS] ✗ Late-weights hash precompute failed during create\n");
+            (void)finalize_create_enclave_secure();
+            last_create_secure_status = -2;
+            return -1;
+        }
+    } else {
+        printk("[NS] Skipping late-weights hash precompute for partial decrypt benchmark\n");
     }
 
     if (finalize_create_enclave_secure() != 0) {
@@ -434,6 +467,11 @@ int create_enclave(void)
     printk("--- END CREATE ENCLAVE ---\n\n");
     return 0;
 }
+
+int create_enclave(void)
+{
+    return create_enclave_with_size(0U);
+}
 /* ============================================================
  *                 PUBLIC ACCESSORS
  * ============================================================ */
@@ -451,6 +489,16 @@ size_t get_enclave_region_size(void)
 uint32_t get_max_inferences_per_enclave(void)
 {
     return max_inferences_per_enclave;
+}
+
+size_t get_model_ro_size(void)
+{
+    return (size_t)(__model_ro_end - __model_ro_start);
+}
+
+size_t get_inference_code_size(void)
+{
+    return (size_t)(__inference_end - __inference_start);
 }
 
 bool is_enclave_created(void)

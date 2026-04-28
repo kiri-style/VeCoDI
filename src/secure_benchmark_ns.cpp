@@ -116,6 +116,20 @@ void print_secure_benchmark_report(const secure_benchmark_metrics_ns_t *metrics)
     } else {
         printk("║ Digest:               0 cycles  (     0 ms)  [0 ops]        ║\n");
     }
+
+    /* M_update validation */
+    if (metrics->m_update_count > 0) {
+        uint32_t avg_cycles = (uint32_t)(metrics->m_update_cycles / metrics->m_update_count);
+        printk("║ M_update:     %10llu cycles  (%6u ms)  [%u ops]         ║\n",
+               (unsigned long long)metrics->m_update_cycles,
+               cycles_to_ms(metrics->m_update_cycles),
+               metrics->m_update_count);
+        printk("║   Avg/op:    %10u cycles  (%6u ms)                   ║\n",
+               avg_cycles,
+               cycles_to_ms(avg_cycles));
+    } else {
+        printk("║ M_update:             0 cycles  (     0 ms)  [0 ops]        ║\n");
+    }
     
     printk("╟──────────────────────────────────────────────────────────────╢\n");
     printk("║ COUNTER MANAGEMENT                                           ║\n");

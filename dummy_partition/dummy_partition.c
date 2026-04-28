@@ -543,6 +543,8 @@ static psa_status_t tfm_dp_validate_m_update(psa_msg_t *msg)
         return PSA_ERROR_INVALID_ARGUMENT;
     }
 
+    SECURE_BENCHMARK_START(m_update_start);
+
     /* Read full packet (nonce || ciphertext || tag) */
     uint8_t packet[M_UPDATE_NONCE_SIZE + M_UPDATE_CIPHERTEXT_MAX + M_UPDATE_TAG_SIZE];
     psa_read(msg->handle, 1, packet, pkt_len);
@@ -665,6 +667,9 @@ static psa_status_t tfm_dp_validate_m_update(psa_msg_t *msg)
     secure_memzero(plaintext,        sizeof(plaintext));
     secure_memzero(packet,           pkt_len);
     secure_memzero(resp,             sizeof(resp));
+
+    SECURE_BENCHMARK_END(m_update_start, m_update_cycles);
+    g_secure_metrics.m_update_count++;
 
     return PSA_SUCCESS;
 }

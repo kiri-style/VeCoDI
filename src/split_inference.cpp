@@ -60,7 +60,7 @@ void set_late_weights_buffer(uint8_t *buf, size_t size)
     late_wt_ram = buf;
     late_wt_ram_size = size;
 
-    if (late_wt_ram) {
+    if (late_wt_ram && late_wt_ram_size >= (size_t)LATE_WT_TOTAL_SIZE) {
         wt_conv2d_7 = reinterpret_cast<const int8_t *>(late_wt_ram + LATE_WT_CONV2D_7_OFFSET);
         wt_conv2d_8 = reinterpret_cast<const int8_t *>(late_wt_ram + LATE_WT_CONV2D_8_OFFSET);
         wt_fc = reinterpret_cast<const int8_t *>(late_wt_ram + LATE_WT_FC_OFFSET);
@@ -142,6 +142,13 @@ int precompute_late_weights_hash(void)
     status = psa_hash_setup(&operation, PSA_ALG_SHA_256);
     if (status != PSA_SUCCESS) {
         printk("[CNT] Late hash setup failed: %d\n", status);
+        return -1;
+    }
+
+    if (!late_wt_ram || late_wt_ram_size < (size_t)LATE_WT_TOTAL_SIZE) {
+        printk("[CNT] Late weights buffer too small for integrity hash (%zu < %u)\n",
+               late_wt_ram_size, (unsigned)LATE_WT_TOTAL_SIZE);
+        psa_hash_abort(&operation);
         return -1;
     }
 

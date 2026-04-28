@@ -29,6 +29,30 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import serial
+# Ensure compatibility when pyserial is installed as a namespace package
+# (some installations do not expose Serial at the package top-level).
+if not hasattr(serial, 'Serial'):
+    try:
+        from serial.serialposix import Serial as _SerialClass
+    except Exception:
+        try:
+            from serial.serialwin32 import Serial as _SerialClass
+        except Exception:
+            _SerialClass = None
+    if _SerialClass is not None:
+        serial.Serial = _SerialClass
+    # Also populate common constants/classes from serial.serialutil if missing
+    try:
+        import importlib
+        _su = importlib.import_module('serial.serialutil')
+        for _n in dir(_su):
+            if not hasattr(serial, _n):
+                try:
+                    setattr(serial, _n, getattr(_su, _n))
+                except Exception:
+                    pass
+    except Exception:
+        pass
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes, serialization

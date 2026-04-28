@@ -10,6 +10,7 @@ extern "C" {
 #endif
 
 int create_enclave(void);
+int create_enclave_with_size(size_t decrypt_size_bytes);
 int enter_enclave(void);
 int destroy_enclave(void);
 int update_rate_limit(uint32_t new_limit);
@@ -20,6 +21,8 @@ uint8_t* get_enclave_region(void);
 size_t get_enclave_region_size(void);
 uint32_t get_max_inferences_per_enclave(void);
 bool is_enclave_created(void);
+size_t get_model_ro_size(void);
+size_t get_inference_code_size(void);
 
 /* SAU enclave RAM isolation: open/close the window from NS side */
 int enclave_sau_register_window(const uint8_t *base, uint32_t size);
