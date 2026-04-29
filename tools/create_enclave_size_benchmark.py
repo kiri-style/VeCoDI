@@ -71,7 +71,7 @@ class UartDevice:
         finally:
             self.ser.timeout = old_timeout
 
-PORT_DEFAULT = '/dev/tty.usbmodem1203'
+PORT_DEFAULT = '/dev/cu.usbmodem1203'
 BAUD_DEFAULT = 115200
 CMD_CREATE_ENCLAVE = 0x11
 CMD_DESTROY_ENCLAVE = 0x12
@@ -96,6 +96,18 @@ DEVICE_BENCHMARK_NAMES = [
 ]
 DEVICE_BENCHMARK_FMT = '<' + 'I' * 18 + 'Q' * 8 + 'I' * 16 + 'I' * 8 + 'Q' * 2 + 'I' * 6 + 'I' * 4
 CPU_MHZ = 110.0
+
+
+def delta(after: dict, before: dict, key: str) -> int:
+    return int(after[key]) - int(before[key])
+
+
+def per_op_cycles(after: dict, before: dict, sum_key: str, count_key: str, fallback_key: str) -> int:
+    count_delta = delta(after, before, count_key)
+    if count_delta > 0:
+        sum_delta = delta(after, before, sum_key)
+        return int(round(sum_delta / count_delta))
+    return delta(after, before, fallback_key)
 
 
 def read_device_benchmark(device: UartDevice) -> dict:
@@ -179,13 +191,43 @@ def main() -> int:
                     'attempt': attempt + 1,
                     'host_create_ms': round(create_host_ms, 3),
                     'host_destroy_ms': round(destroy_host_ms, 3),
-                    'create_enclave_cycles': int(after_create['enclave_create_cycles']),
-                    'aes_decrypt_cycles': int(after_create['aes_decrypt_cycles']),
-                    'destroy_enclave_cycles': int(after_destroy['enclave_destroy_cycles']),
-                    'create_atomic_cycles': int(after_create['create_atomic_sum_cycles'] - baseline['create_atomic_sum_cycles']),
-                    'destroy_atomic_cycles': int(after_destroy['destroy_atomic_sum_cycles'] - after_create['destroy_atomic_sum_cycles']),
-                    'create_enclave_count': int(after_create['enclave_create_count'] - baseline['enclave_create_count']),
-                    'destroy_enclave_count': int(after_destroy['enclave_destroy_count'] - after_create['enclave_destroy_count']),
+                    'create_enclave_cycles': per_op_cycles(
+                        after_create,
+                        baseline,
+                        'enclave_create_sum_cycles',
+                        'enclave_create_count',
+                        'enclave_create_cycles',
+                    ),
+                    'aes_decrypt_cycles': per_op_cycles(
+                        after_create,
+                        baseline,
+                        'aes_decrypt_sum_cycles',
+                        'aes_decrypt_count',
+                        'aes_decrypt_cycles',
+                    ),
+                    'destroy_enclave_cycles': per_op_cycles(
+                        after_destroy,
+                        after_create,
+                        'enclave_destroy_sum_cycles',
+                        'enclave_destroy_count',
+                        'enclave_destroy_cycles',
+                    ),
+                    'create_atomic_cycles': per_op_cycles(
+                        after_create,
+                        baseline,
+                        'create_atomic_sum_cycles',
+                        'create_atomic_count',
+                        'create_atomic_sum_cycles',
+                    ),
+                    'destroy_atomic_cycles': per_op_cycles(
+                        after_destroy,
+                        after_create,
+                        'destroy_atomic_sum_cycles',
+                        'destroy_atomic_count',
+                        'destroy_atomic_sum_cycles',
+                    ),
+                    'create_enclave_count': delta(after_create, baseline, 'enclave_create_count'),
+                    'destroy_enclave_count': delta(after_destroy, after_create, 'enclave_destroy_count'),
                 })
 
             result = {
