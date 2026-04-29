@@ -94,6 +94,41 @@ class AtomicInferenceBenchmark:
         
         return metrics if metrics else None
     
+    def extract_all_inference_metrics(self, output: str) -> List[Dict[str, int]]:
+        """Extract ALL inference metrics from console output (multiple runs)"""
+        metrics_list = []
+        
+        # Find all TOTAL INFERENCE patterns
+        total_pattern = r'\[SPLIT\] Prediction = \d+ \(total inference: (\d+) cycles, (\d+) ms\)'
+        total_matches = re.finditer(total_pattern, output)
+        total_cycles_list = [int(m.group(1)) for m in total_matches]
+        
+        # Find all EARLY patterns
+        early_pattern = r'\[EARLY\].*?(\d+) cycles'
+        early_matches = re.finditer(early_pattern, output)
+        early_cycles_list = [int(m.group(1)) for m in early_matches]
+        
+        # Find all LATE patterns
+        late_pattern = r'\[LATE\].*?(\d+) cycles'
+        late_matches = re.finditer(late_pattern, output)
+        late_cycles_list = [int(m.group(1)) for m in late_matches]
+        
+        # Combine into list of metrics
+        max_runs = max(len(total_cycles_list), len(early_cycles_list), len(late_cycles_list))
+        for i in range(max_runs):
+            metrics = {}
+            if i < len(total_cycles_list):
+                metrics['total_inference_cycles'] = total_cycles_list[i]
+            if i < len(early_cycles_list):
+                metrics['early_layers_cycles'] = early_cycles_list[i]
+            if i < len(late_cycles_list):
+                metrics['late_layers_cycles'] = late_cycles_list[i]
+            
+            if metrics:
+                metrics_list.append(metrics)
+        
+        return metrics_list
+    
     def print_report(self, metrics_list: List[Dict[str, int]]) -> str:
         """Generate benchmark report from metrics"""
         report = []
@@ -295,6 +330,7 @@ def main():
     
     # Look for benchmark report files
     possible_reports = [
+        build_dir / "simulated_inference_output.txt",
         build_dir / "TCB_EXTRACTION_DATA.json",
         build_dir / "benchmark_report.txt",
         build_dir / "inference_metrics.txt"
@@ -308,9 +344,15 @@ def main():
             print(f"   Reading: {report_file}")
             with open(report_file, 'r') as f:
                 content = f.read()
-                metrics = benchmark.extract_inference_metrics(content)
-                if metrics:
-                    metrics_list.append(metrics)
+                # Try getting all metrics first
+                all_metrics = benchmark.extract_all_inference_metrics(content)
+                if all_metrics:
+                    metrics_list.extend(all_metrics)
+                else:
+                    # Fallback to single metric extraction
+                    metrics = benchmark.extract_inference_metrics(content)
+                    if metrics:
+                        metrics_list.append(metrics)
     
     if not metrics_list:
         print("\n⚠️  No inference metrics found in build artifacts.")
