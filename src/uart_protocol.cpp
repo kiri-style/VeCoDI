@@ -348,8 +348,10 @@ static bool is_valid_cmd(uint8_t cmd)
             cmd == CMD_RUN_INFERENCE_NO_SAU ||
             cmd == CMD_GET_TCB_BENCHMARK ||
             cmd == CMD_READ_PROTECTED_MEM ||
-            cmd == CMD_READ_PROTECTED_ROM);
+            cmd == CMD_READ_PROTECTED_ROM ||
+            cmd == CMD_GET_M_UPDATE_DEBUG);
 }
+
 
 static bool is_valid_len_for_cmd(uint8_t cmd, uint32_t len)
 {
@@ -377,6 +379,8 @@ static bool is_valid_len_for_cmd(uint8_t cmd, uint32_t len)
         case CMD_RUN_INFERENCE_NO_SAU:
         case CMD_READ_PROTECTED_MEM:
         case CMD_READ_PROTECTED_ROM:
+            return len == 0U;
+        case CMD_GET_M_UPDATE_DEBUG:
             return len == 0U;
         case CMD_RUN_INFERENCE:
             /* Verified-only protocol: encrypted M_inf packet nonce(12)+ciphertext(100)+tag(16). */
@@ -418,6 +422,7 @@ static void handle_read_protected_rom(void);
 static void handle_create_enclave(const uint8_t *data, uint32_t len);
 static void handle_destroy_enclave(void);
 static void handle_update_rate_limit(const uint8_t *data, uint32_t len);
+static void handle_get_m_update_debug(void);
 
 int uart_protocol_init(void)
 {
@@ -640,6 +645,10 @@ static void process_command(void)
         case CMD_GET_SECURE_BENCHMARK:
             handle_get_secure_benchmark();
             break;
+
+        case CMD_GET_M_UPDATE_DEBUG:
+            handle_get_m_update_debug();
+            break;
         
         case CMD_GET_INFERENCE_RESULT:
             handle_get_inference_result();
@@ -774,6 +783,27 @@ static void handle_compute_enclave_info(const uint8_t *data, uint32_t len)
 
 static void handle_validate_m_update(const uint8_t *data, uint32_t len)
 {
+    bool m_update_success = false;
+
+    struct ns_m_update_benchmark_scope {
+        uint32_t start_cycles;
+        bool *success;
+
+        explicit ns_m_update_benchmark_scope(bool *success_flag)
+            : start_cycles(benchmark_get_cycles()), success(success_flag)
+        {
+        }
+
+        ~ns_m_update_benchmark_scope()
+        {
+            if (success != NULL && *success) {
+                uint32_t elapsed_cycles = benchmark_get_cycles() - start_cycles;
+                g_benchmark_metrics.m_update_cycles += (uint64_t)elapsed_cycles;
+            }
+        }
+    } m_update_scope(NULL);
+    m_update_scope.success = &m_update_success;
+
     /*
      * NS receives encrypted M_update from host and forwards the raw bytes
      * to the Secure partition for AES-256-GCM decryption + EnclaveInfo
@@ -856,6 +886,13 @@ static void handle_validate_m_update(const uint8_t *data, uint32_t len)
         memcpy(stored_cert, auth_resp + roff, clen);
     }
 
+    m_update_success = true;
+    /* Ensure the NS-side m_update count is visible immediately to host
+     * (some hosts read device counters immediately after the response).
+     * Increment here rather than relying solely on the RAII destructor so
+     * the count is durable before uart_protocol_send_response returns.
+     */
+    g_benchmark_metrics.m_update_count++;
     uart_protocol_send_response(RESP_OK, NULL, 0);
 }
 
@@ -1086,6 +1123,21 @@ static void handle_get_inference_count(void)
     count_bytes[3] = (mock_inference_count >> 24) & 0xFF;
     
     uart_protocol_send_response(RESP_OK, count_bytes, 4);
+}
+
+static void handle_get_m_update_debug(void)
+{
+    /* Return little-endian: uint64_t m_update_cycles, uint32_t m_update_count */
+    uint8_t resp[12];
+    uint64_t cycles = g_benchmark_metrics.m_update_cycles;
+    uint32_t count = g_benchmark_metrics.m_update_count;
+    for (int i = 0; i < 8; i++) {
+        resp[i] = (uint8_t)((cycles >> (8 * i)) & 0xFFULL);
+    }
+    for (int i = 0; i < 4; i++) {
+        resp[8 + i] = (uint8_t)((count >> (8 * i)) & 0xFFU);
+    }
+    uart_protocol_send_response(RESP_OK, resp, sizeof(resp));
 }
 
 static void handle_get_remaining_inferences(void)
@@ -1496,6 +1548,31 @@ static void handle_get_tcb_benchmark(void)
 
 static void handle_create_enclave(const uint8_t *data, uint32_t len)
 {
+    bool create_success = false;
+
+    struct ns_create_benchmark_scope {
+        uint32_t start_cycles;
+        bool *success;
+
+        explicit ns_create_benchmark_scope(bool *success_flag)
+            : start_cycles(benchmark_get_cycles()), success(success_flag)
+        {
+        }
+
+        ~ns_create_benchmark_scope()
+        {
+            if (success != NULL && *success) {
+                uint32_t elapsed_cycles = benchmark_get_cycles() - start_cycles;
+                g_benchmark_metrics.enclave_create_cycles = elapsed_cycles;
+                BENCHMARK_ACCUMULATE(elapsed_cycles,
+                                     g_benchmark_metrics.enclave_create_sum_cycles,
+                                     g_benchmark_metrics.enclave_create_min_cycles,
+                                     g_benchmark_metrics.enclave_create_max_cycles,
+                                     g_benchmark_metrics.enclave_create_count);
+            }
+        }
+    } create_scope(&create_success);
+
     if (is_enclave_created()) {
         uart_protocol_send_response(RESP_OK, NULL, 0);
         return;
@@ -1526,6 +1603,7 @@ static void handle_create_enclave(const uint8_t *data, uint32_t len)
                          g_benchmark_metrics.create_atomic_count);
 
     if (create_ret == 0) {
+        create_success = true;
         uart_protocol_send_response(RESP_OK, NULL, 0);
     } else {
         int32_t detail = get_last_create_secure_status();
@@ -1535,6 +1613,31 @@ static void handle_create_enclave(const uint8_t *data, uint32_t len)
 
 static void handle_destroy_enclave(void)
 {
+    bool destroy_success = false;
+
+    struct ns_destroy_benchmark_scope {
+        uint32_t start_cycles;
+        bool *success;
+
+        explicit ns_destroy_benchmark_scope(bool *success_flag)
+            : start_cycles(benchmark_get_cycles()), success(success_flag)
+        {
+        }
+
+        ~ns_destroy_benchmark_scope()
+        {
+            if (success != NULL && *success) {
+                uint32_t elapsed_cycles = benchmark_get_cycles() - start_cycles;
+                g_benchmark_metrics.enclave_destroy_cycles = elapsed_cycles;
+                BENCHMARK_ACCUMULATE(elapsed_cycles,
+                                     g_benchmark_metrics.enclave_destroy_sum_cycles,
+                                     g_benchmark_metrics.enclave_destroy_min_cycles,
+                                     g_benchmark_metrics.enclave_destroy_max_cycles,
+                                     g_benchmark_metrics.enclave_destroy_count);
+            }
+        }
+    } destroy_scope(&destroy_success);
+
     if (!is_enclave_created()) {
         uart_protocol_send_response(RESP_OK, NULL, 0);
         return;
@@ -1552,6 +1655,7 @@ static void handle_destroy_enclave(void)
                          g_benchmark_metrics.destroy_atomic_count);
 
     if (destroy_ret == 0) {
+        destroy_success = true;
         mock_inference_count = 0U;
         mock_max_inferences = 0U;
         uart_protocol_send_response(RESP_OK, NULL, 0);

@@ -76,6 +76,7 @@ BAUD_DEFAULT = 115200
 CMD_CREATE_ENCLAVE = 0x11
 CMD_DESTROY_ENCLAVE = 0x12
 CMD_GET_BENCHMARK = 0x08
+CMD_GET_SECURE_BENCHMARK = 0x09
 DEVICE_BENCHMARK_NAMES = [
     'enclave_create_cycles', 'enclave_destroy_cycles', 'aes_decrypt_cycles',
     'early_layers_cycles', 'late_layers_cycles', 'total_inference_cycles', 'run_enclave_cycles', 'full_execute_cycles',
@@ -93,8 +94,24 @@ DEVICE_BENCHMARK_NAMES = [
     'create_atomic_sum_cycles', 'destroy_atomic_sum_cycles',
     'create_atomic_min_cycles', 'create_atomic_max_cycles', 'destroy_atomic_min_cycles', 'destroy_atomic_max_cycles', 'create_atomic_count', 'destroy_atomic_count',
     'run_inference_with_image_count', 'dangerous_inference_no_sau_count', 'dangerous_read_ram_count', 'dangerous_read_rom_count',
+    'm_update_cycles', 'm_update_count',
 ]
-DEVICE_BENCHMARK_FMT = '<' + 'I' * 19 + 'xxxx' + 'Q' * 8 + 'I' * 16 + 'I' * 8 + 'I' + 'xxxx' + 'Q' + 'I' * 2 + 'Q' * 2 + 'I' * 6 + 'I' * 4
+DEVICE_BENCHMARK_FMT = '<' + 'I' * 19 + 'xxxx' + 'Q' * 8 + 'I' * 16 + 'I' * 8 + 'I' + 'xxxx' + 'Q' + 'I' * 2 + 'Q' * 2 + 'I' * 6 + 'I' * 4 + 'xxxxQI'
+SECURE_BENCHMARK_NAMES = [
+    'aes_decrypt_cycles', 'late_hash_cycles', 'digest_compute_cycles', 'm_update_cycles',
+    'get_max_cycles', 'check_allowed_cycles', 'increment_cycles', 'reset_cycles',
+    'create_enclave_cycles', 'finalize_create_cycles', 'destroy_enclave_cycles',
+    'inf_start_cycles', 'inf_complete_cycles',
+    'sau_sync_open_cycles', 'sau_sync_close_cycles', 'sau_flash_close_cycles',
+    'sau_flash_open_cycles', 'sau_flash_pulse_cycles',
+    'aes_decrypt_count', 'late_hash_count', 'digest_count', 'm_update_count',
+    'counter_operations', 'create_enclave_count', 'finalize_create_count',
+    'destroy_enclave_count', 'inf_start_count', 'inf_complete_count',
+    'sau_sync_open_count', 'sau_sync_close_count', 'sau_flash_close_count',
+    'sau_flash_open_count', 'sau_flash_pulse_count',
+    'ram_used_bytes', 'ram_total_bytes', 'flash_used_bytes', 'flash_total_bytes',
+]
+SECURE_BENCHMARK_FMT = '<' + ('Q' * 18) + ('I' * 19)
 CPU_MHZ = 110.0
 
 
@@ -107,7 +124,8 @@ def per_op_cycles(after: dict, before: dict, sum_key: str, count_key: str, fallb
     if count_delta > 0:
         sum_delta = delta(after, before, sum_key)
         return int(round(sum_delta / count_delta))
-    return delta(after, before, fallback_key)
+    # Avoid returning spurious large fallback deltas when no ops were counted.
+    return 0
 
 
 def read_device_benchmark(device: UartDevice) -> dict:
@@ -132,6 +150,20 @@ def read_device_benchmark(device: UartDevice) -> dict:
             time.sleep(0.05)
 
     raise RuntimeError(f'Failed to read device benchmark after retries: {last_error}')
+
+
+def read_secure_benchmark(device: UartDevice) -> dict:
+    device.send_command(CMD_GET_SECURE_BENCHMARK)
+    status, payload = device.read_response(timeout=8.0)
+    if status != 0:
+        raise RuntimeError(f'CMD_GET_SECURE_BENCHMARK failed with status {status}')
+
+    expected = struct.calcsize(SECURE_BENCHMARK_FMT)
+    if len(payload) < expected:
+        raise RuntimeError(f'Secure benchmark payload too short: got {len(payload)}, expected {expected}')
+
+    values = struct.unpack(SECURE_BENCHMARK_FMT, payload[:expected])
+    return {name: int(value) for name, value in zip(SECURE_BENCHMARK_NAMES, values)}
 
 
 def send_create(device: UartDevice, decrypt_size: int) -> tuple[int, float]:
@@ -192,10 +224,13 @@ def main() -> int:
             samples = []
             for attempt in range(args.runs):
                 baseline = read_device_benchmark(device)
+                secure_baseline = read_secure_benchmark(device)
                 _, create_host_ms = send_create(device, requested_size)
                 after_create = read_device_benchmark(device)
+                after_create_secure = read_secure_benchmark(device)
                 _, destroy_host_ms = send_destroy(device)
                 after_destroy = read_device_benchmark(device)
+                after_destroy_secure = read_secure_benchmark(device)
 
                 samples.append({
                     'attempt': attempt + 1,
@@ -221,6 +256,20 @@ def main() -> int:
                         'enclave_destroy_sum_cycles',
                         'enclave_destroy_count',
                         'enclave_destroy_cycles',
+                    ),
+                    'secure_create_enclave_cycles': per_op_cycles(
+                        after_create_secure,
+                        secure_baseline,
+                        'create_enclave_cycles',
+                        'create_enclave_count',
+                        'create_enclave_cycles',
+                    ),
+                    'secure_destroy_enclave_cycles': per_op_cycles(
+                        after_destroy_secure,
+                        after_create_secure,
+                        'destroy_enclave_cycles',
+                        'destroy_enclave_count',
+                        'destroy_enclave_cycles',
                     ),
                     'create_atomic_cycles': per_op_cycles(
                         after_create,
@@ -254,6 +303,10 @@ def main() -> int:
                 'aes_decrypt_cycles_stddev': round(stdev(sample['aes_decrypt_cycles'] for sample in samples), 3) if len(samples) > 1 else 0.0,
                 'destroy_enclave_cycles_mean': round(mean(sample['destroy_enclave_cycles'] for sample in samples), 3),
                 'destroy_enclave_cycles_stddev': round(stdev(sample['destroy_enclave_cycles'] for sample in samples), 3) if len(samples) > 1 else 0.0,
+                'secure_create_enclave_cycles_mean': round(mean(sample['secure_create_enclave_cycles'] for sample in samples), 3),
+                'secure_create_enclave_cycles_stddev': round(stdev(sample['secure_create_enclave_cycles'] for sample in samples), 3) if len(samples) > 1 else 0.0,
+                'secure_destroy_enclave_cycles_mean': round(mean(sample['secure_destroy_enclave_cycles'] for sample in samples), 3),
+                'secure_destroy_enclave_cycles_stddev': round(stdev(sample['secure_destroy_enclave_cycles'] for sample in samples), 3) if len(samples) > 1 else 0.0,
                 'create_atomic_cycles_mean': round(mean(sample['create_atomic_cycles'] for sample in samples), 3),
                 'create_atomic_cycles_stddev': round(stdev(sample['create_atomic_cycles'] for sample in samples), 3) if len(samples) > 1 else 0.0,
                 'destroy_atomic_cycles_mean': round(mean(sample['destroy_atomic_cycles'] for sample in samples), 3),
@@ -264,8 +317,10 @@ def main() -> int:
             print(
                 f"size={requested_size}B runs={args.runs} "
                 f"create={result['create_enclave_cycles_mean']}±{result['create_enclave_cycles_stddev']} cycles "
+                f"secure_create={result['secure_create_enclave_cycles_mean']}±{result['secure_create_enclave_cycles_stddev']} cycles "
                 f"decrypt={result['aes_decrypt_cycles_mean']}±{result['aes_decrypt_cycles_stddev']} cycles "
-                f"destroy={result['destroy_enclave_cycles_mean']}±{result['destroy_enclave_cycles_stddev']} cycles"
+                f"destroy={result['destroy_enclave_cycles_mean']}±{result['destroy_enclave_cycles_stddev']} cycles "
+                f"secure_destroy={result['secure_destroy_enclave_cycles_mean']}±{result['secure_destroy_enclave_cycles_stddev']} cycles"
             )
 
         payload = {

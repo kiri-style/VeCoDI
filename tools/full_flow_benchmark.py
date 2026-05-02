@@ -23,6 +23,7 @@ PORT_DEFAULT = "/dev/cu.usbmodem1203"
 BAUD_DEFAULT = 115200
 CMD_GET_BENCHMARK = 0x08
 CMD_GET_SECURE_BENCHMARK = 0x09
+CMD_GET_M_UPDATE_DEBUG = 0x1A
 CPU_MHZ = 110.0
 
 DEVICE_BENCHMARK_NAMES = [
@@ -42,8 +43,9 @@ DEVICE_BENCHMARK_NAMES = [
     "create_atomic_sum_cycles", "destroy_atomic_sum_cycles",
     "create_atomic_min_cycles", "create_atomic_max_cycles", "destroy_atomic_min_cycles", "destroy_atomic_max_cycles", "create_atomic_count", "destroy_atomic_count",
     "run_inference_with_image_count", "dangerous_inference_no_sau_count", "dangerous_read_ram_count", "dangerous_read_rom_count",
+    "m_update_cycles", "m_update_count",
 ]
-DEVICE_BENCHMARK_FMT = "<" + "I" * 19 + "xxxx" + "Q" * 8 + "I" * 16 + "I" * 8 + "I" + "xxxx" + "Q" + "I" * 2 + "Q" * 2 + "I" * 6 + "I" * 4
+DEVICE_BENCHMARK_FMT = "<" + "I" * 19 + "xxxx" + "Q" * 8 + "I" * 16 + "I" * 8 + "I" + "xxxx" + "Q" + "I" * 2 + "Q" * 2 + "I" * 6 + "I" * 4 + "xxxxQI"
 
 SECURE_BENCHMARK_NAMES = [
     "aes_decrypt_cycles", "late_hash_cycles", "digest_compute_cycles", "m_update_cycles",
@@ -84,6 +86,22 @@ def read_device_benchmark(device: UartDevice) -> Dict[str, int]:
             time.sleep(0.05)
 
     raise RuntimeError(f'Failed to read device benchmark after retries: {last_error}')
+
+
+def read_ns_m_update(device: UartDevice) -> tuple[int, int]:
+    """Read NS-side m_update cumulative counters via debug command.
+
+    Returns (cycles, count)
+    """
+    device.send_command(CMD_GET_M_UPDATE_DEBUG)
+    status, payload = device.read_response(timeout=2.0)
+    if status != 0:
+        raise RuntimeError(f'CMD_GET_M_UPDATE_DEBUG failed with status {status}')
+    if len(payload) < 12:
+        raise RuntimeError(f'm_update debug payload too short: {len(payload)}')
+    cycles = int.from_bytes(payload[0:8], 'little')
+    count = int.from_bytes(payload[8:12], 'little')
+    return cycles, count
 
 
 def read_secure_benchmark(device: UartDevice) -> Dict[str, int]:
@@ -151,7 +169,10 @@ def per_op_cycles(
     if count_delta > 0:
         sum_delta = delta(after, before, sum_key)
         return int(round(sum_delta / count_delta))
-    return delta(after, before, fallback_key)
+    # If no operations were counted on device side, avoid returning a
+    # spurious fallback delta (which can be huge due to packing/endianness
+    # issues). Return 0 to indicate 'not available'.
+    return 0
 
 
 def maybe_per_op_cycles(
@@ -220,16 +241,20 @@ def main() -> int:
             print(f"\nRun {run + 1}/{args.runs} (c_limit={c_limit})")
 
             before_device = read_device_benchmark(device)
+            before_ns_cycles, before_ns_count = read_ns_m_update(device)
             before_secure = read_secure_benchmark(device)
 
             _, m_update_ms = timed_call(case_study.provider_send_m_update, c_limit)
             after_m_update_secure = read_secure_benchmark(device)
+            after_m_update_device = read_device_benchmark(device)
+            after_ns_cycles, after_ns_count = read_ns_m_update(device)
 
             _, create_ms = timed_call(case_study.customer_create_enclave)
             after_create_device = read_device_benchmark(device)
+            after_create_secure = read_secure_benchmark(device)
 
             before_inference_device = dict(after_create_device)
-            before_inference_secure = dict(after_m_update_secure)
+            before_inference_secure = dict(after_create_secure)
             _, inference_ms = timed_call(
                 case_study.customer_verified_inference,
                 image_payload,
@@ -239,8 +264,10 @@ def main() -> int:
             after_inference_secure = read_secure_benchmark(device)
 
             before_destroy_device = dict(after_inference_device)
+            before_destroy_secure = dict(after_inference_secure)
             _, destroy_ms = timed_call(case_study.customer_destroy_enclave)
             after_destroy_device = read_device_benchmark(device)
+            after_destroy_secure = read_secure_benchmark(device)
 
             sample = {
                 "attempt": run + 1,
@@ -257,6 +284,9 @@ def main() -> int:
                     "m_update_cycles",
                 ),
                 "m_update_count": delta(after_m_update_secure, before_secure, "m_update_count"),
+                # Use explicit NS debug command for reliable NS-side m_update counters
+                "ns_m_update_cycles": int((after_ns_cycles - before_ns_cycles) // (after_ns_count - before_ns_count)) if (after_ns_count - before_ns_count) > 0 else 0,
+                "ns_m_update_count": int(after_ns_count - before_ns_count),
                 "create_enclave_cycles": per_op_cycles(
                     after_create_device,
                     before_device,
@@ -265,6 +295,14 @@ def main() -> int:
                     "enclave_create_cycles",
                 ),
                 "create_enclave_count": delta(after_create_device, before_device, "enclave_create_count"),
+                "secure_create_enclave_cycles": per_op_cycles(
+                    after_create_secure,
+                    after_m_update_secure,
+                    "create_enclave_cycles",
+                    "create_enclave_count",
+                    "create_enclave_cycles",
+                ),
+                "secure_create_enclave_count": delta(after_create_secure, after_m_update_secure, "create_enclave_count"),
                 "inference_cycles": per_op_cycles(
                     after_inference_device,
                     before_inference_device,
@@ -295,6 +333,14 @@ def main() -> int:
                     "enclave_destroy_cycles",
                 ),
                 "destroy_enclave_count": delta(after_destroy_device, before_destroy_device, "enclave_destroy_count"),
+                "secure_destroy_enclave_cycles": per_op_cycles(
+                    after_destroy_secure,
+                    before_destroy_secure,
+                    "destroy_enclave_cycles",
+                    "destroy_enclave_count",
+                    "destroy_enclave_cycles",
+                ),
+                "secure_destroy_enclave_count": delta(after_destroy_secure, before_destroy_secure, "destroy_enclave_count"),
                 "full_execute_cycles": per_op_cycles(
                     after_inference_device,
                     before_inference_device,
@@ -331,11 +377,14 @@ def main() -> int:
             "host_inference_ms": summarize([sample["host_inference_ms"] for sample in samples]),
             "host_destroy_ms": summarize([sample["host_destroy_ms"] for sample in samples]),
             "m_update_cycles": summarize([float(sample["m_update_cycles"]) for sample in samples]),
+            "ns_m_update_cycles": summarize([float(sample["ns_m_update_cycles"]) for sample in samples]),
             "create_enclave_cycles": summarize([float(sample["create_enclave_cycles"]) for sample in samples]),
+            "secure_create_enclave_cycles": summarize([float(sample["secure_create_enclave_cycles"]) for sample in samples]),
             "inference_cycles": summarize([float(sample["inference_cycles"]) for sample in samples]),
             "full_execute_cycles": summarize([float(sample["full_execute_cycles"]) for sample in samples]),
             "pox_cycles": summarize([float(sample["pox_cycles"]) for sample in samples if sample["pox_cycles"] is not None]),
             "destroy_enclave_cycles": summarize([float(sample["destroy_enclave_cycles"]) for sample in samples]),
+            "secure_destroy_enclave_cycles": summarize([float(sample["secure_destroy_enclave_cycles"]) for sample in samples]),
         }
 
         payload = {
@@ -355,15 +404,15 @@ def main() -> int:
 
         print("\n=== FULL FLOW SUMMARY ===")
         print(
-            f"M_update: {summary['host_m_update_ms']['avg']:.3f} ± {summary['host_m_update_ms']['stddev']:.3f} ms "
-            f"({int(summary['m_update_cycles']['avg']):,} cycles avg)"
+            f"M_update: {summary['host_m_update_ms']['avg']:.3f} ± {summary['host_m_update_ms']['stddev']:.3f} ms (host) "
+            f"({int(summary['m_update_cycles']['avg']):,} cycles avg secure | {int(summary['ns_m_update_cycles']['avg']):,} cycles avg ns)"
         )
         print(
-            f"CREATE:   {summary['host_create_ms']['avg']:.3f} ± {summary['host_create_ms']['stddev']:.3f} ms "
-            f"({int(summary['create_enclave_cycles']['avg']):,} cycles avg)"
+            f"CREATE:   {summary['host_create_ms']['avg']:.3f} ± {summary['host_create_ms']['stddev']:.3f} ms (host) "
+            f"({int(summary['create_enclave_cycles']['avg']):,} cycles avg ns | {int(summary['secure_create_enclave_cycles']['avg']):,} cycles avg secure)"
         )
         print(
-            f"INFER:    {summary['host_inference_ms']['avg']:.3f} ± {summary['host_inference_ms']['stddev']:.3f} ms "
+            f"INFER:    {summary['host_inference_ms']['avg']:.3f} ± {summary['host_inference_ms']['stddev']:.3f} ms (host) "
             f"({int(summary['inference_cycles']['avg']):,} cycles avg)"
         )
         print(
@@ -376,8 +425,8 @@ def main() -> int:
                 f"({cycles_to_ms(int(summary['pox_cycles']['avg'])):.3f} ms)"
             )
         print(
-            f"DESTROY:  {summary['host_destroy_ms']['avg']:.3f} ± {summary['host_destroy_ms']['stddev']:.3f} ms "
-            f"({int(summary['destroy_enclave_cycles']['avg']):,} cycles avg)"
+            f"DESTROY:  {summary['host_destroy_ms']['avg']:.3f} ± {summary['host_destroy_ms']['stddev']:.3f} ms (host) "
+            f"({int(summary['destroy_enclave_cycles']['avg']):,} cycles avg ns | {int(summary['secure_destroy_enclave_cycles']['avg']):,} cycles avg secure)"
         )
         print(f"[OK] Benchmark written: {output_path}")
         return 0

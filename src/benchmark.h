@@ -169,6 +169,10 @@ typedef struct {
     uint32_t dangerous_inference_no_sau_count;
     uint32_t dangerous_read_ram_count;
     uint32_t dangerous_read_rom_count;
+
+    // NS M_update timing (handle_validate_m_update)
+    uint64_t m_update_cycles;
+    uint32_t m_update_count;
 } benchmark_metrics_t;
 
 extern benchmark_metrics_t g_benchmark_metrics;

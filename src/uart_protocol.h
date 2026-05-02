@@ -33,6 +33,8 @@ extern "C" {
 #define CMD_RUN_INFERENCE_WITH_IMAGE 0x14  /* Upload CIFAR photo + run verified inference */
 #define CMD_GET_TCB_BENCHMARK       0x15  /* Return TCB footprint (Secure + trusted NS windows) */
 #define CMD_READ_PROTECTED_ROM      0x18  /* DANGEROUS TEST: direct read from protected model ROM */
+/* Debug: return NS-side m_update metrics (uint64 cycles + uint32 count) */
+#define CMD_GET_M_UPDATE_DEBUG      0x1A
 /* Response Codes (Device → Mac) */
 #define RESP_OK                     0x00
 #define RESP_ERROR                  0xFF
