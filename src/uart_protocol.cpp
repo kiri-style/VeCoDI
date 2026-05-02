@@ -18,7 +18,6 @@
 #define TFM_DP_SERVICE_SID          0xFFFFF002U
 #define DP_CMD_COMPUTE_ENCLAVE_INFO 10U
 #define DP_CMD_VALIDATE_M_UPDATE    11U
-#define DP_CMD_SET_SESSION_KEY      13U
 #define DP_CMD_INF_START            25U
 #define DP_CMD_INF_COMPLETE         26U
 #define DP_CMD_GET_DEVICE_PUBKEY    27U
@@ -63,17 +62,14 @@ static uint32_t rx_data_start_ms = 0;
 static uint32_t mock_max_inferences = 0;
 static uint32_t mock_inference_count = 0;
 
-/* Dynamic session key (derived via ECDH handshake) */
-static uint8_t session_key[32] = {0};  /* Initialized to zeros, populated by ECDH */
-static bool session_key_established = false;
-
-/* Fallback static key for backward compatibility (testing only) */
-static const uint8_t fallback_session_key[32] = {
+/* Static session key used for M_update and verified inference encryption. */
+static const uint8_t session_key[32] = {
     0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7,
     0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE, 0xAF,
     0xB0, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7,
     0xB8, 0xB9, 0xBA, 0xBB, 0xBC, 0xBD, 0xBE, 0xBF
 };
+static const bool session_key_established = true;
 
 /* ========== KEY SCHEME: Dev(sk_d,pk_d)  Pvd(sk_p,pk_p)  Vrf(sk_v,pk_v) ========== */
 
@@ -333,7 +329,6 @@ static bool is_valid_cmd(uint8_t cmd)
             cmd == CMD_RUN_INFERENCE ||
             cmd == CMD_GET_INFERENCE_COUNT ||
             cmd == CMD_GET_REMAINING_INFERENCES ||
-            cmd == CMD_ECDH_HANDSHAKE ||
             cmd == CMD_GET_BENCHMARK ||
             cmd == CMD_GET_SECURE_BENCHMARK ||
             cmd == CMD_GET_INFERENCE_RESULT ||
@@ -351,7 +346,6 @@ static bool is_valid_cmd(uint8_t cmd)
             cmd == CMD_READ_PROTECTED_ROM ||
             cmd == CMD_GET_M_UPDATE_DEBUG);
 }
-
 
 static bool is_valid_len_for_cmd(uint8_t cmd, uint32_t len)
 {
@@ -391,8 +385,6 @@ static bool is_valid_len_for_cmd(uint8_t cmd, uint32_t len)
         case CMD_SET_MAX_INFERENCES:
         case CMD_UPDATE_RATE_LIMIT:
             return len == 4U;  /* Max inferences is uint32_t */
-        case CMD_ECDH_HANDSHAKE:
-            return len == 65U;  /* Uncompressed P-256 public key: 0x04 || x || y */
         default:
             return false;
     }
@@ -407,7 +399,6 @@ static void handle_run_inference(void);
 static void handle_run_inference_with_image(const uint8_t *data, uint32_t len);
 static void handle_get_inference_count(void);
 static void handle_get_remaining_inferences(void);
-static void handle_ecdh_handshake(const uint8_t *data, uint32_t len);
 static void handle_get_benchmark(void);
 static void handle_get_secure_benchmark(void);
 static void handle_get_inference_result(void);
@@ -632,10 +623,6 @@ static void process_command(void)
         
         case CMD_GET_REMAINING_INFERENCES:
             handle_get_remaining_inferences();
-            break;
-        
-        case CMD_ECDH_HANDSHAKE:
-            handle_ecdh_handshake(rx_buffer, rx_len);
             break;
         
         case CMD_GET_BENCHMARK:
@@ -1283,142 +1270,6 @@ static void handle_get_secure_benchmark(void)
     }
     
     /* Send complete secure metrics structure to Mac */
-    const uint8_t *metrics_bytes = (const uint8_t *)&secure_metrics;
-    uart_protocol_send_response(RESP_OK, metrics_bytes, sizeof(secure_benchmark_metrics_ns_t));
-}
-
-static void handle_ecdh_handshake(const uint8_t *data, uint32_t len)
-{
-    /*
-     * ECDH Key Exchange - Device Side
-     * 
-     * Input: Mac's public key (65 bytes, uncompressed P-256)
-     *        Format: 0x04 || x_coord[32] || y_coord[32]
-     * 
-     * Output: Device's public key (65 bytes)
-     * 
-     * Side effect: Derives and stores session_key[32] via ECDH
-     */
-    
-    if (data == NULL || len != 65U || data[0] != 0x04) {
-        uart_protocol_send_response(RESP_ERROR, NULL, 0);
-        return;
-    }
-    
-    /* Initialize PSA Crypto */
-    psa_status_t status = psa_crypto_init();
-    if (status != PSA_SUCCESS) {
-        uart_protocol_send_response(RESP_ERROR, NULL, 0);
-        return;
-    }
-    
-    /* Step 1: Generate ephemeral ECDH key pair */
-    psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
-    psa_set_key_type(&attr, PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_SECP_R1));
-    psa_set_key_bits(&attr, 256);  /* P-256 */
-    psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_DERIVE);
-    psa_set_key_algorithm(&attr, PSA_ALG_ECDH);
-    psa_set_key_lifetime(&attr, PSA_KEY_LIFETIME_VOLATILE);  /* Auto-destroy */
-    
-    psa_key_id_t device_keypair = 0;
-    status = psa_generate_key(&attr, &device_keypair);
-    if (status != PSA_SUCCESS) {
-        uart_protocol_send_response(RESP_ERROR, NULL, 0);
-        return;
-    }
-    
-    /* Step 2: Export device public key */
-    uint8_t device_pubkey[65];  /* 0x04 || x || y */
-    size_t pubkey_len = 0;
-    status = psa_export_public_key(device_keypair, device_pubkey, sizeof(device_pubkey), &pubkey_len);
-    if (status != PSA_SUCCESS || pubkey_len != 65) {
-        psa_destroy_key(device_keypair);
-        uart_protocol_send_response(RESP_ERROR, NULL, 0);
-        return;
-    }
-    
-    /* Step 3: Import Mac's public key */
-    psa_key_attributes_t mac_attr = PSA_KEY_ATTRIBUTES_INIT;
-    psa_set_key_type(&mac_attr, PSA_KEY_TYPE_ECC_PUBLIC_KEY(PSA_ECC_FAMILY_SECP_R1));
-    psa_set_key_bits(&mac_attr, 256);
-    psa_set_key_usage_flags(&mac_attr, PSA_KEY_USAGE_DERIVE);
-    psa_set_key_algorithm(&mac_attr, PSA_ALG_ECDH);
-    psa_set_key_lifetime(&mac_attr, PSA_KEY_LIFETIME_VOLATILE);
-    
-    psa_key_id_t mac_pubkey_handle = 0;
-    status = psa_import_key(&mac_attr, data, len, &mac_pubkey_handle);
-    if (status != PSA_SUCCESS) {
-        psa_destroy_key(device_keypair);
-        uart_protocol_send_response(RESP_ERROR, NULL, 0);
-        return;
-    }
-    
-    /* Step 4: Perform ECDH key agreement using imported Mac's public key */
-    uint8_t shared_secret[32];
-    size_t secret_len = 0;
-    status = psa_raw_key_agreement(PSA_ALG_ECDH, device_keypair, 
-                                     data, len,  /* Mac's public key bytes (uncompressed format) */
-                                     shared_secret, sizeof(shared_secret), &secret_len);
-    if (status != PSA_SUCCESS || secret_len != 32) {
-        psa_destroy_key(device_keypair);
-        psa_destroy_key(mac_pubkey_handle);
-        uart_protocol_send_response(RESP_ERROR, NULL, 0);
-        return;
-    }
-    
-    /* Step 5: Derive session key from shared secret (HKDF-SHA256) */
-    psa_key_derivation_operation_t kdf_op = PSA_KEY_DERIVATION_OPERATION_INIT;
-    status = psa_key_derivation_setup(&kdf_op, PSA_ALG_HKDF(PSA_ALG_SHA_256));
-    if (status == PSA_SUCCESS) {
-        /* Keep HKDF params aligned with host provider tool. */
-        const uint8_t salt[] = "uart_protocol_v1_salt";
-        const uint8_t info[] = "uart_protocol_v1_session_key";
-        
-        status = psa_key_derivation_input_bytes(&kdf_op, PSA_KEY_DERIVATION_INPUT_SALT,
-                                                  salt, sizeof(salt) - 1);
-        if (status == PSA_SUCCESS) {
-            status = psa_key_derivation_input_bytes(&kdf_op, PSA_KEY_DERIVATION_INPUT_SECRET,
-                                                      shared_secret, secret_len);
-        }
-        if (status == PSA_SUCCESS) {
-            status = psa_key_derivation_input_bytes(&kdf_op, PSA_KEY_DERIVATION_INPUT_INFO,
-                                                      info, sizeof(info) - 1);
-        }
-        if (status == PSA_SUCCESS) {
-            status = psa_key_derivation_output_bytes(&kdf_op, session_key, 32);
-        }
-        psa_key_derivation_abort(&kdf_op);
-    }
-    
-    /* Cleanup ephemeral keys */
-    psa_destroy_key(device_keypair);
-    psa_destroy_key(mac_pubkey_handle);
-    memset(shared_secret, 0, sizeof(shared_secret));  /* Zero shared secret */
-    
-    if (status != PSA_SUCCESS) {
-        memset(session_key, 0, sizeof(session_key));  /* Clear on failure */
-        uart_protocol_send_response(RESP_ERROR, NULL, 0);
-        return;
-    }
-    
-    /* Mark session key as established */
-    session_key_established = true;
-
-    /* Share session_key with Secure partition so it can decrypt M_update.
-     * Secure stores it as secure_session_key and uses it in DP_CMD_VALIDATE_M_UPDATE. */
-    {
-        psa_handle_t sh = psa_connect(TFM_DP_SERVICE_SID, 1);
-        if (sh > 0) {
-            uint32_t cmd = DP_CMD_SET_SESSION_KEY;
-            psa_invec in_v[2] = {
-                { &cmd,       sizeof(cmd)  },
-                { session_key, 32U         }
-            };
-            psa_call(sh, PSA_IPC_CALL, in_v, 2, NULL, 0);
-            psa_close(sh);
-        }
-    }
-
     /* Step 6: Send device's public key back to Mac */
     uart_protocol_send_response(RESP_OK, device_pubkey, 65);
 }

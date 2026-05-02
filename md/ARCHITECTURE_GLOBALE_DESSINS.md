@@ -34,7 +34,7 @@ STATUS:
 
 ---
 
-## 3) Session handshake (ECDH)
+## 3) Static session key
 
 ```mermaid
 sequenceDiagram
@@ -43,11 +43,11 @@ sequenceDiagram
     participant N as Device NS
     participant S as Secure Partition
 
-    H->>N: 0x07 ECDH_HANDSHAKE + pk_h_ephemeral
-    N->>S: ECDH + HKDF (device side)
+    H->>N: fixed session key already configured
+    N->>S: static AES-GCM session key (device side)
     S-->>N: pk_d_ephemeral + session context
     N-->>H: STATUS OK + pk_d_ephemeral
-    H->>H: ECDH + HKDF -> identical session_key
+    H->>H: same fixed session key on host
 ```
 
 ---
@@ -254,7 +254,7 @@ sequenceDiagram
 ```mermaid
 stateDiagram-v2
     [*] --> NoSession
-    NoSession --> SessionReady: 0x07 ECDH
+    NoSession --> SessionReady: static session key ready
     SessionReady --> MetadataAttested: 0x01 EnclaveInfo
     MetadataAttested: measurement complete\nruntime enclave not yet created
     MetadataAttested --> PolicyReady: 0x02 M_update validated

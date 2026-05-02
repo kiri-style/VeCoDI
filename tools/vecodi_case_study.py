@@ -6,10 +6,9 @@ This script is intentionally self-contained so it still works even if mac_provid
 or other helper scripts are removed.
 
 Flow implemented:
-  Provider identity:
-    1) ECDH handshake
-    2) EnclaveInfo attestation fetch/verification
-    3) M_update send (strictly increasing c_limit)
+    Provider identity:
+        1) EnclaveInfo attestation fetch/verification
+        2) M_update send (strictly increasing c_limit)
 
   Model Customer identity:
     4) Create enclave
@@ -59,7 +58,6 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature, encode_dss_signature
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 try:
     from PIL import Image
@@ -74,7 +72,6 @@ CMD_GET_MAX_INFERENCES = 0x03
 CMD_RUN_INFERENCE = 0x04
 CMD_GET_INFERENCE_COUNT = 0x05
 CMD_GET_REMAINING_INFERENCES = 0x06
-CMD_ECDH_HANDSHAKE = 0x07
 CMD_GET_DEVICE_PUBKEY = 0x0C
 CMD_GET_ENCLAVE_STATE = 0x10
 CMD_CREATE_ENCLAVE = 0x11
@@ -83,6 +80,12 @@ CMD_RUN_INFERENCE_WITH_IMAGE = 0x14
 
 RESP_OK = 0x00
 CUSTOM_IMAGE_SIZE = 32 * 32 * 3
+STATIC_SESSION_KEY = bytes([
+    0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7,
+    0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE, 0xAF,
+    0xB0, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7,
+    0xB8, 0xB9, 0xBA, 0xBB, 0xBC, 0xBD, 0xBE, 0xBF,
+])
 
 
 def log(msg: str) -> None:
@@ -114,7 +117,6 @@ def load_image_from_mac(image_path: str) -> bytes:
 
 @dataclass
 class SessionState:
-    session_key: Optional[bytes] = None
     enclave_info: Optional[bytes] = None
     device_pubkey: Optional[bytes] = None  # SEC1 uncompressed, 65 bytes
     verifier_key: Optional[ec.EllipticCurvePrivateKey] = None
@@ -214,51 +216,20 @@ class VecodiCaseStudy:
     def _record_extra(self, action: str, **fields: Any) -> None:
         self.benchmarks.append({"action": action, **fields})
 
-    def _require_session_key(self) -> bytes:
-        if self.state.session_key is None:
-            raise RuntimeError("No dynamic session key. Run ECDH first.")
-        return self.state.session_key
-
     def _encrypt(self, plaintext: bytes) -> bytes:
-        key = self._require_session_key()
         nonce = os.urandom(12)
-        ct_tag = AESGCM(key).encrypt(nonce, plaintext, None)
+        ct_tag = AESGCM(STATIC_SESSION_KEY).encrypt(nonce, plaintext, None)
         return nonce + ct_tag
 
     def _decrypt(self, payload: bytes) -> Optional[bytes]:
-        if self.state.session_key is None or len(payload) < 28:
+        if len(payload) < 28:
             return None
         nonce = payload[:12]
         ct_tag = payload[12:]
         try:
-            return AESGCM(self.state.session_key).decrypt(nonce, ct_tag, None)
+            return AESGCM(STATIC_SESSION_KEY).decrypt(nonce, ct_tag, None)
         except Exception:
             return None
-
-    def provider_ecdh_handshake(self) -> None:
-        log("\n[Provider] Step 1 - ECDH handshake")
-        mac_private = ec.generate_private_key(ec.SECP256R1(), default_backend())
-        mac_public = mac_private.public_key().public_bytes(
-            encoding=serialization.Encoding.X962,
-            format=serialization.PublicFormat.UncompressedPoint,
-        )
-        self.device.send_command(CMD_ECDH_HANDSHAKE, mac_public)
-        status, payload = self.device.read_response(timeout=8.0)
-        if status != RESP_OK or len(payload) != 65:
-            raise RuntimeError("ECDH failed: invalid device public key response")
-
-        device_public = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), payload)
-        shared_secret = mac_private.exchange(ec.ECDH(), device_public)
-
-        hkdf = HKDF(
-            algorithm=hashes.SHA256(),
-            length=32,
-            salt=b"uart_protocol_v1_salt",
-            info=b"uart_protocol_v1_session_key",
-            backend=default_backend(),
-        )
-        self.state.session_key = hkdf.derive(shared_secret)
-        log("[OK] ECDH session key established")
 
     def get_device_pubkey(self) -> bytes:
         self.device.send_command(CMD_GET_DEVICE_PUBKEY)
@@ -496,7 +467,6 @@ class VecodiCaseStudy:
         image_payload: Optional[bytes] = None,
         image_label: int = 0,
     ) -> int:
-        self._timed_call("provider.ecdh", self.provider_ecdh_handshake)
         self._timed_call("provider.enclave_info", self.provider_fetch_enclave_info)
         self._timed_call("provider.m_update", self.provider_send_m_update, c_limit)
 
@@ -591,16 +561,15 @@ class VecodiCaseStudy:
     def run_interactive(self, default_c_limit: int) -> int:
         log("\n=== VECODI Interactive Mode ===")
         log("Provider commands:")
-        log("  1) ECDH handshake")
-        log("  2) Fetch EnclaveInfo")
-        log("  3) Send M_update")
+        log("  1) Fetch EnclaveInfo")
+        log("  2) Send M_update")
         log("Model Customer commands:")
-        log("  4) Create enclave")
-        log("  5) Verified inference")
-        log("  6) Destroy enclave")
+        log("  3) Create enclave")
+        log("  4) Verified inference")
+        log("  5) Destroy enclave")
         log("Utility commands:")
-        log("  7) Device status")
-        log("  8) Run full flow once")
+        log("  6) Device status")
+        log("  7) Run full flow once")
         log("  q) Quit")
 
         while True:
@@ -610,22 +579,20 @@ class VecodiCaseStudy:
 
             try:
                 if choice == "1":
-                    self.provider_ecdh_handshake()
-                elif choice == "2":
                     self.provider_fetch_enclave_info()
-                elif choice == "3":
+                elif choice == "2":
                     raw = input(f"c_limit (default {default_c_limit}): ").strip()
                     c_limit = int(raw) if raw else default_c_limit
                     self.provider_send_m_update(c_limit)
-                elif choice == "4":
+                elif choice == "3":
                     self.customer_create_enclave()
-                elif choice == "5":
+                elif choice == "4":
                     self.customer_verified_inference()
-                elif choice == "6":
+                elif choice == "5":
                     self.customer_destroy_enclave()
-                elif choice == "7":
+                elif choice == "6":
                     self.print_status()
-                elif choice == "8":
+                elif choice == "7":
                     self.run_full_case_study(c_limit=default_c_limit, num_inferences=1)
                 else:
                     log("[WARN] Unknown command")

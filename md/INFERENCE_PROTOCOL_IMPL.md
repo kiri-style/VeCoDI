@@ -155,7 +155,7 @@ Total: 97 bytes
 1. **Phase 1: Enclave Authorization Protocol** (Previously implemented)
    - EnclaveInfo computation
    - M_update generation with AES-256-GCM
-   - Real host/device flow over UART with ECDH session setup
+   - Real host/device flow over UART with a fixed AES-GCM session key
 
 2. **Phase 2: Inference Protocol** (Current runtime path)
    - `CMD_RUN_INFERENCE` accepts encrypted packet only (`len=128`)

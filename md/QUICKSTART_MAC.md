@@ -32,7 +32,7 @@ python3 tools/mac_provider.py /dev/tty.usbmodem14203 115200
 
 The current menu includes:
 
-- `1` ECDH handshake
+- `1` Fetch EnclaveInfo
 - `2` Compute EnclaveInfo (attested)
 - `3` Send M_update (quota custom)
 - `6` Update rate limit (secure API)
@@ -46,7 +46,7 @@ The current menu includes:
 
 ## Recommended Test Scenario
 
-1. **Command 1**: ECDH handshake
+1. **Command 1**: Fetch EnclaveInfo
 2. **Command 2**: Compute EnclaveInfo (attestation)
 3. **Command 3**: Send M_update (`c_limit` > current max)
 4. **Command 21**: Create enclave (explicit lifecycle)

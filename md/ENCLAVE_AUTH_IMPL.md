@@ -64,7 +64,7 @@ Result: 32-byte SHA-256 hash
 
 #### Key Material (Real Deployment Model)
 - Device and host establish a session during first connection.
-- Session keys are negotiated at runtime (ECDH handshake).
+- Session keys are fixed and shared by NS and Secure.
 - `M_update` is encrypted and authenticated with the negotiated session key.
 - Verifier key material (`pk_v`) is carried in `M_update` payload and stored by the device after validation.
 

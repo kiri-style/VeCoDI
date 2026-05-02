@@ -196,7 +196,7 @@ Response: [00 04 00 00 00  11 00 00 00]  // remaining = 17 (20 - 3)
 
 | CMD  | Name                        | Description |
 |------|-----------------------------|-------------|
-| 0x07 | `CMD_ECDH_HANDSHAKE`        | ECDH P-256 handshake to derive session context |
+| 0x07 | removed                     | Static AES-GCM session key is used instead |
 | 0x08 | `CMD_GET_BENCHMARK`         | Read NS benchmark metrics |
 | 0x09 | `CMD_GET_SECURE_BENCHMARK`  | Read Secure benchmark metrics |
 | 0x0A | `CMD_GET_INFERENCE_RESULT`  | Read last prediction/expected pair |
@@ -258,7 +258,7 @@ After quota exhausted:
 
 ### 1. AES-256-GCM Encryption
 - **Algorithm**: AES-256-GCM (Galois/Counter Mode)
-- **Key**: 256-bit session key established after ECDH handshake (test fallback may be used depending on build)
+- **Key**: 256-bit static AES-GCM session key shared by NS and Secure
 - **Nonce**: 12 bytes (96 bits), randomly generated per M_update
 - **Tag**: 16 bytes (128 bits), authenticated encryption tag
 - **Implementation**: PSA Crypto API (hardware-accelerated on STM32L552)
@@ -276,7 +276,7 @@ After quota exhausted:
 - **Prevents**: Unauthorized inference execution
 
 ### 4. Session and PoX Verification
-- Session establishment is initiated by `CMD_ECDH_HANDSHAKE`.
+- Session establishment uses a fixed session key shared by NS and Secure.
 - Host retrieves `pk_d` (`0x0C`) then verifies PoX signatures returned by secure inference path (`0x04`).
 - Negative PoX validation is exercised in host security test T6.
 
@@ -439,7 +439,7 @@ else:
 
 - [x] Quota management (max/count/remaining)
 - [x] Anti-replay protection on `M_update`
-- [x] ECDH session bootstrap
+- [x] Static session-key bootstrap
 - [x] Secure inference path (`M_inf` verification + PoX response)
 - [x] Host-side PoX positive/negative checks
 - [x] SAU deterministic state command and danger diagnostics (`0x0E`, `0x0F`)

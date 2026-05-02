@@ -227,8 +227,7 @@ def main() -> int:
     try:
         device.connect()
 
-        print("Step 0: Provider setup (ECDH + EnclaveInfo)")
-        timed_call(case_study.provider_ecdh_handshake)
+        print("Step 0: Provider setup (EnclaveInfo)")
         timed_call(case_study.provider_fetch_enclave_info)
 
         current_max = case_study.get_max_inferences()

@@ -61,7 +61,6 @@ static void print_secure_memory_stats(void)
 #define DP_CMD_COMPUTE_ENCLAVE_INFO 10  /* Compute EnclaveInfo hash */
 #define DP_CMD_VALIDATE_M_UPDATE    11  /* Validate and decrypt M_update */
 #define DP_CMD_SET_MAX_INFERENCES   12  /* Override max inferences and reset counter */
-#define DP_CMD_SET_SESSION_KEY      13  /* Receive ECDH session_key from NS */
 #define DP_CMD_VALIDATE_BOOT_ENCLAVE_INFO 17  /* Recompute current EnclaveInfo and compare with boot-time sealed value */
 #define DP_CMD_SAU_REGISTER_ROM     18  /* Register model ROM window */
 #define DP_CMD_SAU_REGISTER_CODE    19  /* Register inference code window */
@@ -129,9 +128,13 @@ static void init_secure_model_identity(void)
     printf("[SECURE] Model identity context initialized (model_id=%u)\n", current_model_id);
 }
 
-/* ECDH session key shared by NS after handshake — used to decrypt M_update. */
-static uint8_t  secure_session_key[32] = {0};
-static bool     secure_session_key_set  = false;
+/* Static session key used to decrypt M_update and verified inference payloads. */
+static const uint8_t secure_session_key[32] = {
+    0xA0,0xA1,0xA2,0xA3,0xA4,0xA5,0xA6,0xA7,
+    0xA8,0xA9,0xAA,0xAB,0xAC,0xAD,0xAE,0xAF,
+    0xB0,0xB1,0xB2,0xB3,0xB4,0xB5,0xB6,0xB7,
+    0xB8,0xB9,0xBA,0xBB,0xBC,0xBD,0xBE,0xBF
+};
 
 /* Authorization state extracted from M_update plaintext (authoritative Secure copy). */
 static uint8_t  s_pk_v[64]    = {0};
@@ -524,10 +527,6 @@ static psa_status_t tfm_dp_validate_m_update(psa_msg_t *msg)
     SECURE_BENCHMARK_START(m_update_start);
     psa_status_t status = PSA_SUCCESS;
 
-    if (!secure_session_key_set) {
-        printf("[SECURE] M_update rejected: session_key not set\n");
-        return PSA_ERROR_BAD_STATE;
-    }
     if (!current_model_info_valid) {
         printf("[SECURE] M_update rejected: model identity context unavailable\n");
         return PSA_ERROR_BAD_STATE;
@@ -1576,20 +1575,6 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
             return PSA_SUCCESS;
         }
 
-    case DP_CMD_SET_SESSION_KEY:
-        {
-            /* NS shares ECDH-derived session_key so Secure can decrypt M_update. */
-            if (msg->in_size[1] != 32U) {
-                printf("[SECURE] DP_CMD_SET_SESSION_KEY: bad size %zu\n", msg->in_size[1]);
-                return PSA_ERROR_INVALID_ARGUMENT;
-            }
-            psa_read(msg->handle, 1, secure_session_key, 32);
-            secure_session_key_set = true;
-            s_auth_valid = false;  /* new session invalidates previous M_update */
-            printf("[SECURE] DP_CMD_SET_SESSION_KEY: session key stored\n");
-            return PSA_SUCCESS;
-        }
-
     case DP_CMD_VALIDATE_M_UPDATE:
         {
             printf("[SECURE] DP_CMD_VALIDATE_M_UPDATE received\n");
@@ -1780,7 +1765,7 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
                 result = PSA_ERROR_INVALID_ARGUMENT;
                 goto inf_start_out;
             }
-            if (!s_auth_valid || !enclave_created_secure || !secure_session_key_set) {
+            if (!s_auth_valid || !enclave_created_secure) {
                 result = PSA_ERROR_BAD_STATE;
                 goto inf_start_out;
             }

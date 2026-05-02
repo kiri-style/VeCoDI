@@ -26,7 +26,6 @@ extern "C" {
 #define DP_CMD_COMPUTE_ENCLAVE_INFO 10  /* Compute EnclaveInfo hash */
 #define DP_CMD_VALIDATE_M_UPDATE    11  /* Validate and decrypt M_update */
 #define DP_CMD_SET_MAX_INFERENCES   12  /* Override max inferences and reset counter */
-#define DP_CMD_SET_SESSION_KEY      13  /* Share ECDH session_key with Secure partition */
 #define DP_CMD_SAU_REGISTER         14  /* Register enclave RAM window: in[1]={base(4)+size(4)} */
 #define DP_CMD_SAU_CONTROL          15  /* SAU control: in[1]=cmd(1B): 1=CLOSE_RAM, 2=OPEN_RAM, 3=CLOSE_MODEL_RO, 4=OPEN_MODEL_RO */
 #define DP_CMD_GET_SAU_STATE        16  /* Return SAU state: state(1)+base(4)+size(4) */

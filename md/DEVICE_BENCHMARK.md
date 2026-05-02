@@ -2,7 +2,7 @@
 
 ## Overview
 The device benchmark system measures performance metrics directly on the STM32L552 microcontroller via UART protocol, capturing:
-- ECDH key exchange performance
+- Static session-key performance
 - Enclave creation time
 - Split inference execution time (early + late layers)
 - AES-CTR decryption (secure world)
@@ -15,7 +15,7 @@ The device benchmark system measures performance metrics directly on the STM32L5
 
 On 11 April 2026, a runtime inference regression was investigated and fixed.
 
-- Symptom: `CMD_RUN_INFERENCE (0x04)` failed after successful `ECDH + M_update + Create_Enclave`.
+- Symptom: `CMD_RUN_INFERENCE (0x04)` failed after successful `M_update + Create_Enclave`.
 - Root cause: runtime EnclaveInfo pre-check path could block inference even when Secure auth state was valid.
 - Resolution: runtime validation kept for observability, but no longer hard-blocks verified inference path.
 - Hardware validation flow: `1 -> 3 -> 21 -> 9 -> 11` completed successfully with valid PoX and matching prediction/expected label.
@@ -82,14 +82,14 @@ Current device run (11 April 2026) returned the **legacy 88-byte** secure payloa
 ## Quick Start
 
 ### Using get_device_benchmark.py (Recommended)
-The full benchmark script collects all metrics including ECDH handshake:
+The full benchmark script collects all metrics with the static session key flow:
 
 ```bash
 python3 tools/get_device_benchmark.py [/dev/ttyXXX]
 ```
 
 This will:
-1. Perform ECDH handshake (P-256 key exchange)
+1. Use the fixed AES-GCM session key shared by NS and Secure
 2. Compute EnclaveInfo hash
 3. Send M_update with encrypted quota (AES-256-GCM)
 4. Execute split inference
@@ -168,12 +168,12 @@ Defaults to auto-detected `/dev/tty.usbmodem*` if port not specified.
 
 ## Benchmark Workflow
 
-### Step 1: ECDH Handshake
+### Step 1: Static Session Key
 ```
-Mac → Device: CMD_ECDH_HANDSHAKE (0x07) + uncompressed P-256 public key (65 bytes)
-Device → Mac: Device ephemeral public key (65 bytes)
+Mac → Device: no handshake packet is required
+Device → Mac: fixed attestation/device-public-key responses only
 
-Result: Session key derived via HKDF-SHA256 with identical salt/info on both sides
+Result: both sides use the same fixed AES-GCM session key
 ```
 
 ### Step 2: Compute EnclaveInfo  
@@ -187,7 +187,7 @@ Device → Mac: Encrypted response
 ```
 Mac encrypts plaintext: c_limit(4) || pk_v(64) || enclave_info(32) || cert_len(4) || cert(n)
 Total plaintext: 104 + n bytes (n = cert_len)
-Encryption: AES-256-GCM with ECDH-derived session key
+Encryption: AES-256-GCM with the fixed session key
 Packet format: nonce(12) || ciphertext(104+n) || tag(16) = (132+n) bytes total
 
 Mac → Device: CMD_VALIDATE_M_UPDATE (0x02) + encrypted packet
@@ -259,7 +259,7 @@ For publication/analysis workflows, focus on:
 ## Expected Performance
 
 ### Timing (STM32L552 @ 110 MHz)
-- **ECDH Handshake**: ~500 ms (ephemeral key generation + key agreement)
+- **Session setup**: no handshake; static key is already available
 - **EnclaveInfo Computation**: ~50 ms (SHA-256 hash)
 - **M_update Validation**: ~30 ms (AES-256-GCM decrypt)
 - **Split Inference**: 
@@ -311,7 +311,7 @@ print(f"Remaining inferences: {remaining}")
 
 ### M_update Validation Fails (Status 0xFF)
 Possible causes:
-1. **ECDH session key mismatch**: Ensure salt and info strings match on both sides
+1. **Session key mismatch**: Ensure both sides use the same fixed AES-GCM key
 2. **EnclaveInfo mismatch**: Device and Mac must compute the same EnclaveInfo hash
 3. **Plaintext format error**: Verify c_limit, pk_v, enclave_info, cert_len, cert order
 4. **Quota already set**: Reset device before re-running tests

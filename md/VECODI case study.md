@@ -19,7 +19,7 @@ The Provider authorizes model usage by sending a valid `M_update` over the secur
 4. Optionally verify current quota and counters.
 
 ### Command-level flow (Mac provider)
-1. `1` ECDH handshake
+1. `1` Fetch EnclaveInfo
 2. `2` Compute EnclaveInfo
 3. `3` Send `M_update`
 
@@ -68,7 +68,7 @@ Optional status check:
 ## Protocol Preconditions Summary
 
 Before `9` (Verified inference), the device expects:
-1. Successful ECDH session setup.
+1. Successful static session-key setup.
 2. Successful `M_update` validation.
 3. Enclave explicitly created.
 

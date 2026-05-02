@@ -183,7 +183,6 @@ See [DEVICE_BENCHMARK.md](../md/DEVICE_BENCHMARK.md) for benchmark collection, m
    - CMD_RUN_INFERENCE (0x04): Execute inference (consumes quota)
    - CMD_GET_INFERENCE_COUNT (0x05): Return consumed quota
    - CMD_GET_REMAINING_INFERENCES (0x06): Return available quota
-   - CMD_ECDH_HANDSHAKE (0x07): Derive dynamic session key
    - CMD_GET_BENCHMARK (0x08): Return NS benchmark structure
    - CMD_GET_SECURE_BENCHMARK (0x09): Return Secure benchmark structure
    - CMD_GET_INFERENCE_RESULT (0x0A): Return last prediction/expected
@@ -200,7 +199,7 @@ See [DEVICE_BENCHMARK.md](../md/DEVICE_BENCHMARK.md) for benchmark collection, m
 ### Provider/Verifier Host Tool
 - **tools/mac_provider.py**: Interactive Model Provider/Verifier used for hardware tests
    - Generate M_update packets with configurable c_limit
-   - ECDH/HKDF dynamic session key flow
+   - Static AES-256-GCM session key flow
    - PoX verification (valid + negative checks)
    - Security test suite (unitary/combinable)
    - Session status now shows whether the enclave is currently created on-device
@@ -373,8 +372,7 @@ return RESP_OK;
 
 ### Session Key Management
 
-- Session establishment is done through `CMD_ECDH_HANDSHAKE` (`0x07`).
-- Command and response payloads are encrypted with AES-GCM when session mode is active.
+- Command and response payloads are encrypted with AES-GCM using the fixed session key shared by NS and Secure.
 - Host-side PoX verification uses `CMD_GET_DEVICE_PUBKEY` (`0x0C`) to obtain `pk_d`.
 
 ---

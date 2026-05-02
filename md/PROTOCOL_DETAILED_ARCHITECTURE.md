@@ -61,7 +61,7 @@ flowchart LR
 | `0x04` | `CMD_RUN_INFERENCE` | Inference execution (legacy or secure path) |
 | `0x05` | `CMD_GET_INFERENCE_COUNT` | Read consumed quota |
 | `0x06` | `CMD_GET_REMAINING_INFERENCES` | Read remaining quota |
-| `0x07` | `CMD_ECDH_HANDSHAKE` | Initialize session context |
+| `0x07` | removed | Static AES-GCM session key is used instead |
 | `0x08` | `CMD_GET_BENCHMARK` | NS benchmark |
 | `0x09` | `CMD_GET_SECURE_BENCHMARK` | Secure benchmark |
 | `0x0A` | `CMD_GET_INFERENCE_RESULT` | Last result |
@@ -87,8 +87,8 @@ sequenceDiagram
     participant N as NS UART Protocol
     participant S as Secure Partition
 
-    H->>N: 0x07 ECDH_HANDSHAKE
-    N-->>H: RESP_OK + device ephemeral data
+    H->>N: fixed session key already configured
+    N-->>H: RESP_OK + device public key / attestation data
 
     H->>N: 0x01 COMPUTE_ENCLAVE_INFO (+nonce attestation)
     N->>S: Compute EnclaveInfo + sign challenge
@@ -162,7 +162,7 @@ model_id || cert || nonce_inf || output_class
 ```mermaid
 stateDiagram-v2
     [*] --> NoSession
-    NoSession --> SessionReady: 0x07 ECDH
+    NoSession --> SessionReady: static session key ready
     SessionReady --> MetadataAttested: 0x01 EnclaveInfo (+attestation)
     MetadataAttested: metadata measured\nenclave not yet created
     MetadataAttested --> PolicySet: 0x02 M_update valid

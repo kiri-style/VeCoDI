@@ -20,7 +20,7 @@ The objective is to show that, on real hardware, SAVID can:
 
 ## Protocol Path Used in This Case Study
 Validated interactive flow:
-1. ECDH handshake (`CMD_ECDH_HANDSHAKE`)
+1. Fixed session key flow (static AES-GCM transport)
 2. EnclaveInfo attestation (`CMD_COMPUTE_ENCLAVE_INFO`)
 3. Authorization update (`CMD_VALIDATE_M_UPDATE`) with anti-replay (`c_limit` strictly increasing)
 4. Explicit enclave lifecycle create (`CMD_CREATE_ENCLAVE`)
@@ -96,4 +96,4 @@ Source: `md/VERIFICATION_REPORT.md` and `md/DEVICE_BENCHMARK.md`
 
 ## Suggested Paper Insert (ready to paste)
 
-"We evaluate SAVID through a real deployment on an STM32L552ZE-Q (Cortex-M33, 110 MHz) running Zephyr (NS) and TF-M (Secure). The case study uses a split CIFAR-10 model in which early layers execute in NS and late layers are stored encrypted in flash and decrypted under Secure control. The full protocol flow (ECDH handshake, EnclaveInfo attestation, M_update authorization, explicit enclave create, verified inference, and optional destroy) was validated on hardware. During verified inference, Secure START decrypts and verifies `M_inf` and opens the enclave window, NS executes inference atomically, and Secure COMPLETE commits quota state and signs PoX. In our measurements, SAVID reaches 43.1 ms for CIFAR-10 inference versus 38.4 ms for NS baseline, corresponding to a 4.7 ms (12.2%) overhead, while providing memory isolation and verifiable result generation. Combined memory usage was 177,843/196,608 bytes RAM and 260,172/396,288 bytes flash in the reported run."
+"We evaluate SAVID through a real deployment on an STM32L552ZE-Q (Cortex-M33, 110 MHz) running Zephyr (NS) and TF-M (Secure). The case study uses a split CIFAR-10 model in which early layers execute in NS and late layers are stored encrypted in flash and decrypted under Secure control. The full protocol flow (static session key, EnclaveInfo attestation, M_update authorization, explicit enclave create, verified inference, and optional destroy) was validated on hardware. During verified inference, Secure START decrypts and verifies `M_inf` and opens the enclave window, NS executes inference atomically, and Secure COMPLETE commits quota state and signs PoX. In our measurements, SAVID reaches 43.1 ms for CIFAR-10 inference versus 38.4 ms for NS baseline, corresponding to a 4.7 ms (12.2%) overhead, while providing memory isolation and verifiable result generation. Combined memory usage was 177,843/196,608 bytes RAM and 260,172/396,288 bytes flash in the reported run."

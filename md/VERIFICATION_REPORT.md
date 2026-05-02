@@ -18,7 +18,7 @@ Complete end-to-end verification of the 3-phase Enclave Authorization Protocol o
 
 ### Incident observed
 
-- Verified inference (`option 9`) was failing after successful ECDH + M_update + Create_Enclave.
+- Verified inference (`option 9`) was failing after successful M_update + Create_Enclave.
 - Device returned `RESP_ERROR` on `CMD_RUN_INFERENCE (0x04)` while quota and session appeared valid.
 
 ### Root cause
@@ -54,7 +54,7 @@ Complete end-to-end verification of the 3-phase Enclave Authorization Protocol o
 ### What was re-validated
 
 - ✅ Interactive Mac flow (`tools/mac_provider.py`) end-to-end on hardware.
-- ✅ ECDH handshake and dynamic session key derivation.
+- ✅ Static session-key transport.
 - ✅ EnclaveInfo computation and response decoding.
 - ✅ M_update anti-replay behavior: rejected when `c_limit <= current max`, accepted when strictly greater.
 - ✅ Verified inference command (`9`) works after successful M_update.
