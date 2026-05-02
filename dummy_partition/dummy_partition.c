@@ -521,6 +521,7 @@ static psa_status_t validate_current_enclave_info_against_boot(uint8_t *match_ou
  */
 static psa_status_t tfm_dp_validate_m_update(psa_msg_t *msg)
 {
+    SECURE_BENCHMARK_START(m_update_start);
     psa_status_t status = PSA_SUCCESS;
 
     if (!secure_session_key_set) {
@@ -543,7 +544,7 @@ static psa_status_t tfm_dp_validate_m_update(psa_msg_t *msg)
         return PSA_ERROR_INVALID_ARGUMENT;
     }
 
-    SECURE_BENCHMARK_START(m_update_start);
+    
 
     /* Read full packet (nonce || ciphertext || tag) */
     uint8_t packet[M_UPDATE_NONCE_SIZE + M_UPDATE_CIPHERTEXT_MAX + M_UPDATE_TAG_SIZE];
@@ -1767,6 +1768,7 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
     case DP_CMD_INF_START:
         {
             SECURE_BENCHMARK_START(inf_start_cycles_start);
+            psa_status_t result = PSA_SUCCESS;
             uint8_t packet[128];
             uint8_t m_inf[100];
             uint8_t msg_hash[32];
@@ -1775,10 +1777,12 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
             size_t plaintext_len = 0U;
 
             if (msg->in_size[1] != sizeof(packet) || msg->out_size[0] != sizeof(tx_id)) {
-                return PSA_ERROR_INVALID_ARGUMENT;
+                result = PSA_ERROR_INVALID_ARGUMENT;
+                goto inf_start_out;
             }
             if (!s_auth_valid || !enclave_created_secure || !secure_session_key_set) {
-                return PSA_ERROR_BAD_STATE;
+                result = PSA_ERROR_BAD_STATE;
+                goto inf_start_out;
             }
             if (s_tx_active) {
                 /* Recover from stale transaction state left by interrupted NS flow. */
@@ -1786,7 +1790,8 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
                 reset_secure_inference_tx_state();
             }
             if (inference_counter_secure + 1U > max_inferences_per_enclave_secure) {
-                return PSA_ERROR_NOT_PERMITTED;
+                result = PSA_ERROR_NOT_PERMITTED;
+                goto inf_start_out;
             }
 
             psa_read(msg->handle, 1, packet, sizeof(packet));
@@ -1794,7 +1799,8 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
             /* Decrypt M_inf in Secure: nonce(12) || ciphertext(100) || tag(16). */
             psa_status_t st = psa_crypto_init();
             if (st != PSA_SUCCESS) {
-                return st;
+                result = st;
+                goto inf_start_out;
             }
 
             psa_key_attributes_t dec_attr = PSA_KEY_ATTRIBUTES_INIT;
@@ -1807,7 +1813,8 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
             st = psa_import_key(&dec_attr, secure_session_key, 32U, &dec_key);
             psa_reset_key_attributes(&dec_attr);
             if (st != PSA_SUCCESS) {
-                return st;
+                result = st;
+                goto inf_start_out;
             }
 
             st = psa_aead_decrypt(dec_key,
@@ -1825,7 +1832,8 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
             if (st != PSA_SUCCESS || plaintext_len != sizeof(m_inf)) {
                 secure_memzero(m_inf, sizeof(m_inf));
                 secure_memzero(packet, sizeof(packet));
-                return PSA_ERROR_INVALID_SIGNATURE;
+                result = PSA_ERROR_INVALID_SIGNATURE;
+                goto inf_start_out;
             }
 
             uint32_t req_model_id = (uint32_t)m_inf[32]
@@ -1834,7 +1842,8 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
                                   | ((uint32_t)m_inf[35] << 24);
 
             if (s_model_id != 0U && req_model_id != s_model_id) {
-                return PSA_ERROR_INVALID_ARGUMENT;
+                result = PSA_ERROR_INVALID_ARGUMENT;
+                goto inf_start_out;
             }
 
             st = psa_hash_compute(PSA_ALG_SHA_256,
@@ -1846,7 +1855,8 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
             if (st != PSA_SUCCESS || hash_len != sizeof(msg_hash)) {
                 secure_memzero(m_inf, sizeof(m_inf));
                 secure_memzero(packet, sizeof(packet));
-                return PSA_ERROR_GENERIC_ERROR;
+                result = PSA_ERROR_GENERIC_ERROR;
+                goto inf_start_out;
             }
 
             uint8_t pk_v_full[65];
@@ -1865,7 +1875,8 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
             if (st != PSA_SUCCESS) {
                 secure_memzero(m_inf, sizeof(m_inf));
                 secure_memzero(packet, sizeof(packet));
-                return PSA_ERROR_INVALID_SIGNATURE;
+                result = PSA_ERROR_INVALID_SIGNATURE;
+                goto inf_start_out;
             }
 
             st = psa_verify_hash(pk_v_id,
@@ -1878,12 +1889,14 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
             if (st != PSA_SUCCESS) {
                 secure_memzero(m_inf, sizeof(m_inf));
                 secure_memzero(packet, sizeof(packet));
-                return PSA_ERROR_INVALID_SIGNATURE;
+                result = PSA_ERROR_INVALID_SIGNATURE;
+                goto inf_start_out;
             }
 
             st = sau_sync_enclave_and_model_ro(true);
             if (st != PSA_SUCCESS) {
-                return st;
+                result = st;
+                goto inf_start_out;
             }
 
             s_tx_active = true;
@@ -1899,14 +1912,20 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
             secure_memzero(packet, sizeof(packet));
 
             psa_write(msg->handle, 0, &tx_id, sizeof(tx_id));
+            result = PSA_SUCCESS;
+
+        inf_start_out:
             SECURE_BENCHMARK_END(inf_start_cycles_start, inf_start_cycles);
-            g_secure_metrics.inf_start_count++;
-            return PSA_SUCCESS;
+            if (result == PSA_SUCCESS) {
+                g_secure_metrics.inf_start_count++;
+            }
+            return result;
         }
 
     case DP_CMD_INF_COMPLETE:
         {
             SECURE_BENCHMARK_START(inf_complete_cycles_start);
+            psa_status_t result = PSA_SUCCESS;
             uint8_t req[5];
             uint8_t pox_hash[32];
             uint8_t pox_msg[4U + sizeof(s_cert) + sizeof(s_tx_nonce) + 1U];
@@ -1915,10 +1934,12 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
             size_t sig_len = 0U;
 
             if (msg->in_size[1] != sizeof(req) || msg->out_size[0] != 64U) {
-                return PSA_ERROR_INVALID_ARGUMENT;
+                result = PSA_ERROR_INVALID_ARGUMENT;
+                goto inf_complete_out;
             }
             if (!s_tx_active || !s_device_key_ready) {
-                return PSA_ERROR_BAD_STATE;
+                result = PSA_ERROR_BAD_STATE;
+                goto inf_complete_out;
             }
 
             psa_read(msg->handle, 1, req, sizeof(req));
@@ -1929,7 +1950,8 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
             uint8_t output_class = req[4];
 
             if (req_tx_id != s_tx_id) {
-                return PSA_ERROR_INVALID_ARGUMENT;
+                result = PSA_ERROR_INVALID_ARGUMENT;
+                goto inf_complete_out;
             }
 
             pox_msg[pox_msg_len++] = (uint8_t)(s_tx_model_id & 0xFFU);
@@ -1953,7 +1975,8 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
                                                sizeof(pox_hash),
                                                &pox_hash_len);
             if (st != PSA_SUCCESS || pox_hash_len != sizeof(pox_hash)) {
-                return PSA_ERROR_GENERIC_ERROR;
+                result = PSA_ERROR_GENERIC_ERROR;
+                goto inf_complete_out;
             }
 
             uint8_t sig[64];
@@ -1965,7 +1988,8 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
                                sizeof(sig),
                                &sig_len);
             if (st != PSA_SUCCESS || sig_len != sizeof(sig)) {
-                return PSA_ERROR_GENERIC_ERROR;
+                result = PSA_ERROR_GENERIC_ERROR;
+                goto inf_complete_out;
             }
 
             inference_counter_secure++;
@@ -1978,9 +2002,14 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
             s_tx_model_id = 0U;
 
             psa_write(msg->handle, 0, sig, sizeof(sig));
+            result = PSA_SUCCESS;
+
+        inf_complete_out:
             SECURE_BENCHMARK_END(inf_complete_cycles_start, inf_complete_cycles);
-            g_secure_metrics.inf_complete_count++;
-            return PSA_SUCCESS;
+            if (result == PSA_SUCCESS) {
+                g_secure_metrics.inf_complete_count++;
+            }
+            return result;
         }
 
     case DP_CMD_GET_DEVICE_PUBKEY:

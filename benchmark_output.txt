@@ -1,0 +1,71 @@
+
+╔════════════════════════════════════════════════════════════════════╗
+║     VECODI Full Flow Benchmark                                     ║
+║   M_update -> create -> inference -> destroy                       ║
+╚════════════════════════════════════════════════════════════════════╝
+        
+Project: /Users/user/zephyrproject/zephyr/samples/modules/tflite-micro/VeCoDI
+Runs: 3
+Image upload: enabled (3072 bytes)
+[OK] Connected to /dev/cu.usbmodem1203 @ 115200
+Step 0: Provider setup (ECDH + EnclaveInfo)
+
+[Provider] Step 1 - ECDH handshake
+[OK] ECDH session key established
+
+[Provider] Step 2 - Fetch/verify EnclaveInfo
+[OK] EnclaveInfo attestation verified
+
+Run 1/3 (c_limit=10)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=10
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=6
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 90.05ms (3,109,061 cycles), inference=1463.28ms (5,334,333 cycles), m_update= 19.07ms (261,899 cycles), destroy=  3.96ms (298,147 cycles)
+
+Run 2/3 (c_limit=11)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=11
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=6
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 90.13ms (5,307,347 cycles), inference=1463.55ms (5,334,277 cycles), m_update= 19.05ms (261,917 cycles), destroy=  4.02ms (298,147 cycles)
+
+Run 3/3 (c_limit=12)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=12
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=6
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 90.09ms (5,307,342 cycles), inference=1461.25ms (5,334,303 cycles), m_update= 19.09ms (261,908 cycles), destroy=  4.00ms (298,147 cycles)
+
+=== FULL FLOW SUMMARY ===
+M_update: 19.069 ± 0.024 ms (261,908 cycles avg)
+CREATE:   90.089 ± 0.039 ms (4,574,583 cycles avg)
+INFER:    1462.696 ± 1.258 ms (5,334,304 cycles avg)
+FULL EXEC:1462.696 ms host | 11,560,733 cycles avg on device
+DESTROY:  3.992 ± 0.032 ms (298,147 cycles avg)
+[OK] Benchmark written: build/full_flow_benchmark_full_execute_fixed.json
+[OK] Serial disconnected

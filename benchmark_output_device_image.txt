@@ -1,0 +1,15 @@
+
+╔════════════════════════════════════════════════════════════════════╗
+║     VECODI Full Flow Benchmark                                     ║
+║   M_update -> create -> inference -> destroy                       ║
+╚════════════════════════════════════════════════════════════════════╝
+        
+Project: /Users/user/zephyrproject/zephyr/samples/modules/tflite-micro/VeCoDI
+Runs: 3
+Image source: device test_images (internal sample on board)
+[OK] Connected to /dev/cu.usbmodem1203 @ 115200
+Step 0: Provider setup (ECDH + EnclaveInfo)
+
+[Provider] Step 1 - ECDH handshake
+[ERROR] Timeout reading status byte
+[OK] Serial disconnected

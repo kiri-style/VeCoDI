@@ -76,7 +76,6 @@ BAUD_DEFAULT = 115200
 CMD_CREATE_ENCLAVE = 0x11
 CMD_DESTROY_ENCLAVE = 0x12
 CMD_GET_BENCHMARK = 0x08
-
 DEVICE_BENCHMARK_NAMES = [
     'enclave_create_cycles', 'enclave_destroy_cycles', 'aes_decrypt_cycles',
     'early_layers_cycles', 'late_layers_cycles', 'total_inference_cycles', 'run_enclave_cycles', 'full_execute_cycles',
@@ -112,17 +111,27 @@ def per_op_cycles(after: dict, before: dict, sum_key: str, count_key: str, fallb
 
 
 def read_device_benchmark(device: UartDevice) -> dict:
-    device.send_command(CMD_GET_BENCHMARK)
-    status, payload = device.read_response(timeout=8.0)
-    if status != 0:
-        raise RuntimeError(f'CMD_GET_BENCHMARK failed with status {status}')
-
+    attempts = 3
     expected = struct.calcsize(DEVICE_BENCHMARK_FMT)
-    if len(payload) < expected:
-        raise RuntimeError(f'Benchmark payload too short: got {len(payload)}, expected {expected}')
+    last_error = None
 
-    values = struct.unpack(DEVICE_BENCHMARK_FMT, payload[:expected])
-    return {name: int(value) for name, value in zip(DEVICE_BENCHMARK_NAMES, values)}
+    for _ in range(attempts):
+        try:
+            device.send_command(CMD_GET_BENCHMARK)
+            status, payload = device.read_response(timeout=6.0)
+            if status != 0:
+                last_error = RuntimeError(f'CMD_GET_BENCHMARK failed with status {status}')
+                time.sleep(0.05)
+                continue
+            if len(payload) < expected:
+                raise RuntimeError(f'Benchmark payload too short: got {len(payload)}, expected {expected}')
+            values = struct.unpack(DEVICE_BENCHMARK_FMT, payload[:expected])
+            return {name: int(value) for name, value in zip(DEVICE_BENCHMARK_NAMES, values)}
+        except Exception as exc:
+            last_error = exc
+            time.sleep(0.05)
+
+    raise RuntimeError(f'Failed to read device benchmark after retries: {last_error}')
 
 
 def send_create(device: UartDevice, decrypt_size: int) -> tuple[int, float]:

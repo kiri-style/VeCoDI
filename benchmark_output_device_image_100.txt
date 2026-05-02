@@ -1,0 +1,1526 @@
+
+╔════════════════════════════════════════════════════════════════════╗
+║     VECODI Full Flow Benchmark                                     ║
+║   M_update -> create -> inference -> destroy                       ║
+╚════════════════════════════════════════════════════════════════════╝
+        
+Project: /Users/user/zephyrproject/zephyr/samples/modules/tflite-micro/VeCoDI
+Runs: 100
+Image source: device test_images (internal sample on board)
+[OK] Connected to /dev/cu.usbmodem1203 @ 115200
+Step 0: Provider setup (ECDH + EnclaveInfo)
+
+[Provider] Step 1 - ECDH handshake
+[OK] ECDH session key established
+
+[Provider] Step 2 - Fetch/verify EnclaveInfo
+[OK] EnclaveInfo attestation verified
+
+Run 1/100 (c_limit=10)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=10
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.12ms (4,941,623 cycles), inference=1197.62ms (5,319,655 cycles), m_update= 19.04ms (261,890 cycles), destroy=  4.01ms (298,147 cycles)
+
+Run 2/100 (c_limit=11)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=11
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.01ms (4,941,622 cycles), inference=1195.23ms (5,318,422 cycles), m_update= 19.09ms (261,914 cycles), destroy=  4.02ms (298,147 cycles)
+
+Run 3/100 (c_limit=12)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=12
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.02ms (4,941,622 cycles), inference=1196.22ms (3,120,497 cycles), m_update= 19.07ms (261,908 cycles), destroy=  4.01ms (298,147 cycles)
+
+Run 4/100 (c_limit=13)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=13
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.03ms (4,941,622 cycles), inference=1196.29ms (5,318,592 cycles), m_update= 18.99ms (261,904 cycles), destroy=  4.05ms (298,147 cycles)
+
+Run 5/100 (c_limit=14)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=14
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.98ms (4,941,622 cycles), inference=1196.78ms (3,119,507 cycles), m_update= 19.09ms (261,910 cycles), destroy=  4.00ms (298,147 cycles)
+
+Run 6/100 (c_limit=15)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=15
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.98ms (4,941,622 cycles), inference=1196.06ms (3,119,597 cycles), m_update= 19.08ms (261,910 cycles), destroy=  3.99ms (298,147 cycles)
+
+Run 7/100 (c_limit=16)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=16
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.99ms (4,941,622 cycles), inference=1196.14ms (3,120,892 cycles), m_update= 19.08ms (261,910 cycles), destroy=  3.99ms (298,147 cycles)
+
+Run 8/100 (c_limit=17)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=17
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.97ms (4,941,622 cycles), inference=1195.13ms (3,119,597 cycles), m_update= 19.07ms (261,910 cycles), destroy=  3.98ms (298,147 cycles)
+
+Run 9/100 (c_limit=18)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=18
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.98ms (4,941,622 cycles), inference=1193.64ms (5,318,539 cycles), m_update= 19.08ms (261,910 cycles), destroy=  4.00ms (298,147 cycles)
+
+Run 10/100 (c_limit=19)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=19
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.01ms (4,941,622 cycles), inference=1194.18ms (3,119,419 cycles), m_update= 19.08ms (261,910 cycles), destroy=  3.99ms (298,147 cycles)
+
+Run 11/100 (c_limit=20)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=20
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.01ms (4,941,622 cycles), inference=1194.22ms (3,119,421 cycles), m_update= 19.10ms (261,904 cycles), destroy=  4.04ms (298,147 cycles)
+
+Run 12/100 (c_limit=21)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=21
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.98ms (4,941,622 cycles), inference=1193.22ms (3,119,575 cycles), m_update= 19.07ms (261,904 cycles), destroy=  3.99ms (298,147 cycles)
+
+Run 13/100 (c_limit=22)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=22
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.96ms (4,941,622 cycles), inference=1196.21ms (3,119,421 cycles), m_update= 19.04ms (261,901 cycles), destroy=  3.98ms (298,147 cycles)
+
+Run 14/100 (c_limit=23)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=23
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.99ms (4,941,622 cycles), inference=1195.09ms (3,119,443 cycles), m_update= 19.04ms (261,910 cycles), destroy=  3.98ms (298,147 cycles)
+
+Run 15/100 (c_limit=24)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=24
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.00ms (4,941,622 cycles), inference=1196.31ms (3,119,465 cycles), m_update= 20.03ms (261,910 cycles), destroy=  3.95ms (298,147 cycles)
+
+Run 16/100 (c_limit=25)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=25
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 88.44ms (4,941,622 cycles), inference=1196.09ms (5,318,424 cycles), m_update= 19.04ms (261,904 cycles), destroy=  4.03ms (298,147 cycles)
+
+Run 17/100 (c_limit=26)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=26
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.00ms (4,941,622 cycles), inference=1195.24ms (3,120,433 cycles), m_update= 19.01ms (261,901 cycles), destroy=  3.98ms (298,147 cycles)
+
+Run 18/100 (c_limit=27)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=27
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.00ms (4,941,622 cycles), inference=1195.45ms (3,119,421 cycles), m_update= 19.11ms (261,910 cycles), destroy=  3.96ms (298,147 cycles)
+
+Run 19/100 (c_limit=28)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=28
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.96ms (4,941,622 cycles), inference=1197.20ms (3,120,059 cycles), m_update= 19.05ms (261,913 cycles), destroy=  4.04ms (298,147 cycles)
+
+Run 20/100 (c_limit=29)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=29
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.99ms (4,941,622 cycles), inference=1195.06ms (3,120,675 cycles), m_update= 19.06ms (261,904 cycles), destroy=  4.01ms (298,147 cycles)
+
+Run 21/100 (c_limit=30)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=30
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.99ms (4,941,622 cycles), inference=1195.25ms (5,318,592 cycles), m_update= 19.12ms (261,904 cycles), destroy=  4.02ms (298,147 cycles)
+
+Run 22/100 (c_limit=31)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=31
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.00ms (4,941,622 cycles), inference=1195.69ms (3,119,597 cycles), m_update= 19.05ms (261,904 cycles), destroy=  3.95ms (298,147 cycles)
+
+Run 23/100 (c_limit=32)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=32
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.96ms (4,941,622 cycles), inference=1196.23ms (3,119,905 cycles), m_update= 19.05ms (261,901 cycles), destroy=  4.00ms (298,147 cycles)
+
+Run 24/100 (c_limit=33)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=33
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.02ms (4,941,622 cycles), inference=1196.70ms (5,318,445 cycles), m_update= 19.07ms (261,910 cycles), destroy=  4.00ms (298,147 cycles)
+
+Run 25/100 (c_limit=34)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=34
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.95ms (4,941,622 cycles), inference=1194.58ms (3,119,421 cycles), m_update= 19.02ms (261,910 cycles), destroy=  4.00ms (298,147 cycles)
+
+Run 26/100 (c_limit=35)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=35
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.98ms (4,941,622 cycles), inference=1195.23ms (3,121,313 cycles), m_update= 19.02ms (261,901 cycles), destroy=  4.02ms (298,147 cycles)
+
+Run 27/100 (c_limit=36)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=36
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.98ms (4,941,622 cycles), inference=1194.23ms (3,120,873 cycles), m_update= 19.04ms (261,910 cycles), destroy=  4.01ms (298,147 cycles)
+
+Run 28/100 (c_limit=37)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=37
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.99ms (4,941,622 cycles), inference=1194.88ms (3,119,597 cycles), m_update= 19.05ms (261,910 cycles), destroy=  3.99ms (298,147 cycles)
+
+Run 29/100 (c_limit=38)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=38
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.98ms (4,941,622 cycles), inference=1196.26ms (3,120,367 cycles), m_update= 19.05ms (261,904 cycles), destroy=  3.99ms (298,147 cycles)
+
+Run 30/100 (c_limit=39)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=39
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.01ms (4,941,622 cycles), inference=1196.56ms (5,318,445 cycles), m_update= 19.07ms (261,910 cycles), destroy=  4.03ms (298,147 cycles)
+
+Run 31/100 (c_limit=40)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=40
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.03ms (4,941,622 cycles), inference=1195.21ms (5,319,012 cycles), m_update= 19.97ms (261,910 cycles), destroy=  3.98ms (298,147 cycles)
+
+Run 32/100 (c_limit=41)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=41
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.08ms (4,941,623 cycles), inference=1195.05ms (3,121,599 cycles), m_update= 19.09ms (261,904 cycles), destroy=  4.01ms (298,147 cycles)
+
+Run 33/100 (c_limit=42)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=42
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.95ms (4,941,622 cycles), inference=1196.08ms (3,119,597 cycles), m_update= 19.06ms (261,901 cycles), destroy=  3.96ms (298,147 cycles)
+
+Run 34/100 (c_limit=43)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=43
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.98ms (4,941,622 cycles), inference=1195.34ms (3,120,235 cycles), m_update= 19.08ms (261,913 cycles), destroy=  4.03ms (298,147 cycles)
+
+Run 35/100 (c_limit=44)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=44
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.02ms (4,941,622 cycles), inference=1196.08ms (5,318,424 cycles), m_update= 19.02ms (261,910 cycles), destroy=  4.00ms (298,147 cycles)
+
+Run 36/100 (c_limit=45)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=45
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.99ms (4,941,622 cycles), inference=1196.41ms (5,318,424 cycles), m_update= 19.05ms (261,901 cycles), destroy=  3.96ms (298,147 cycles)
+
+Run 37/100 (c_limit=46)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=46
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.96ms (4,941,622 cycles), inference=1194.74ms (3,119,685 cycles), m_update= 19.06ms (261,913 cycles), destroy=  4.00ms (298,147 cycles)
+
+Run 38/100 (c_limit=47)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=47
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.04ms (4,941,622 cycles), inference=1195.23ms (5,318,634 cycles), m_update= 19.04ms (261,904 cycles), destroy=  3.97ms (298,147 cycles)
+
+Run 39/100 (c_limit=48)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=48
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.97ms (4,941,622 cycles), inference=1194.33ms (3,120,235 cycles), m_update= 19.14ms (261,901 cycles), destroy=  4.00ms (298,147 cycles)
+
+Run 40/100 (c_limit=49)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=49
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.78ms (4,941,622 cycles), inference=1195.71ms (5,318,424 cycles), m_update= 19.05ms (261,901 cycles), destroy=  3.97ms (298,147 cycles)
+
+Run 41/100 (c_limit=50)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=50
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.97ms (4,941,622 cycles), inference=1195.13ms (3,119,795 cycles), m_update= 19.07ms (261,904 cycles), destroy=  4.00ms (298,147 cycles)
+
+Run 42/100 (c_limit=51)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=51
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.97ms (4,941,622 cycles), inference=1195.24ms (3,119,421 cycles), m_update= 19.08ms (261,904 cycles), destroy=  4.04ms (298,147 cycles)
+
+Run 43/100 (c_limit=52)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=52
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.00ms (4,941,622 cycles), inference=1195.19ms (3,121,423 cycles), m_update= 19.02ms (261,910 cycles), destroy=  4.03ms (298,147 cycles)
+
+Run 44/100 (c_limit=53)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=53
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.01ms (4,941,622 cycles), inference=1196.10ms (3,119,795 cycles), m_update= 20.06ms (261,913 cycles), destroy=  4.02ms (298,147 cycles)
+
+Run 45/100 (c_limit=54)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=54
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.98ms (4,941,622 cycles), inference=1196.21ms (3,119,443 cycles), m_update= 19.05ms (261,913 cycles), destroy=  4.01ms (298,147 cycles)
+
+Run 46/100 (c_limit=55)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=55
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.98ms (4,941,622 cycles), inference=1196.35ms (3,119,421 cycles), m_update= 19.10ms (261,904 cycles), destroy=  4.00ms (298,147 cycles)
+
+Run 47/100 (c_limit=56)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=56
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.00ms (4,941,622 cycles), inference=1196.13ms (5,319,903 cycles), m_update= 19.04ms (261,904 cycles), destroy=  4.00ms (298,147 cycles)
+
+Run 48/100 (c_limit=57)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=57
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.01ms (4,941,622 cycles), inference=1195.38ms (3,119,421 cycles), m_update= 19.04ms (261,910 cycles), destroy=  4.00ms (298,147 cycles)
+
+Run 49/100 (c_limit=58)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=58
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.96ms (4,941,622 cycles), inference=1195.19ms (3,119,421 cycles), m_update= 19.08ms (261,904 cycles), destroy=  3.95ms (298,147 cycles)
+
+Run 50/100 (c_limit=59)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=59
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.96ms (4,941,622 cycles), inference=1195.24ms (3,121,225 cycles), m_update= 19.04ms (261,910 cycles), destroy=  4.01ms (298,147 cycles)
+
+Run 51/100 (c_limit=60)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=60
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.13ms (4,941,622 cycles), inference=1196.21ms (3,119,597 cycles), m_update= 19.04ms (261,910 cycles), destroy=  3.98ms (298,147 cycles)
+
+Run 52/100 (c_limit=61)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=61
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.97ms (4,941,622 cycles), inference=1196.06ms (3,119,443 cycles), m_update= 20.09ms (261,901 cycles), destroy=  4.01ms (298,147 cycles)
+
+Run 53/100 (c_limit=62)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=62
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.03ms (4,941,622 cycles), inference=1196.18ms (3,121,269 cycles), m_update= 19.03ms (261,910 cycles), destroy=  4.01ms (298,147 cycles)
+
+Run 54/100 (c_limit=63)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=63
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.99ms (4,941,622 cycles), inference=1194.23ms (3,119,839 cycles), m_update= 19.08ms (261,904 cycles), destroy=  4.16ms (298,147 cycles)
+
+Run 55/100 (c_limit=64)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=64
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.94ms (4,941,622 cycles), inference=1195.20ms (3,119,597 cycles), m_update= 19.99ms (261,910 cycles), destroy=  3.97ms (298,147 cycles)
+
+Run 56/100 (c_limit=65)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=65
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.97ms (4,941,622 cycles), inference=1195.26ms (5,318,823 cycles), m_update= 19.01ms (261,913 cycles), destroy=  4.02ms (298,147 cycles)
+
+Run 57/100 (c_limit=66)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=66
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.94ms (4,941,622 cycles), inference=1194.50ms (3,119,597 cycles), m_update= 19.01ms (261,913 cycles), destroy=  3.99ms (298,147 cycles)
+
+Run 58/100 (c_limit=67)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=67
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.00ms (4,941,622 cycles), inference=1195.36ms (3,119,751 cycles), m_update= 19.06ms (261,910 cycles), destroy=  3.97ms (298,147 cycles)
+
+Run 59/100 (c_limit=68)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=68
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.03ms (4,941,622 cycles), inference=1196.39ms (3,119,861 cycles), m_update= 19.01ms (261,913 cycles), destroy=  4.00ms (298,147 cycles)
+
+Run 60/100 (c_limit=69)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=69
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.94ms (4,941,622 cycles), inference=1195.60ms (3,119,421 cycles), m_update= 19.07ms (261,904 cycles), destroy=  4.01ms (298,147 cycles)
+
+Run 61/100 (c_limit=70)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=70
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.98ms (4,941,622 cycles), inference=1195.21ms (3,119,597 cycles), m_update= 19.07ms (261,910 cycles), destroy=  4.00ms (298,147 cycles)
+
+Run 62/100 (c_limit=71)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=71
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.99ms (4,941,622 cycles), inference=1196.22ms (3,119,421 cycles), m_update= 19.10ms (261,910 cycles), destroy=  3.99ms (298,147 cycles)
+
+Run 63/100 (c_limit=72)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=72
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.95ms (4,941,622 cycles), inference=1195.22ms (3,120,213 cycles), m_update= 19.03ms (261,910 cycles), destroy=  3.98ms (298,147 cycles)
+
+Run 64/100 (c_limit=73)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=73
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.95ms (4,941,622 cycles), inference=1196.05ms (3,121,071 cycles), m_update= 19.04ms (261,910 cycles), destroy=  3.99ms (298,147 cycles)
+
+Run 65/100 (c_limit=74)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=74
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.94ms (4,941,622 cycles), inference=1196.15ms (3,119,751 cycles), m_update= 20.03ms (261,910 cycles), destroy=  3.96ms (298,147 cycles)
+
+Run 66/100 (c_limit=75)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=75
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.01ms (4,941,623 cycles), inference=1195.38ms (3,119,531 cycles), m_update= 19.07ms (261,901 cycles), destroy=  4.02ms (298,147 cycles)
+
+Run 67/100 (c_limit=76)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=76
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.02ms (4,941,622 cycles), inference=1196.11ms (3,119,597 cycles), m_update= 19.11ms (261,910 cycles), destroy=  4.01ms (298,147 cycles)
+
+Run 68/100 (c_limit=77)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=77
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.00ms (4,941,622 cycles), inference=1196.22ms (3,120,147 cycles), m_update= 19.10ms (261,910 cycles), destroy=  3.97ms (298,147 cycles)
+
+Run 69/100 (c_limit=78)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=78
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.01ms (4,941,622 cycles), inference=1195.22ms (3,120,433 cycles), m_update= 19.07ms (261,913 cycles), destroy=  4.00ms (298,147 cycles)
+
+Run 70/100 (c_limit=79)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=79
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.08ms (4,941,622 cycles), inference=1194.18ms (3,119,707 cycles), m_update= 19.15ms (261,910 cycles), destroy=  4.00ms (298,147 cycles)
+
+Run 71/100 (c_limit=80)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=80
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.00ms (4,941,624 cycles), inference=1194.12ms (3,119,597 cycles), m_update= 19.10ms (261,912 cycles), destroy=  3.96ms (298,147 cycles)
+
+Run 72/100 (c_limit=81)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=81
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.01ms (4,941,624 cycles), inference=1197.11ms (3,119,443 cycles), m_update= 19.10ms (261,906 cycles), destroy=  3.99ms (298,147 cycles)
+
+Run 73/100 (c_limit=82)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=82
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.03ms (4,941,624 cycles), inference=1195.24ms (5,318,445 cycles), m_update= 20.02ms (261,903 cycles), destroy=  4.03ms (298,147 cycles)
+
+Run 74/100 (c_limit=83)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=83
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.00ms (4,941,624 cycles), inference=1196.07ms (3,119,597 cycles), m_update= 19.08ms (261,912 cycles), destroy=  3.96ms (298,147 cycles)
+
+Run 75/100 (c_limit=84)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=84
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.02ms (4,941,624 cycles), inference=1196.44ms (5,318,592 cycles), m_update= 19.15ms (261,912 cycles), destroy=  4.01ms (298,147 cycles)
+
+Run 76/100 (c_limit=85)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=85
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.00ms (4,941,624 cycles), inference=1196.52ms (3,119,817 cycles), m_update= 19.10ms (261,903 cycles), destroy=  4.01ms (298,147 cycles)
+
+Run 77/100 (c_limit=86)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=86
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.03ms (4,941,624 cycles), inference=1195.25ms (3,119,421 cycles), m_update= 20.00ms (261,912 cycles), destroy=  4.04ms (298,147 cycles)
+
+Run 78/100 (c_limit=87)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=87
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.01ms (4,941,624 cycles), inference=1197.24ms (3,121,423 cycles), m_update= 19.10ms (261,912 cycles), destroy=  3.96ms (298,147 cycles)
+
+Run 79/100 (c_limit=88)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=88
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.99ms (4,941,624 cycles), inference=1195.29ms (3,119,487 cycles), m_update= 19.09ms (261,903 cycles), destroy=  4.02ms (298,147 cycles)
+
+Run 80/100 (c_limit=89)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=89
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.02ms (4,941,624 cycles), inference=1195.21ms (3,121,467 cycles), m_update= 19.08ms (261,906 cycles), destroy=  4.01ms (298,147 cycles)
+
+Run 81/100 (c_limit=90)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=90
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.98ms (4,941,624 cycles), inference=1195.17ms (3,121,247 cycles), m_update= 20.02ms (261,912 cycles), destroy=  3.98ms (298,147 cycles)
+
+Run 82/100 (c_limit=91)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=91
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.01ms (4,941,624 cycles), inference=1193.88ms (3,119,487 cycles), m_update= 19.14ms (261,906 cycles), destroy=  3.99ms (298,147 cycles)
+
+Run 83/100 (c_limit=92)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=92
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.99ms (4,941,624 cycles), inference=1196.12ms (3,119,421 cycles), m_update= 19.13ms (261,915 cycles), destroy=  4.01ms (298,147 cycles)
+
+Run 84/100 (c_limit=93)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=93
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.01ms (4,941,624 cycles), inference=1194.21ms (3,119,729 cycles), m_update= 19.11ms (261,906 cycles), destroy=  3.97ms (298,147 cycles)
+
+Run 85/100 (c_limit=94)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=94
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.02ms (4,941,624 cycles), inference=1194.21ms (3,119,421 cycles), m_update= 19.06ms (261,912 cycles), destroy=  4.03ms (298,147 cycles)
+
+Run 86/100 (c_limit=95)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=95
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.99ms (4,941,624 cycles), inference=1195.71ms (5,318,907 cycles), m_update= 19.07ms (261,912 cycles), destroy=  3.96ms (298,147 cycles)
+
+Run 87/100 (c_limit=96)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=96
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.01ms (4,941,624 cycles), inference=1195.05ms (3,119,531 cycles), m_update= 19.07ms (261,906 cycles), destroy=  4.06ms (298,147 cycles)
+
+Run 88/100 (c_limit=97)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=97
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.00ms (4,941,624 cycles), inference=1195.11ms (3,121,027 cycles), m_update= 19.07ms (261,912 cycles), destroy=  4.02ms (298,147 cycles)
+
+Run 89/100 (c_limit=98)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=98
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.15ms (4,941,624 cycles), inference=1194.61ms (3,119,993 cycles), m_update= 19.13ms (261,912 cycles), destroy=  4.09ms (298,147 cycles)
+
+Run 90/100 (c_limit=99)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=99
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.00ms (4,941,624 cycles), inference=1197.17ms (5,318,865 cycles), m_update= 20.03ms (261,912 cycles), destroy=  4.03ms (298,147 cycles)
+
+Run 91/100 (c_limit=100)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=100
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.98ms (4,941,660 cycles), inference=1195.93ms (3,119,443 cycles), m_update= 20.02ms (261,942 cycles), destroy=  4.00ms (298,147 cycles)
+
+Run 92/100 (c_limit=101)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=101
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.00ms (4,941,660 cycles), inference=1217.58ms (3,119,597 cycles), m_update= 19.07ms (261,948 cycles), destroy=  4.02ms (298,147 cycles)
+
+Run 93/100 (c_limit=102)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=102
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.06ms (4,941,660 cycles), inference=1196.51ms (3,119,421 cycles), m_update= 19.04ms (261,942 cycles), destroy=  4.03ms (298,147 cycles)
+
+Run 94/100 (c_limit=103)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=103
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 86.98ms (4,941,660 cycles), inference=1196.22ms (3,119,861 cycles), m_update= 19.08ms (261,948 cycles), destroy=  4.05ms (298,147 cycles)
+
+Run 95/100 (c_limit=104)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=104
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.00ms (4,941,660 cycles), inference=1195.56ms (3,120,587 cycles), m_update= 19.90ms (261,939 cycles), destroy=  3.99ms (298,147 cycles)
+
+Run 96/100 (c_limit=105)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=105
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.01ms (4,941,660 cycles), inference=1194.26ms (3,119,597 cycles), m_update= 19.09ms (261,942 cycles), destroy=  4.01ms (298,147 cycles)
+
+Run 97/100 (c_limit=106)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=106
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.03ms (4,941,660 cycles), inference=1195.02ms (3,120,279 cycles), m_update= 19.07ms (261,939 cycles), destroy=  4.02ms (298,147 cycles)
+
+Run 98/100 (c_limit=107)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=107
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.01ms (4,941,660 cycles), inference=1195.42ms (3,121,577 cycles), m_update= 19.10ms (261,943 cycles), destroy=  4.02ms (298,147 cycles)
+
+Run 99/100 (c_limit=108)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=108
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.02ms (4,941,660 cycles), inference=1194.23ms (3,119,597 cycles), m_update= 19.01ms (261,948 cycles), destroy=  4.01ms (298,147 cycles)
+
+Run 100/100 (c_limit=109)
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=109
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+  create= 87.01ms (4,941,660 cycles), inference=1195.46ms (3,120,125 cycles), m_update= 19.10ms (261,942 cycles), destroy=  4.01ms (298,147 cycles)
+
+=== FULL FLOW SUMMARY ===
+M_update: 19.182 ± 0.310 ms (261,911 cycles avg)
+CREATE:   87.021 ± 0.168 ms (4,941,626 cycles avg)
+INFER:    1195.742 ± 2.366 ms (3,537,728 cycles avg)
+FULL EXEC:1195.742 ms host | 8,925,800 cycles avg on device
+DESTROY:  4.003 ± 0.030 ms (298,147 cycles avg)
+[OK] Benchmark written: build/full_flow_benchmark_device_image_100.json
+[OK] Serial disconnected

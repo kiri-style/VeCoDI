@@ -7,6 +7,7 @@
 #include <zephyr/drivers/uart.h>
 #include <zephyr/drivers/gpio.h>
 #include <string.h>
+#include <stdio.h>
 #include <psa/crypto.h>
 #include <psa/client.h>
 #include "run_enclave.h"
@@ -635,7 +636,7 @@ static void process_command(void)
         case CMD_GET_BENCHMARK:
             handle_get_benchmark();
             break;
-        
+
         case CMD_GET_SECURE_BENCHMARK:
             handle_get_secure_benchmark();
             break;
