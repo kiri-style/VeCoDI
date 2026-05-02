@@ -1270,8 +1270,8 @@ static void handle_get_secure_benchmark(void)
     }
     
     /* Send complete secure metrics structure to Mac */
-    /* Step 6: Send device's public key back to Mac */
-    uart_protocol_send_response(RESP_OK, device_pubkey, 65);
+    const uint8_t *metrics_bytes = (const uint8_t *)&secure_metrics;
+    uart_protocol_send_response(RESP_OK, metrics_bytes, sizeof(secure_benchmark_metrics_ns_t));
 }
 
 static void handle_get_inference_result(void)
