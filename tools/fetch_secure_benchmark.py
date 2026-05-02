@@ -44,13 +44,16 @@ def main() -> int:
             'ram_used_bytes', 'ram_total_bytes', 'flash_used_bytes', 'flash_total_bytes',
         ]
         data = {name: int(value) for name, value in zip(names, values)}
+        data['pox_cycles'] = data.get('inf_complete_cycles', 0)
+        data['pox_count'] = data.get('inf_complete_count', 0)
         out_path = Path('build/secure_benchmark.json')
         out_path.write_text(json.dumps(data, indent=2), encoding='utf-8')
         print(f'[OK] Secure benchmark written: {out_path}')
-        for key in ['m_update_cycles', 'create_enclave_cycles', 'destroy_enclave_cycles', 'aes_decrypt_cycles']:
+        for key in ['m_update_cycles', 'create_enclave_cycles', 'pox_cycles', 'destroy_enclave_cycles', 'aes_decrypt_cycles']:
             cycles = data.get(key, 0)
             print(f'{key}: {cycles} cycles -> {cycles / (CPU_MHZ * 1000.0):.3f} ms')
         print(f"m_update_count: {data.get('m_update_count', 0)}")
+        print(f"pox_count: {data.get('pox_count', 0)}")
         return 0
     finally:
         device.disconnect()

@@ -89,6 +89,9 @@ typedef struct {
     
     // End-to-end
     uint32_t run_enclave_cycles;
+
+    // Full verified inference flow (handle_run_inference_common)
+    uint32_t full_execute_cycles;
     
     // Memory
     uint32_t heap_used_bytes;
@@ -144,6 +147,12 @@ typedef struct {
     uint32_t total_inference_count;
     uint32_t run_enclave_count;
     uint32_t irq_atomic_count;
+
+    uint32_t full_execute_count;
+
+    uint64_t full_execute_sum_cycles;
+    uint32_t full_execute_min_cycles;
+    uint32_t full_execute_max_cycles;
 
     // Dedicated atomic operation stats (UART lifecycle critical sections)
     uint64_t create_atomic_sum_cycles;

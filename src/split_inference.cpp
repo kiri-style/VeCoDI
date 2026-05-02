@@ -9,6 +9,7 @@
 
 #include "split_inference.h"
 #include "benchmark.h"
+#include "test_images.h"
 
 #include "../split_inference/early/E_nn_wt.h"
 #include "../split_inference/early/E_nn_params.h"
@@ -513,8 +514,11 @@ static int select_input_image(const uint8_t **img, int *label)
         return 0;
     }
 
-    printk("[SPLIT] No custom image available; refusing inference in case-study mode\n");
-    return -1;
+    /* Device-image fallback for benchmark mode without host upload. */
+    *img = img_0;
+    *label = (int)label_0;
+    printk("[SPLIT] No custom image available; using device test image img_0 (label=%d)\n", *label);
+    return 0;
 }
 
 int set_custom_test_image(const uint8_t *image, uint8_t label)

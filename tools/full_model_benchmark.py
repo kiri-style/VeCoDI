@@ -33,7 +33,7 @@ CMD_GET_BENCHMARK = 0x08
 
 DEVICE_BENCHMARK_NAMES = [
     'enclave_create_cycles', 'enclave_destroy_cycles', 'aes_decrypt_cycles',
-    'early_layers_cycles', 'late_layers_cycles', 'total_inference_cycles', 'run_enclave_cycles',
+    'early_layers_cycles', 'late_layers_cycles', 'total_inference_cycles', 'run_enclave_cycles', 'full_execute_cycles',
     'heap_used_bytes', 'heap_free_bytes', 'stack_used_bytes',
     'ram_used_bytes', 'ram_total_bytes', 'flash_used_bytes', 'flash_total_bytes',
     'inference_count', 'enclave_recreations', 'inference_requests_total', 'enclave_info_validation_failures',
@@ -44,11 +44,12 @@ DEVICE_BENCHMARK_NAMES = [
     'late_layers_min_cycles', 'late_layers_max_cycles', 'total_inference_min_cycles', 'total_inference_max_cycles',
     'run_enclave_min_cycles', 'run_enclave_max_cycles', 'irq_atomic_min_cycles', 'irq_atomic_max_cycles',
     'enclave_create_count', 'enclave_destroy_count', 'aes_decrypt_count', 'early_layers_count', 'late_layers_count', 'total_inference_count', 'run_enclave_count', 'irq_atomic_count',
+    'full_execute_count', 'full_execute_sum_cycles', 'full_execute_min_cycles', 'full_execute_max_cycles',
     'create_atomic_sum_cycles', 'destroy_atomic_sum_cycles',
     'create_atomic_min_cycles', 'create_atomic_max_cycles', 'destroy_atomic_min_cycles', 'destroy_atomic_max_cycles', 'create_atomic_count', 'destroy_atomic_count',
     'run_inference_with_image_count', 'dangerous_inference_no_sau_count', 'dangerous_read_ram_count', 'dangerous_read_rom_count',
 ]
-DEVICE_BENCHMARK_FMT = '<' + 'I' * 18 + 'Q' * 8 + 'I' * 16 + 'I' * 8 + 'Q' * 2 + 'I' * 6 + 'I' * 4
+DEVICE_BENCHMARK_FMT = '<' + 'I' * 19 + 'xxxx' + 'Q' * 8 + 'I' * 16 + 'I' * 8 + 'I' + 'xxxx' + 'Q' + 'I' * 2 + 'Q' * 2 + 'I' * 6 + 'I' * 4
 
 
 class UartDevice:

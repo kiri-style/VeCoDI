@@ -189,6 +189,20 @@ void benchmark_print_report(const benchmark_metrics_t *metrics)
     printk("║ Inferences:    %8u total                               ║\n",
            metrics->inference_count);
 
+        if (metrics->full_execute_count > 0U) {
+         uint32_t full_execute_avg = safe_avg_u64(metrics->full_execute_sum_cycles,
+                                metrics->full_execute_count);
+         printk("║ full_execute(last): %8u cycles  (%6u ms)          ║\n",
+             metrics->full_execute_cycles,
+             benchmark_cycles_to_ms(metrics->full_execute_cycles));
+         printk("║ full_execute(avg):  %8u cycles  (%6u ms)          ║\n",
+             full_execute_avg,
+             benchmark_cycles_to_ms(full_execute_avg));
+         printk("║ full_execute(min/max): %5u / %5u ms             ║\n",
+             benchmark_cycles_to_ms(metrics->full_execute_min_cycles),
+             benchmark_cycles_to_ms(metrics->full_execute_max_cycles));
+        }
+
         if (metrics->run_enclave_count > 0U) {
             uint32_t avg_cycles = safe_avg_u64(metrics->run_enclave_sum_cycles,
                                                metrics->run_enclave_count);

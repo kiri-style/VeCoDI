@@ -186,3 +186,38 @@
 | 19 | img_11 | 3,072 | 3.0 |
 | 20 | img_12 | 3,072 | 3.0 |
 
+## Option Source Image (Mac vs Device)
+
+Le script tools/full_flow_benchmark.py supporte deux modes de source image pour l inference:
+
+1. Image envoyee depuis le Mac
+2. Image locale cote device (test_images dans le firmware)
+
+Mode 1 - image depuis le Mac:
+
+```bash
+python3 tools/full_flow_benchmark.py /dev/cu.usbmodem1203 \
+	--runs 3 \
+	--image cifar_input.raw \
+	--image-label 3 \
+	--output build/full_flow_benchmark_mac_image.json
+```
+
+Mode 2 - image depuis le device:
+
+```bash
+python3 tools/full_flow_benchmark.py /dev/cu.usbmodem1203 \
+	--runs 3 \
+	--use-device-image \
+	--output build/full_flow_benchmark_device_image.json
+```
+
+Regle de priorite:
+
+- Si --image et --use-device-image sont utilises ensemble, le mode device est prioritaire (pas d upload depuis le Mac).
+
+Metadonnees JSON de sortie:
+
+- image_used: true si upload Mac, false sinon
+- image_source: mac ou device
+

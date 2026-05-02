@@ -876,6 +876,26 @@ static void handle_run_inference_common(const uint8_t *minf_data, uint32_t minf_
      *     4. Return to Secure COMPLETE for PoX signing + commit
      *     5. Return encrypted response: output_class(1) || pox_sig(64)
      */
+    struct full_execute_benchmark_scope {
+        uint32_t start_cycles;
+
+        full_execute_benchmark_scope()
+            : start_cycles(benchmark_get_cycles())
+        {
+        }
+
+        ~full_execute_benchmark_scope()
+        {
+            uint32_t elapsed_cycles = benchmark_get_cycles() - start_cycles;
+            g_benchmark_metrics.full_execute_cycles = elapsed_cycles;
+            BENCHMARK_ACCUMULATE(elapsed_cycles,
+                                 g_benchmark_metrics.full_execute_sum_cycles,
+                                 g_benchmark_metrics.full_execute_min_cycles,
+                                 g_benchmark_metrics.full_execute_max_cycles,
+                                 g_benchmark_metrics.full_execute_count);
+        }
+    } full_execute_scope;
+
     g_benchmark_metrics.inference_requests_total++;
     uint32_t tx_id = 0U;
 

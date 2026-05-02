@@ -27,7 +27,7 @@ CPU_MHZ = 110.0
 
 DEVICE_BENCHMARK_NAMES = [
     "enclave_create_cycles", "enclave_destroy_cycles", "aes_decrypt_cycles",
-    "early_layers_cycles", "late_layers_cycles", "total_inference_cycles", "run_enclave_cycles",
+    "early_layers_cycles", "late_layers_cycles", "total_inference_cycles", "run_enclave_cycles", "full_execute_cycles",
     "heap_used_bytes", "heap_free_bytes", "stack_used_bytes",
     "ram_used_bytes", "ram_total_bytes", "flash_used_bytes", "flash_total_bytes",
     "inference_count", "enclave_recreations", "inference_requests_total", "enclave_info_validation_failures",
@@ -38,11 +38,12 @@ DEVICE_BENCHMARK_NAMES = [
     "late_layers_min_cycles", "late_layers_max_cycles", "total_inference_min_cycles", "total_inference_max_cycles",
     "run_enclave_min_cycles", "run_enclave_max_cycles", "irq_atomic_min_cycles", "irq_atomic_max_cycles",
     "enclave_create_count", "enclave_destroy_count", "aes_decrypt_count", "early_layers_count", "late_layers_count", "total_inference_count", "run_enclave_count", "irq_atomic_count",
+    "full_execute_count", "full_execute_sum_cycles", "full_execute_min_cycles", "full_execute_max_cycles",
     "create_atomic_sum_cycles", "destroy_atomic_sum_cycles",
     "create_atomic_min_cycles", "create_atomic_max_cycles", "destroy_atomic_min_cycles", "destroy_atomic_max_cycles", "create_atomic_count", "destroy_atomic_count",
     "run_inference_with_image_count", "dangerous_inference_no_sau_count", "dangerous_read_ram_count", "dangerous_read_rom_count",
 ]
-DEVICE_BENCHMARK_FMT = "<" + "I" * 18 + "Q" * 8 + "I" * 16 + "I" * 8 + "Q" * 2 + "I" * 6 + "I" * 4
+DEVICE_BENCHMARK_FMT = "<" + "I" * 19 + "xxxx" + "Q" * 8 + "I" * 16 + "I" * 8 + "I" + "xxxx" + "Q" + "I" * 2 + "Q" * 2 + "I" * 6 + "I" * 4
 
 SECURE_BENCHMARK_NAMES = [
     "aes_decrypt_cycles", "late_hash_cycles", "digest_compute_cycles", "m_update_cycles",
@@ -109,6 +110,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-id", type=lambda v: int(v, 0), default=0x00000001, help="Model ID (supports hex)")
     parser.add_argument("--image", type=str, default=None, help="Optional image from Mac to send to board (raw 3072B or PNG/JPEG)")
     parser.add_argument("--image-label", type=int, default=0, help="Expected label byte used with --image (default: 0)")
+    parser.add_argument("--use-device-image", action="store_true", help="Use a test image from device memory instead of uploading from Mac")
     parser.add_argument("--output", type=str, default=None, help="Optional JSON output path")
     return parser.parse_args()
 
@@ -142,6 +144,18 @@ def per_op_cycles(
     return delta(after, before, fallback_key)
 
 
+def maybe_per_op_cycles(
+    after: Dict[str, int],
+    before: Dict[str, int],
+    sum_key: str,
+    count_key: str,
+    fallback_key: str,
+) -> Optional[int]:
+    if sum_key not in after or sum_key not in before:
+        return None
+    return per_op_cycles(after, before, sum_key, count_key, fallback_key)
+
+
 def main() -> int:
     args = parse_args()
     if args.runs <= 0:
@@ -155,7 +169,7 @@ def main() -> int:
     output_path = Path(args.output) if args.output else project_dir / "build" / "full_flow_benchmark.json"
 
     image_payload: Optional[bytes] = None
-    if args.image:
+    if args.image and not args.use_device_image:
         from vecodi_case_study import load_image_from_mac
 
         image_payload = load_image_from_mac(args.image)
@@ -171,7 +185,9 @@ def main() -> int:
     print(f"Project: {project_dir}")
     print(f"Runs: {args.runs}")
     if image_payload is not None:
-        print(f"Image upload: enabled ({len(image_payload)} bytes)")
+        print(f"Image upload: enabled ({len(image_payload)} bytes from Mac)")
+    elif args.use_device_image:
+        print("Image source: device test_images (internal sample on board)")
 
     device = UartDevice(args.port, args.baud)
     case_study = VecodiCaseStudy(device=device, model_id=args.model_id)
@@ -203,12 +219,14 @@ def main() -> int:
             after_create_device = read_device_benchmark(device)
 
             before_inference_device = dict(after_create_device)
+            before_inference_secure = dict(after_m_update_secure)
             _, inference_ms = timed_call(
                 case_study.customer_verified_inference,
                 image_payload,
                 args.image_label,
             )
             after_inference_device = read_device_benchmark(device)
+            after_inference_secure = read_secure_benchmark(device)
 
             before_destroy_device = dict(after_inference_device)
             _, destroy_ms = timed_call(case_study.customer_destroy_enclave)
@@ -267,6 +285,22 @@ def main() -> int:
                     "enclave_destroy_cycles",
                 ),
                 "destroy_enclave_count": delta(after_destroy_device, before_destroy_device, "enclave_destroy_count"),
+                "full_execute_cycles": per_op_cycles(
+                    after_inference_device,
+                    before_inference_device,
+                    "full_execute_sum_cycles",
+                    "full_execute_count",
+                    "full_execute_cycles",
+                ),
+                "full_execute_count": delta(after_inference_device, before_inference_device, "full_execute_count"),
+                "pox_cycles": maybe_per_op_cycles(
+                    after_inference_secure,
+                    before_inference_secure,
+                    "inf_complete_cycles",
+                    "inf_complete_count",
+                    "inf_complete_cycles",
+                ),
+                "pox_count": delta(after_inference_secure, before_inference_secure, "inf_complete_count"),
                 "baseline_create_count": int(before_device["enclave_create_count"]),
                 "baseline_destroy_count": int(before_device["enclave_destroy_count"]),
                 "baseline_m_update_count": int(before_secure["m_update_count"]),
@@ -289,6 +323,8 @@ def main() -> int:
             "m_update_cycles": summarize([float(sample["m_update_cycles"]) for sample in samples]),
             "create_enclave_cycles": summarize([float(sample["create_enclave_cycles"]) for sample in samples]),
             "inference_cycles": summarize([float(sample["inference_cycles"]) for sample in samples]),
+            "full_execute_cycles": summarize([float(sample["full_execute_cycles"]) for sample in samples]),
+            "pox_cycles": summarize([float(sample["pox_cycles"]) for sample in samples if sample["pox_cycles"] is not None]),
             "destroy_enclave_cycles": summarize([float(sample["destroy_enclave_cycles"]) for sample in samples]),
         }
 
@@ -299,6 +335,7 @@ def main() -> int:
             "model_id": int(args.model_id),
             "c_limit_start": int(start_c_limit),
             "image_used": bool(image_payload is not None),
+            "image_source": "mac" if image_payload is not None else "device",
             "samples": samples,
             "summary": summary,
         }
@@ -319,6 +356,15 @@ def main() -> int:
             f"INFER:    {summary['host_inference_ms']['avg']:.3f} ± {summary['host_inference_ms']['stddev']:.3f} ms "
             f"({int(summary['inference_cycles']['avg']):,} cycles avg)"
         )
+        print(
+            f"FULL EXEC:{summary['host_inference_ms']['avg']:.3f} ms host | "
+            f"{int(summary['full_execute_cycles']['avg']):,} cycles avg on device"
+        )
+        if summary.get("pox_cycles", {}).get("count", 0) > 0:
+            print(
+                f"POX:      {int(summary['pox_cycles']['avg']):,} cycles avg on device "
+                f"({cycles_to_ms(int(summary['pox_cycles']['avg'])):.3f} ms)"
+            )
         print(
             f"DESTROY:  {summary['host_destroy_ms']['avg']:.3f} ± {summary['host_destroy_ms']['stddev']:.3f} ms "
             f"({int(summary['destroy_enclave_cycles']['avg']):,} cycles avg)"
