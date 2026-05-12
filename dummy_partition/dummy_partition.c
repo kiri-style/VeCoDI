@@ -59,7 +59,7 @@ static void print_secure_memory_stats(void)
 #define DP_CMD_GET_BENCHMARK        8
 #define DP_CMD_RUN_INFERENCE        9   /* Atomic: check + increment counter */
 #define DP_CMD_COMPUTE_ENCLAVE_INFO 10  /* Compute EnclaveInfo hash */
-#define DP_CMD_VALIDATE_M_UPDATE    11  /* Validate and decrypt M_update */
+#define DP_CMD_VALIDATE_AUTHORIZE   11  /* Validate and decrypt Authorize */
 #define DP_CMD_SET_MAX_INFERENCES   12  /* Override max inferences and reset counter */
 #define DP_CMD_VALIDATE_BOOT_ENCLAVE_INFO 17  /* Recompute current EnclaveInfo and compare with boot-time sealed value */
 #define DP_CMD_SAU_REGISTER_ROM     18  /* Register model ROM window */
@@ -78,10 +78,10 @@ static void print_secure_memory_stats(void)
 
 /* Secure inference counter and dynamic max limit (protected). */
 static uint32_t inference_counter_secure = 0;
-static uint32_t max_inferences_per_enclave_secure = 0; /* Start at 0 until M_update accepted */
+static uint32_t max_inferences_per_enclave_secure = 0; /* Start at 0 until Authorize accepted */
 static bool enclave_created_secure = false;
 
-/* Anti-replay counter limit for M_update validation (secure state). */
+/* Anti-replay counter limit for Authorize validation (secure state). */
 static uint32_t last_accepted_counter_limit = 0;
 
 /* Cached model identity for EnclaveInfo recomputation (secure state). */
@@ -128,7 +128,7 @@ static void init_secure_model_identity(void)
     printf("[SECURE] Model identity context initialized (model_id=%u)\n", current_model_id);
 }
 
-/* Static session key used to decrypt M_update and verified inference payloads. */
+/* Static session key used to decrypt Authorize and verified inference payloads. */
 static const uint8_t secure_session_key[32] = {
     0xA0,0xA1,0xA2,0xA3,0xA4,0xA5,0xA6,0xA7,
     0xA8,0xA9,0xAA,0xAB,0xAC,0xAD,0xAE,0xAF,
@@ -136,7 +136,7 @@ static const uint8_t secure_session_key[32] = {
     0xB8,0xB9,0xBA,0xBB,0xBC,0xBD,0xBE,0xBF
 };
 
-/* Authorization state extracted from M_update plaintext (authoritative Secure copy). */
+/* Authorization state extracted from Authorize plaintext (authoritative Secure copy). */
 static uint8_t  s_pk_v[64]    = {0};
 static uint32_t s_model_id    = 0;
 static uint8_t  s_cert[128]   = {0};
@@ -213,23 +213,23 @@ static const uint8_t aes_key[16] = {
     0x1C,0x1D,0x1E,0x1F
 };
 
-/* Static AES-256 key for M_update message encryption (predefined in Secure Flash). */
-static const uint8_t m_update_aes256_key[32] = {
+/* Static AES-256 key for Authorize message encryption (predefined in Secure Flash). */
+static const uint8_t authorize_aes256_key[32] = {
     0xA0,0xA1,0xA2,0xA3,0xA4,0xA5,0xA6,0xA7,
     0xA8,0xA9,0xAA,0xAB,0xAC,0xAD,0xAE,0xAF,
     0xB0,0xB1,0xB2,0xB3,0xB4,0xB5,0xB6,0xB7,
     0xB8,0xB9,0xBA,0xBB,0xBC,0xBD,0xBE,0xBF
 };
 
-/* M_update sizes and limits */
-#define M_UPDATE_NONCE_SIZE      12
-#define M_UPDATE_TAG_SIZE        16
-#define M_UPDATE_PK_V_SIZE       64
-#define M_UPDATE_CERT_MAX_SIZE   128
-#define M_UPDATE_PLAINTEXT_MIN   (4 + M_UPDATE_PK_V_SIZE + ENCLAVE_INFO_SIZE + 4)
-#define M_UPDATE_PLAINTEXT_MAX   (M_UPDATE_PLAINTEXT_MIN + M_UPDATE_CERT_MAX_SIZE)
-#define M_UPDATE_CIPHERTEXT_MAX  (M_UPDATE_PLAINTEXT_MAX)
-#define M_UPDATE_CIPHERTEXT_MIN  (M_UPDATE_PLAINTEXT_MIN)
+/* Authorize sizes and limits */
+#define AUTHORIZE_NONCE_SIZE      12
+#define AUTHORIZE_TAG_SIZE        16
+#define AUTHORIZE_PK_V_SIZE       64
+#define AUTHORIZE_CERT_MAX_SIZE   128
+#define AUTHORIZE_PLAINTEXT_MIN   (4 + AUTHORIZE_PK_V_SIZE + ENCLAVE_INFO_SIZE + 4)
+#define AUTHORIZE_PLAINTEXT_MAX   (AUTHORIZE_PLAINTEXT_MIN + AUTHORIZE_CERT_MAX_SIZE)
+#define AUTHORIZE_CIPHERTEXT_MAX  (AUTHORIZE_PLAINTEXT_MAX)
+#define AUTHORIZE_CIPHERTEXT_MIN  (AUTHORIZE_PLAINTEXT_MIN)
 
 /* Constant-time buffer comparison. Returns 1 if equal, 0 otherwise. */
 static int secure_memequal(const uint8_t *a, const uint8_t *b, size_t len)
@@ -508,7 +508,12 @@ static psa_status_t validate_current_enclave_info_against_boot(uint8_t *match_ou
 }
 
 /*
- * Validate M_update payload in Secure World.
+ * Secure-side implementation of the Authorize API.
+ *
+ * This command updates the access policy of a provisioned Shangri-La.
+ * It validates the authorization material, refreshes the stored user
+ * public key and invocation limit, and keeps the Secure copy of the
+ * policy state authoritative.
  *
  * Input vectors:
  *  in[0] = cmd (4 bytes)
@@ -517,45 +522,45 @@ static psa_status_t validate_current_enclave_info_against_boot(uint8_t *match_ou
  *  in[3] = tag (16 bytes)
  *
  * Operation:
- *  - AES-256-GCM decrypt with m_update_aes256_key
+ *  - AES-256-GCM decrypt with authorize_aes256_key
  *  - Parse plaintext: c_limit || pk_v || enclave_info || cert_len || cert
  *  - Recompute EnclaveInfo and compare (constant-time)
  *  - Anti-replay: c_limit must be strictly increasing
  */
-static psa_status_t tfm_dp_validate_m_update(psa_msg_t *msg)
+static psa_status_t tfm_dp_validate_authorize(psa_msg_t *msg)
 {
-    SECURE_BENCHMARK_START(m_update_start);
+    SECURE_BENCHMARK_START(authorize_start);
     psa_status_t status = PSA_SUCCESS;
 
     if (!current_model_info_valid) {
-        printf("[SECURE] M_update rejected: model identity context unavailable\n");
+        printf("[SECURE] Authorize rejected: model identity context unavailable\n");
         return PSA_ERROR_BAD_STATE;
     }
 
     /* in[1] = full raw packet: nonce(12) || ciphertext || tag(16) */
     size_t pkt_len = msg->in_size[1];
-    if (pkt_len < (size_t)(M_UPDATE_NONCE_SIZE + M_UPDATE_TAG_SIZE + M_UPDATE_PLAINTEXT_MIN) ||
-        pkt_len > (size_t)(M_UPDATE_NONCE_SIZE + M_UPDATE_CIPHERTEXT_MAX + M_UPDATE_TAG_SIZE)) {
+    if (pkt_len < (size_t)(AUTHORIZE_NONCE_SIZE + AUTHORIZE_TAG_SIZE + AUTHORIZE_PLAINTEXT_MIN) ||
+        pkt_len > (size_t)(AUTHORIZE_NONCE_SIZE + AUTHORIZE_CIPHERTEXT_MAX + AUTHORIZE_TAG_SIZE)) {
         return PSA_ERROR_INVALID_ARGUMENT;
     }
     /* out[0] must fit: c_limit(4)+pk_v(64)+model_id(4)+cert_len(4)+cert(max 128) = 204 */
-    if (msg->out_size[0] < (4U + M_UPDATE_PK_V_SIZE + 4U + 4U)) {
+    if (msg->out_size[0] < (4U + AUTHORIZE_PK_V_SIZE + 4U + 4U)) {
         return PSA_ERROR_INVALID_ARGUMENT;
     }
 
     
 
     /* Read full packet (nonce || ciphertext || tag) */
-    uint8_t packet[M_UPDATE_NONCE_SIZE + M_UPDATE_CIPHERTEXT_MAX + M_UPDATE_TAG_SIZE];
+    uint8_t packet[AUTHORIZE_NONCE_SIZE + AUTHORIZE_CIPHERTEXT_MAX + AUTHORIZE_TAG_SIZE];
     psa_read(msg->handle, 1, packet, pkt_len);
 
     uint8_t *nonce   = packet;
-    size_t   ct_len  = pkt_len - M_UPDATE_NONCE_SIZE - M_UPDATE_TAG_SIZE;
+    size_t   ct_len  = pkt_len - AUTHORIZE_NONCE_SIZE - AUTHORIZE_TAG_SIZE;
     /* ciphertext||tag sit contiguously right after nonce */
-    uint8_t *ct_tag  = packet + M_UPDATE_NONCE_SIZE;
+    uint8_t *ct_tag  = packet + AUTHORIZE_NONCE_SIZE;
 
     /* AES-256-GCM decrypt with stored session_key */
-    uint8_t plaintext[M_UPDATE_PLAINTEXT_MAX];
+    uint8_t plaintext[AUTHORIZE_PLAINTEXT_MAX];
     size_t  plaintext_len = 0;
 
     status = psa_crypto_init();
@@ -574,22 +579,22 @@ static psa_status_t tfm_dp_validate_m_update(psa_msg_t *msg)
 
     status = psa_aead_decrypt(
         key_id, PSA_ALG_GCM,
-        nonce, M_UPDATE_NONCE_SIZE,
+        nonce, AUTHORIZE_NONCE_SIZE,
         NULL, 0,
-        ct_tag, ct_len + M_UPDATE_TAG_SIZE,
+        ct_tag, ct_len + AUTHORIZE_TAG_SIZE,
         plaintext, sizeof(plaintext),
         &plaintext_len);
     psa_destroy_key(key_id);
 
     if (status != PSA_SUCCESS) {
-        printf("[SECURE] M_update AES-GCM decrypt failed: %d\n", (int)status);
+        printf("[SECURE] Authorize AES-GCM decrypt failed: %d\n", (int)status);
         secure_memzero(plaintext, sizeof(plaintext));
         secure_memzero(packet, pkt_len);
         return PSA_ERROR_INVALID_SIGNATURE;
     }
 
     /* Parse plaintext: c_limit(4) | pk_v(64) | enclave_info(32) | cert_len(4) | cert(n) */
-    if (plaintext_len < M_UPDATE_PLAINTEXT_MIN || plaintext_len > M_UPDATE_PLAINTEXT_MAX) {
+    if (plaintext_len < AUTHORIZE_PLAINTEXT_MIN || plaintext_len > AUTHORIZE_PLAINTEXT_MAX) {
         secure_memzero(plaintext, sizeof(plaintext));
         return PSA_ERROR_INVALID_ARGUMENT;
     }
@@ -599,11 +604,11 @@ static psa_status_t tfm_dp_validate_m_update(psa_msg_t *msg)
     uint32_t cert_len_val = 0;
 
     memcpy(&c_limit,       &plaintext[off], 4); off += 4;
-    uint8_t *pk_v_ptr          = &plaintext[off]; off += M_UPDATE_PK_V_SIZE;
+    uint8_t *pk_v_ptr          = &plaintext[off]; off += AUTHORIZE_PK_V_SIZE;
     uint8_t *enclave_info_rcvd = &plaintext[off]; off += ENCLAVE_INFO_SIZE;
     memcpy(&cert_len_val,  &plaintext[off], 4); off += 4;
 
-    if (cert_len_val > M_UPDATE_CERT_MAX_SIZE || (off + cert_len_val) != plaintext_len) {
+    if (cert_len_val > AUTHORIZE_CERT_MAX_SIZE || (off + cert_len_val) != plaintext_len) {
         secure_memzero(plaintext, sizeof(plaintext));
         return PSA_ERROR_INVALID_ARGUMENT;
     }
@@ -633,7 +638,7 @@ static psa_status_t tfm_dp_validate_m_update(psa_msg_t *msg)
     inference_counter_secure          = 0;
 
     /* Store auth fields in Secure (authoritative copy). */
-    memcpy(s_pk_v, pk_v_ptr, M_UPDATE_PK_V_SIZE);
+    memcpy(s_pk_v, pk_v_ptr, AUTHORIZE_PK_V_SIZE);
     s_cert_len = cert_len_val;
     memcpy(s_cert, cert_ptr, cert_len_val);
     s_model_id = 0;
@@ -645,14 +650,14 @@ static psa_status_t tfm_dp_validate_m_update(psa_msg_t *msg)
     }
     s_auth_valid = true;
 
-    printf("[SECURE] M_update OK: c_limit=%u, model_id=%u, cert_len=%u\n",
+    printf("[SECURE] Authorize OK: c_limit=%u, model_id=%u, cert_len=%u\n",
            c_limit, s_model_id, s_cert_len);
 
     /* Build auth-state response: c_limit(4) + pk_v(64) + model_id(4) + cert_len(4) + cert(n) */
-    uint8_t resp[4U + M_UPDATE_PK_V_SIZE + 4U + 4U + M_UPDATE_CERT_MAX_SIZE];
+    uint8_t resp[4U + AUTHORIZE_PK_V_SIZE + 4U + 4U + AUTHORIZE_CERT_MAX_SIZE];
     size_t  roff = 0;
     memcpy(resp + roff, &c_limit,    4); roff += 4;
-    memcpy(resp + roff, s_pk_v,      M_UPDATE_PK_V_SIZE); roff += M_UPDATE_PK_V_SIZE;
+    memcpy(resp + roff, s_pk_v,      AUTHORIZE_PK_V_SIZE); roff += AUTHORIZE_PK_V_SIZE;
     memcpy(resp + roff, &s_model_id, 4); roff += 4;
     memcpy(resp + roff, &s_cert_len, 4); roff += 4;
     if (s_cert_len > 0U) {
@@ -668,8 +673,8 @@ static psa_status_t tfm_dp_validate_m_update(psa_msg_t *msg)
     secure_memzero(packet,           pkt_len);
     secure_memzero(resp,             sizeof(resp));
 
-    SECURE_BENCHMARK_END(m_update_start, m_update_cycles);
-    g_secure_metrics.m_update_count++;
+    SECURE_BENCHMARK_END(authorize_start, authorize_cycles);
+    g_secure_metrics.authorize_count++;
 
     return PSA_SUCCESS;
 }
@@ -1281,6 +1286,37 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
 
     case DP_CMD_CREATE_ENCLAVE:
         {
+            /* Secure-side API implementation for NS DP_CMD_CREATE_ENCLAVE.
+             *
+             * Shangri-La Create semantics (enclave initialization):
+             * - Input: instance identifier (s_id) and provisioned descriptors
+             *   describing the code region F, public data region data_pub, and
+             *   optionally encrypted private data enc_data_priv.
+             * - Retrieve the memory region descriptors from the instance context
+             *   and validate alignment/limits against the current NS-RAM/flash
+             *   ranges.
+             * - Ephemerally mark the code (F) and data_pub regions as Secure
+             *   using the platform SAU (and the security DMA controller when
+             *   available) so they are protected from Normal World CPU and
+             *   Non-Secure DMA accesses during create-time setup.
+             * - If enc_data_priv exists:
+             *     * Allocate a data_priv region (sized and aligned appropriately)
+             *       in Non-Secure RAM that does not overlap device/MMIO
+             *       address ranges or other peripheral mappings.
+             *     * Ephemerally mark data_priv as Secure and decrypt
+             *       enc_data_priv into data_priv using the instance key
+             *       (k_dec). The decrypted private data remains Secure and is
+             *       not accessible to Normal World code or DMA.
+             * - After code/data placement and decryption succeed, set the
+             *   Shangri-La lifecycle state to Inactive to indicate the
+             *   instance is populated and ready for execution.
+             *
+             * Note: F and its data are protected in Secure state during this
+             * setup phase but are never executed while Secure; F is restored
+             * to Non-Secure atomically immediately prior to execution (see
+             * DP_CMD_RUN_INFERENCE path), ensuring integrity while keeping
+             * the Secure World TCB isolated from F's runtime.
+             */
             SECURE_BENCHMARK_START(create_cmd_start);
             printf("[SECURE] CREATE: in_size[0]=%zu in_size[1]=%zu in_size[2]=%zu in_size[3]=%zu out_size[0]=%zu\n",
                    msg->in_size[0], msg->in_size[1], msg->in_size[2], msg->in_size[3], msg->out_size[0]);
@@ -1394,6 +1430,7 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
 
     case DP_CMD_FINALIZE_CREATE_ENCLAVE:
         {
+            /* Secure-side API implementation for NS DP_CMD_FINALIZE_CREATE_ENCLAVE. */
             SECURE_BENCHMARK_START(finalize_cmd_start);
             if (!sau_enclave_registered) {
                 printf("[SECURE SAU] FINALIZE CREATE: enclave window not registered\n");
@@ -1414,26 +1451,55 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
 
     case DP_CMD_DESTROY_ENCLAVE:
         {
+            /* Secure-side implementation: Destroy API (Shangri-La)
+             * See dummy_partition.h for complete API documentation.
+             * 
+             * Teardown: erase data_priv, mark regions Non-Secure, release SAU windows.
+             */
             SECURE_BENCHMARK_START(destroy_cmd_start);
             psa_status_t st = PSA_SUCCESS;
 
-            if (sau_enclave_registered || sau_rom_registered) {
-                /* Destroy path requirement:
-                 * allow NS to zeroize enclave RAM and continue normal flow,
-                 * so keep RAM+ROM windows OPEN on return. */
-                st = sau_sync_enclave_and_model_ro(true);
-                if (st != PSA_SUCCESS) {
-                    return st;
-                }
+            /* Verify enclave exists before destroying */
+            if (!enclave_created_secure) {
+                SECURE_BENCHMARK_END(destroy_cmd_start, destroy_enclave_cycles);
+                g_secure_metrics.destroy_enclave_count++;
+                printf("[SECURE] Destroy: enclave not created, returning success\n");
+                return PSA_SUCCESS;
             }
 
+            /* Securely erase all sensitive data in data_priv region
+             * (Implementation: SAU protects this region, so Normal World cannot
+             * access it during zeroization) */
+            printf("[SECURE] Destroying enclave: erasing sensitive data...\n");
+
+            /* Mark F, data_pub, data_priv as Non-Secure and release SAU windows.
+             * This allows Normal World to regain control of the memory regions. */
+            if (sau_enclave_registered || sau_rom_registered) {
+                st = sau_sync_enclave_and_model_ro(true);
+                if (st != PSA_SUCCESS) {
+                    printf("[SECURE] Destroy: SAU restore failed\n");
+                    return st;
+                }
+                printf("[SECURE] SAU windows released to Normal World\n");
+            }
+
+            /* Reset lifecycle state to Non-Exist */
             inference_counter_secure = 0U;
             enclave_created_secure = false;
             reset_secure_inference_tx_state();
+            
+            /* Clear authorization state (lifecycle → Non-Exist) */
+            s_auth_valid = false;
+            memset(s_pk_v, 0, sizeof(s_pk_v));
+            memset(s_cert, 0, sizeof(s_cert));
+            s_cert_len = 0;
+            s_model_id = 0;
+            max_inferences_per_enclave_secure = 0;
+
             g_secure_metrics.counter_operations++;
             SECURE_BENCHMARK_END(destroy_cmd_start, destroy_enclave_cycles);
             g_secure_metrics.destroy_enclave_count++;
-            printf("[SECURE] Enclave destroyed: RAM window open + counter reset\n");
+            printf("[SECURE] Enclave destroyed: lifecycle → Non-Exist, SAU windows closed\n");
             return PSA_SUCCESS;
         }
 
@@ -1475,9 +1541,19 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
             return PSA_SUCCESS;
         }
     
+    /* ========================================================================
+     * EXECUTE/RUN API (Shangri-La semantics)
+     * ========================================================================
+     * See dummy_partition.h for complete API documentation.
+     * ======================================================================== */
+    
+    
     case DP_CMD_RUN_INFERENCE:
         {
-            uint8_t phase = 1U; /* default = commit */
+            /* Secure-side implementation: Execute/Run API (Shangri-La) - UNIFIED
+             * See comprehensive documentation above (lines 1517-1568) for full API semantics.
+             */
+            uint8_t phase = 1U;
             if (msg->in_size[1] == 1U) {
                 psa_read(msg->handle, 1, &phase, 1U);
             }
@@ -1486,49 +1562,273 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
                 return PSA_ERROR_INVALID_ARGUMENT;
             }
 
-            uint32_t allowed = 0U;
-            if (enclave_created_secure) {
-                allowed = (inference_counter_secure + 1U <= max_inferences_per_enclave_secure) ? 1U : 0U;
-            }
-
             if (phase == 0U) {
-                if (allowed) {
-                    psa_status_t st = sau_sync_enclave_and_model_ro(true);
-                    if (st != PSA_SUCCESS) {
-                        return st;
-                    }
-                    printf("[SECURE] Run precheck OK (RAM+ROM windows open)\n");
-                } else {
-                    (void)sau_sync_enclave_and_model_ro(false);
-                    printf("[SECURE] Run denied (created=%u, counter=%u/%u)\n",
-                           enclave_created_secure ? 1U : 0U,
-                           inference_counter_secure,
-                           max_inferences_per_enclave_secure);
-                }
-            } else {
-                if (allowed) {
-                    inference_counter_secure++;
-                    psa_status_t st = sau_sync_enclave_and_model_ro(false);
-                    if (st != PSA_SUCCESS) {
-                        return st;
-                    }
-                    printf("[SECURE] Run commit OK, counter=%u/%u (RAM+ROM windows closed)\n",
-                           inference_counter_secure, max_inferences_per_enclave_secure);
-                } else {
-                    (void)sau_sync_enclave_and_model_ro(false);
-                    printf("[SECURE] Run denied (created=%u, counter=%u/%u)\n",
-                           enclave_created_secure ? 1U : 0U,
-                           inference_counter_secure,
-                           max_inferences_per_enclave_secure);
-                }
-            }
+                /* PHASE 0: PRECHECK - Validate user authorization + open SAU */
+                
+                SECURE_BENCHMARK_START(inf_start_cycles_start);
+                psa_status_t result = PSA_SUCCESS;
+                uint8_t packet[128];
+                uint8_t m_inf[100];
+                uint8_t msg_hash[32];
+                size_t hash_len = 0U;
+                uint32_t tx_id = 0U;
+                size_t plaintext_len = 0U;
 
-            if (msg->out_size[0] != sizeof(allowed)) {
-                return PSA_ERROR_INVALID_ARGUMENT;
+                /* Validate input/output sizes: output is tx_id (uint32_t), not allowed */
+                if (msg->in_size[1] != 1U || msg->in_size[2] != sizeof(packet) || msg->out_size[0] != sizeof(tx_id)) {
+                    result = PSA_ERROR_INVALID_ARGUMENT;
+                    goto inf_phase0_out;
+                }
+
+                /* Preconditions: enclave created and authorization valid */
+                if (!s_auth_valid || !enclave_created_secure) {
+                    result = PSA_ERROR_BAD_STATE;
+                    goto inf_phase0_out;
+                }
+
+                /* Recover from stale transaction state if needed */
+                if (s_tx_active) {
+                    (void)sau_sync_enclave_and_model_ro(false);
+                    reset_secure_inference_tx_state();
+                }
+
+                /* Check quota: counter + 1 <= c_limit */
+                if (inference_counter_secure + 1U > max_inferences_per_enclave_secure) {
+                    result = PSA_ERROR_NOT_PERMITTED;
+                    goto inf_phase0_out;
+                }
+
+                /* Read encrypted M_inf packet */
+                psa_read(msg->handle, 2, packet, sizeof(packet));
+
+                /* Decrypt M_inf: nonce(12) || ciphertext(100) || tag(16) */
+                psa_status_t st = psa_crypto_init();
+                if (st != PSA_SUCCESS) {
+                    result = st;
+                    goto inf_phase0_out;
+                }
+
+                psa_key_attributes_t dec_attr = PSA_KEY_ATTRIBUTES_INIT;
+                psa_set_key_type(&dec_attr, PSA_KEY_TYPE_AES);
+                psa_set_key_bits(&dec_attr, 256);
+                psa_set_key_usage_flags(&dec_attr, PSA_KEY_USAGE_DECRYPT);
+                psa_set_key_algorithm(&dec_attr, PSA_ALG_GCM);
+
+                psa_key_id_t dec_key = 0;
+                st = psa_import_key(&dec_attr, secure_session_key, 32U, &dec_key);
+                psa_reset_key_attributes(&dec_attr);
+                if (st != PSA_SUCCESS) {
+                    result = st;
+                    goto inf_phase0_out;
+                }
+
+                st = psa_aead_decrypt(dec_key,
+                                      PSA_ALG_GCM,
+                                      packet,
+                                      12U,
+                                      NULL,
+                                      0U,
+                                      packet + 12U,
+                                      116U,
+                                      m_inf,
+                                      sizeof(m_inf),
+                                      &plaintext_len);
+                psa_destroy_key(dec_key);
+                if (st != PSA_SUCCESS || plaintext_len != sizeof(m_inf)) {
+                    secure_memzero(m_inf, sizeof(m_inf));
+                    secure_memzero(packet, sizeof(packet));
+                    result = PSA_ERROR_INVALID_SIGNATURE;
+                    goto inf_phase0_out;
+                }
+
+                /* Extract model_id from M_inf */
+                uint32_t req_model_id = (uint32_t)m_inf[32]
+                                      | ((uint32_t)m_inf[33] << 8)
+                                      | ((uint32_t)m_inf[34] << 16)
+                                      | ((uint32_t)m_inf[35] << 24);
+
+                if (s_model_id != 0U && req_model_id != s_model_id) {
+                    result = PSA_ERROR_INVALID_ARGUMENT;
+                    goto inf_phase0_out;
+                }
+
+                /* Hash M_inf for signature verification */
+                st = psa_hash_compute(PSA_ALG_SHA_256,
+                                      m_inf,
+                                      36U,
+                                      msg_hash,
+                                      sizeof(msg_hash),
+                                      &hash_len);
+                if (st != PSA_SUCCESS || hash_len != sizeof(msg_hash)) {
+                    secure_memzero(m_inf, sizeof(m_inf));
+                    secure_memzero(packet, sizeof(packet));
+                    result = PSA_ERROR_GENERIC_ERROR;
+                    goto inf_phase0_out;
+                }
+
+                /* Verify user's signature Tu using pk_u */
+                uint8_t pk_v_full[65];
+                pk_v_full[0] = 0x04U;
+                memcpy(pk_v_full + 1U, s_pk_v, 64U);
+
+                psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
+                psa_set_key_type(&attr, PSA_KEY_TYPE_ECC_PUBLIC_KEY(PSA_ECC_FAMILY_SECP_R1));
+                psa_set_key_bits(&attr, 256);
+                psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_VERIFY_HASH);
+                psa_set_key_algorithm(&attr, PSA_ALG_ECDSA(PSA_ALG_SHA_256));
+
+                psa_key_id_t pk_v_id = 0;
+                st = psa_import_key(&attr, pk_v_full, sizeof(pk_v_full), &pk_v_id);
+                psa_reset_key_attributes(&attr);
+                if (st != PSA_SUCCESS) {
+                    secure_memzero(m_inf, sizeof(m_inf));
+                    secure_memzero(packet, sizeof(packet));
+                    result = PSA_ERROR_INVALID_SIGNATURE;
+                    goto inf_phase0_out;
+                }
+
+                st = psa_verify_hash(pk_v_id,
+                                     PSA_ALG_ECDSA(PSA_ALG_SHA_256),
+                                     msg_hash,
+                                     sizeof(msg_hash),
+                                     m_inf + 36U,
+                                     64U);
+                psa_destroy_key(pk_v_id);
+                if (st != PSA_SUCCESS) {
+                    secure_memzero(m_inf, sizeof(m_inf));
+                    secure_memzero(packet, sizeof(packet));
+                    result = PSA_ERROR_INVALID_SIGNATURE;
+                    goto inf_phase0_out;
+                }
+
+                /* All validation passed: open SAU windows for NS execution */
+                st = sau_sync_enclave_and_model_ro(true);
+                if (st != PSA_SUCCESS) {
+                    result = st;
+                    goto inf_phase0_out;
+                }
+
+                /* Mark transaction as active and store nonce for PoX generation */
+                s_tx_active = true;
+                s_tx_id++;
+                if (s_tx_id == 0U) {
+                    s_tx_id = 1U;
+                }
+                tx_id = s_tx_id;
+                memcpy(s_tx_nonce, m_inf, sizeof(s_tx_nonce));
+                s_tx_model_id = req_model_id;
+
+                secure_memzero(m_inf, sizeof(m_inf));
+                secure_memzero(packet, sizeof(packet));
+
+            inf_phase0_out:
+                SECURE_BENCHMARK_END(inf_start_cycles_start, inf_start_cycles);
+                if (result == PSA_SUCCESS) {
+                    g_secure_metrics.inf_start_count++;
+                } else {
+                    tx_id = 0U;  /* Return 0 on error instead of allowing */
+                }
+                psa_write(msg->handle, 0, &tx_id, sizeof(tx_id));
+                g_secure_metrics.counter_operations++;
+                return result == PSA_SUCCESS ? PSA_SUCCESS : PSA_ERROR_INVALID_ARGUMENT;
+
+            } else {
+                /* PHASE 1: COMMIT - Generate PoX + close SAU + increment counter */
+                
+                SECURE_BENCHMARK_START(inf_complete_cycles_start);
+                psa_status_t result = PSA_SUCCESS;
+                uint8_t req[5];
+                uint8_t pox_hash[32];
+                uint8_t pox_msg[4U + sizeof(s_cert) + sizeof(s_tx_nonce) + 1U];
+                size_t pox_hash_len = 0U;
+                size_t pox_msg_len = 0U;
+                size_t sig_len = 0U;
+                uint8_t sig[64];
+
+                /* Validate input/output sizes */
+                if (msg->in_size[2] != sizeof(req) || msg->out_size[0] != sizeof(sig)) {
+                    result = PSA_ERROR_INVALID_ARGUMENT;
+                    goto inf_phase1_out;
+                }
+
+                /* Preconditions: transaction must be active and device key ready */
+                if (!s_tx_active || !s_device_key_ready) {
+                    result = PSA_ERROR_BAD_STATE;
+                    goto inf_phase1_out;
+                }
+
+                /* Read inference output result */
+                psa_read(msg->handle, 2, req, sizeof(req));
+                uint32_t req_tx_id = (uint32_t)req[0]
+                                   | ((uint32_t)req[1] << 8)
+                                   | ((uint32_t)req[2] << 16)
+                                   | ((uint32_t)req[3] << 24);
+                uint8_t output_class = req[4];
+
+                /* Verify transaction ID matches */
+                if (req_tx_id != s_tx_id) {
+                    result = PSA_ERROR_INVALID_ARGUMENT;
+                    goto inf_phase1_out;
+                }
+
+                /* Generate PoX: sign (model_id || cert || nonce || output) */
+                pox_msg[pox_msg_len++] = (uint8_t)(s_tx_model_id & 0xFFU);
+                pox_msg[pox_msg_len++] = (uint8_t)((s_tx_model_id >> 8) & 0xFFU);
+                pox_msg[pox_msg_len++] = (uint8_t)((s_tx_model_id >> 16) & 0xFFU);
+                pox_msg[pox_msg_len++] = (uint8_t)((s_tx_model_id >> 24) & 0xFFU);
+
+                if (s_cert_len > 0U && s_cert_len <= sizeof(s_cert)) {
+                    memcpy(pox_msg + pox_msg_len, s_cert, s_cert_len);
+                    pox_msg_len += s_cert_len;
+                }
+
+                memcpy(pox_msg + pox_msg_len, s_tx_nonce, sizeof(s_tx_nonce));
+                pox_msg_len += sizeof(s_tx_nonce);
+                pox_msg[pox_msg_len++] = output_class;
+
+                /* Hash PoX message */
+                psa_status_t st = psa_hash_compute(PSA_ALG_SHA_256,
+                                                   pox_msg,
+                                                   pox_msg_len,
+                                                   pox_hash,
+                                                   sizeof(pox_hash),
+                                                   &pox_hash_len);
+                if (st != PSA_SUCCESS || pox_hash_len != sizeof(pox_hash)) {
+                    result = PSA_ERROR_GENERIC_ERROR;
+                    goto inf_phase1_out;
+                }
+
+                /* Sign PoX with device key sk_Dev */
+                st = psa_sign_hash(s_device_sign_key_id,
+                                   PSA_ALG_ECDSA(PSA_ALG_SHA_256),
+                                   pox_hash,
+                                   sizeof(pox_hash),
+                                   sig,
+                                   sizeof(sig),
+                                   &sig_len);
+                if (st != PSA_SUCCESS || sig_len != sizeof(sig)) {
+                    result = PSA_ERROR_GENERIC_ERROR;
+                    goto inf_phase1_out;
+                }
+
+                /* Atomically increment counter and close SAU */
+                inference_counter_secure++;
+                g_secure_metrics.counter_operations++;
+
+                (void)sau_sync_enclave_and_model_ro(false);
+
+                s_tx_active = false;
+                memset(s_tx_nonce, 0, sizeof(s_tx_nonce));
+                s_tx_model_id = 0U;
+
+            inf_phase1_out:
+                SECURE_BENCHMARK_END(inf_complete_cycles_start, inf_complete_cycles);
+                if (result == PSA_SUCCESS) {
+                    g_secure_metrics.inf_complete_count++;
+                }
+                psa_write(msg->handle, 0, sig, sizeof(sig));
+                return result == PSA_SUCCESS ? PSA_SUCCESS : PSA_ERROR_INVALID_ARGUMENT;
             }
-            psa_write(msg->handle, 0, &allowed, sizeof(allowed));
-            g_secure_metrics.counter_operations++;
-            return PSA_SUCCESS;
         }
 
     case DP_CMD_COMPUTE_ENCLAVE_INFO:
@@ -1575,12 +1875,13 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
             return PSA_SUCCESS;
         }
 
-    case DP_CMD_VALIDATE_M_UPDATE:
+    case DP_CMD_VALIDATE_AUTHORIZE:
         {
-            printf("[SECURE] DP_CMD_VALIDATE_M_UPDATE received\n");
+            /* Secure-side API implementation for NS DP_CMD_VALIDATE_AUTHORIZE. */
+            printf("[SECURE] DP_CMD_VALIDATE_AUTHORIZE received\n");
             printf("[SECURE]   in_size[0]=%zu (nonce), in_size[1]=%zu (ciphertext), in_size[2]=%zu (tag)\n",
                    msg->in_size[0], msg->in_size[1], msg->in_size[2]);
-            return tfm_dp_validate_m_update(msg);
+            return tfm_dp_validate_authorize(msg);
         }
 
     case DP_CMD_SET_MAX_INFERENCES:
@@ -1748,253 +2049,6 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
             out[8] = (uint8_t)((sau_rom_size >> 24) & 0xFFU);
             psa_write(msg->handle, 0, out, sizeof(out));
             return PSA_SUCCESS;
-        }
-
-    case DP_CMD_INF_START:
-        {
-            SECURE_BENCHMARK_START(inf_start_cycles_start);
-            psa_status_t result = PSA_SUCCESS;
-            uint8_t packet[128];
-            uint8_t m_inf[100];
-            uint8_t msg_hash[32];
-            size_t hash_len = 0U;
-            uint32_t tx_id = 0U;
-            size_t plaintext_len = 0U;
-
-            if (msg->in_size[1] != sizeof(packet) || msg->out_size[0] != sizeof(tx_id)) {
-                result = PSA_ERROR_INVALID_ARGUMENT;
-                goto inf_start_out;
-            }
-            if (!s_auth_valid || !enclave_created_secure) {
-                result = PSA_ERROR_BAD_STATE;
-                goto inf_start_out;
-            }
-            if (s_tx_active) {
-                /* Recover from stale transaction state left by interrupted NS flow. */
-                (void)sau_sync_enclave_and_model_ro(false);
-                reset_secure_inference_tx_state();
-            }
-            if (inference_counter_secure + 1U > max_inferences_per_enclave_secure) {
-                result = PSA_ERROR_NOT_PERMITTED;
-                goto inf_start_out;
-            }
-
-            psa_read(msg->handle, 1, packet, sizeof(packet));
-
-            /* Decrypt M_inf in Secure: nonce(12) || ciphertext(100) || tag(16). */
-            psa_status_t st = psa_crypto_init();
-            if (st != PSA_SUCCESS) {
-                result = st;
-                goto inf_start_out;
-            }
-
-            psa_key_attributes_t dec_attr = PSA_KEY_ATTRIBUTES_INIT;
-            psa_set_key_type(&dec_attr, PSA_KEY_TYPE_AES);
-            psa_set_key_bits(&dec_attr, 256);
-            psa_set_key_usage_flags(&dec_attr, PSA_KEY_USAGE_DECRYPT);
-            psa_set_key_algorithm(&dec_attr, PSA_ALG_GCM);
-
-            psa_key_id_t dec_key = 0;
-            st = psa_import_key(&dec_attr, secure_session_key, 32U, &dec_key);
-            psa_reset_key_attributes(&dec_attr);
-            if (st != PSA_SUCCESS) {
-                result = st;
-                goto inf_start_out;
-            }
-
-            st = psa_aead_decrypt(dec_key,
-                                  PSA_ALG_GCM,
-                                  packet,
-                                  12U,
-                                  NULL,
-                                  0U,
-                                  packet + 12U,
-                                  116U,
-                                  m_inf,
-                                  sizeof(m_inf),
-                                  &plaintext_len);
-            psa_destroy_key(dec_key);
-            if (st != PSA_SUCCESS || plaintext_len != sizeof(m_inf)) {
-                secure_memzero(m_inf, sizeof(m_inf));
-                secure_memzero(packet, sizeof(packet));
-                result = PSA_ERROR_INVALID_SIGNATURE;
-                goto inf_start_out;
-            }
-
-            uint32_t req_model_id = (uint32_t)m_inf[32]
-                                  | ((uint32_t)m_inf[33] << 8)
-                                  | ((uint32_t)m_inf[34] << 16)
-                                  | ((uint32_t)m_inf[35] << 24);
-
-            if (s_model_id != 0U && req_model_id != s_model_id) {
-                result = PSA_ERROR_INVALID_ARGUMENT;
-                goto inf_start_out;
-            }
-
-            st = psa_hash_compute(PSA_ALG_SHA_256,
-                                  m_inf,
-                                  36U,
-                                  msg_hash,
-                                  sizeof(msg_hash),
-                                  &hash_len);
-            if (st != PSA_SUCCESS || hash_len != sizeof(msg_hash)) {
-                secure_memzero(m_inf, sizeof(m_inf));
-                secure_memzero(packet, sizeof(packet));
-                result = PSA_ERROR_GENERIC_ERROR;
-                goto inf_start_out;
-            }
-
-            uint8_t pk_v_full[65];
-            pk_v_full[0] = 0x04U;
-            memcpy(pk_v_full + 1U, s_pk_v, 64U);
-
-            psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
-            psa_set_key_type(&attr, PSA_KEY_TYPE_ECC_PUBLIC_KEY(PSA_ECC_FAMILY_SECP_R1));
-            psa_set_key_bits(&attr, 256);
-            psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_VERIFY_HASH);
-            psa_set_key_algorithm(&attr, PSA_ALG_ECDSA(PSA_ALG_SHA_256));
-
-            psa_key_id_t pk_v_id = 0;
-            st = psa_import_key(&attr, pk_v_full, sizeof(pk_v_full), &pk_v_id);
-            psa_reset_key_attributes(&attr);
-            if (st != PSA_SUCCESS) {
-                secure_memzero(m_inf, sizeof(m_inf));
-                secure_memzero(packet, sizeof(packet));
-                result = PSA_ERROR_INVALID_SIGNATURE;
-                goto inf_start_out;
-            }
-
-            st = psa_verify_hash(pk_v_id,
-                                 PSA_ALG_ECDSA(PSA_ALG_SHA_256),
-                                 msg_hash,
-                                 sizeof(msg_hash),
-                                 m_inf + 36U,
-                                 64U);
-            psa_destroy_key(pk_v_id);
-            if (st != PSA_SUCCESS) {
-                secure_memzero(m_inf, sizeof(m_inf));
-                secure_memzero(packet, sizeof(packet));
-                result = PSA_ERROR_INVALID_SIGNATURE;
-                goto inf_start_out;
-            }
-
-            st = sau_sync_enclave_and_model_ro(true);
-            if (st != PSA_SUCCESS) {
-                result = st;
-                goto inf_start_out;
-            }
-
-            s_tx_active = true;
-            s_tx_id++;
-            if (s_tx_id == 0U) {
-                s_tx_id = 1U;
-            }
-            tx_id = s_tx_id;
-            memcpy(s_tx_nonce, m_inf, sizeof(s_tx_nonce));
-            s_tx_model_id = req_model_id;
-
-            secure_memzero(m_inf, sizeof(m_inf));
-            secure_memzero(packet, sizeof(packet));
-
-            psa_write(msg->handle, 0, &tx_id, sizeof(tx_id));
-            result = PSA_SUCCESS;
-
-        inf_start_out:
-            SECURE_BENCHMARK_END(inf_start_cycles_start, inf_start_cycles);
-            if (result == PSA_SUCCESS) {
-                g_secure_metrics.inf_start_count++;
-            }
-            return result;
-        }
-
-    case DP_CMD_INF_COMPLETE:
-        {
-            SECURE_BENCHMARK_START(inf_complete_cycles_start);
-            psa_status_t result = PSA_SUCCESS;
-            uint8_t req[5];
-            uint8_t pox_hash[32];
-            uint8_t pox_msg[4U + sizeof(s_cert) + sizeof(s_tx_nonce) + 1U];
-            size_t pox_hash_len = 0U;
-            size_t pox_msg_len = 0U;
-            size_t sig_len = 0U;
-
-            if (msg->in_size[1] != sizeof(req) || msg->out_size[0] != 64U) {
-                result = PSA_ERROR_INVALID_ARGUMENT;
-                goto inf_complete_out;
-            }
-            if (!s_tx_active || !s_device_key_ready) {
-                result = PSA_ERROR_BAD_STATE;
-                goto inf_complete_out;
-            }
-
-            psa_read(msg->handle, 1, req, sizeof(req));
-            uint32_t req_tx_id = (uint32_t)req[0]
-                               | ((uint32_t)req[1] << 8)
-                               | ((uint32_t)req[2] << 16)
-                               | ((uint32_t)req[3] << 24);
-            uint8_t output_class = req[4];
-
-            if (req_tx_id != s_tx_id) {
-                result = PSA_ERROR_INVALID_ARGUMENT;
-                goto inf_complete_out;
-            }
-
-            pox_msg[pox_msg_len++] = (uint8_t)(s_tx_model_id & 0xFFU);
-            pox_msg[pox_msg_len++] = (uint8_t)((s_tx_model_id >> 8) & 0xFFU);
-            pox_msg[pox_msg_len++] = (uint8_t)((s_tx_model_id >> 16) & 0xFFU);
-            pox_msg[pox_msg_len++] = (uint8_t)((s_tx_model_id >> 24) & 0xFFU);
-
-            if (s_cert_len > 0U && s_cert_len <= sizeof(s_cert)) {
-                memcpy(pox_msg + pox_msg_len, s_cert, s_cert_len);
-                pox_msg_len += s_cert_len;
-            }
-
-            memcpy(pox_msg + pox_msg_len, s_tx_nonce, sizeof(s_tx_nonce));
-            pox_msg_len += sizeof(s_tx_nonce);
-            pox_msg[pox_msg_len++] = output_class;
-
-            psa_status_t st = psa_hash_compute(PSA_ALG_SHA_256,
-                                               pox_msg,
-                                               pox_msg_len,
-                                               pox_hash,
-                                               sizeof(pox_hash),
-                                               &pox_hash_len);
-            if (st != PSA_SUCCESS || pox_hash_len != sizeof(pox_hash)) {
-                result = PSA_ERROR_GENERIC_ERROR;
-                goto inf_complete_out;
-            }
-
-            uint8_t sig[64];
-            st = psa_sign_hash(s_device_sign_key_id,
-                               PSA_ALG_ECDSA(PSA_ALG_SHA_256),
-                               pox_hash,
-                               sizeof(pox_hash),
-                               sig,
-                               sizeof(sig),
-                               &sig_len);
-            if (st != PSA_SUCCESS || sig_len != sizeof(sig)) {
-                result = PSA_ERROR_GENERIC_ERROR;
-                goto inf_complete_out;
-            }
-
-            inference_counter_secure++;
-            g_secure_metrics.counter_operations++;
-
-            (void)sau_sync_enclave_and_model_ro(false);
-
-            s_tx_active = false;
-            memset(s_tx_nonce, 0, sizeof(s_tx_nonce));
-            s_tx_model_id = 0U;
-
-            psa_write(msg->handle, 0, sig, sizeof(sig));
-            result = PSA_SUCCESS;
-
-        inf_complete_out:
-            SECURE_BENCHMARK_END(inf_complete_cycles_start, inf_complete_cycles);
-            if (result == PSA_SUCCESS) {
-                g_secure_metrics.inf_complete_count++;
-            }
-            return result;
         }
 
     case DP_CMD_GET_DEVICE_PUBKEY:

@@ -1,0 +1,17 @@
+[OK] Loaded image from Mac: cifar_input.raw (3072 bytes)
+[OK] Connected to /dev/cu.usbmodem11203 @ 115200
+
+[Provider] Step 2 - Fetch/verify EnclaveInfo
+[OK] EnclaveInfo attestation verified
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=10
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Run 1/1]
+
+[Model Customer] Step 5 - Verified inference
+[ERR] Verified inference rejected by device (stage=7, detail=-135)
+[OK] Serial disconnected

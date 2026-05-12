@@ -23,6 +23,7 @@ void run_enclave(void)
         /* Secure precheck only: no counter increment here. */
         printk("[ENCLAVE] Calling Secure: DP_CMD_RUN_INFERENCE precheck...\n");
 
+        /* NS-side API call: DP_CMD_RUN_INFERENCE, phase=0 (precheck). */
         psa_handle_t handle = psa_connect(ENCLAVE_SID, ENCLAVE_VER);
         if (handle <= 0) {
             printk("[ENCLAVE] ✗ psa_connect failed (handle=%d)\n", (int)handle);
@@ -61,6 +62,7 @@ void run_enclave(void)
         g_benchmark_metrics.inference_count++;
 
         /* Secure commit: increment only after successful execution. */
+        /* NS-side API call: DP_CMD_RUN_INFERENCE, phase=1 (commit). */
         psa_handle_t handle = psa_connect(ENCLAVE_SID, ENCLAVE_VER);
         if (handle <= 0) {
             printk("[ENCLAVE] ✗ Commit connect failed (handle=%d)\n", (int)handle);

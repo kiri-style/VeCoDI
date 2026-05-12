@@ -128,18 +128,18 @@ void secure_benchmark_print_report(void)
         printf("║ Digest:               0 cycles  (     0 ms)  [0 ops]        ║\n");
     }
 
-    /* M_update validation */
-    if (g_secure_metrics.m_update_count > 0) {
-        uint32_t avg_cycles = (uint32_t)(g_secure_metrics.m_update_cycles / g_secure_metrics.m_update_count);
-        printf("║ M_update:     %10llu cycles  (%6u ms)  [%u ops]         ║\n",
-               (unsigned long long)g_secure_metrics.m_update_cycles,
-               secure_benchmark_cycles_to_ms(g_secure_metrics.m_update_cycles),
-               g_secure_metrics.m_update_count);
+    /* Authorize validation */
+    if (g_secure_metrics.authorize_count > 0) {
+        uint32_t avg_cycles = (uint32_t)(g_secure_metrics.authorize_cycles / g_secure_metrics.authorize_count);
+        printf("║ Authorize:    %10llu cycles  (%6u ms)  [%u ops]         ║\n",
+               (unsigned long long)g_secure_metrics.authorize_cycles,
+               secure_benchmark_cycles_to_ms(g_secure_metrics.authorize_cycles),
+               g_secure_metrics.authorize_count);
         printf("║   Avg/op:    %10u cycles  (%6u ms)                   ║\n",
                avg_cycles,
                secure_benchmark_cycles_to_ms(avg_cycles));
     } else {
-        printf("║ M_update:             0 cycles  (     0 ms)  [0 ops]        ║\n");
+        printf("║ Authorize:            0 cycles  (     0 ms)  [0 ops]        ║\n");
     }
 
     printf("╟──────────────────────────────────────────────────────────────╢\n");

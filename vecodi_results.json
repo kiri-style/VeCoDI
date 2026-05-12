@@ -1,0 +1,102 @@
+{
+  "model_id": 1,
+  "timestamp_unix": 1778596658,
+  "benchmarks": [
+    {
+      "action": "provider.enclave_info",
+      "status": "ok",
+      "duration_ms": 264.685,
+      "detail": ""
+    },
+    {
+      "action": "provider.m_update",
+      "status": "ok",
+      "duration_ms": 20.493,
+      "detail": ""
+    },
+    {
+      "action": "customer.create_enclave",
+      "status": "ok",
+      "duration_ms": 90.079,
+      "detail": ""
+    },
+    {
+      "action": "customer.verified_inference.run_1",
+      "status": "ok",
+      "duration_ms": 1462.256,
+      "detail": ""
+    },
+    {
+      "action": "customer.verified_inference.run_1.meta",
+      "status": "ok",
+      "duration_ms": 0.0,
+      "detail": "{\"pred\": 6, \"pox_valid\": true, \"used_image_upload\": true}"
+    },
+    {
+      "action": "customer.verified_inference.run_2",
+      "status": "ok",
+      "duration_ms": 1467.216,
+      "detail": ""
+    },
+    {
+      "action": "customer.verified_inference.run_2.meta",
+      "status": "ok",
+      "duration_ms": 0.0,
+      "detail": "{\"pred\": 6, \"pox_valid\": true, \"used_image_upload\": true}"
+    },
+    {
+      "action": "customer.verified_inference.run_3",
+      "status": "ok",
+      "duration_ms": 1463.708,
+      "detail": ""
+    },
+    {
+      "action": "customer.verified_inference.run_3.meta",
+      "status": "ok",
+      "duration_ms": 0.0,
+      "detail": "{\"pred\": 6, \"pox_valid\": true, \"used_image_upload\": true}"
+    },
+    {
+      "action": "metrics.max_before_destroy",
+      "status": "ok",
+      "duration_ms": 2.317,
+      "detail": ""
+    },
+    {
+      "action": "metrics.used_before_destroy",
+      "status": "ok",
+      "duration_ms": 2.012,
+      "detail": ""
+    },
+    {
+      "action": "metrics.remaining_before_destroy",
+      "status": "ok",
+      "duration_ms": 2.743,
+      "detail": ""
+    },
+    {
+      "action": "customer.destroy_enclave",
+      "status": "ok",
+      "duration_ms": 4.459,
+      "detail": ""
+    },
+    {
+      "action": "metrics.max_after_destroy",
+      "status": "ok",
+      "duration_ms": 1.862,
+      "detail": ""
+    },
+    {
+      "action": "metrics.used_after_destroy",
+      "status": "ok",
+      "duration_ms": 1.891,
+      "detail": ""
+    },
+    {
+      "action": "metrics.remaining_after_destroy",
+      "status": "ok",
+      "duration_ms": 2.0,
+      "detail": ""
+    }
+  ]
+}

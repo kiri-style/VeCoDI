@@ -17,7 +17,7 @@
 /* Secure partition constants (mirrors dummy_partition.h, not on NS include path) */
 #define TFM_DP_SERVICE_SID          0xFFFFF002U
 #define DP_CMD_COMPUTE_ENCLAVE_INFO 10U
-#define DP_CMD_VALIDATE_M_UPDATE    11U
+#define DP_CMD_VALIDATE_AUTHORIZE    11U
 #define DP_CMD_INF_START            25U
 #define DP_CMD_INF_COMPLETE         26U
 #define DP_CMD_GET_DEVICE_PUBKEY    27U
@@ -324,7 +324,7 @@ static void uart_send_encrypted_response(uint8_t status,
 static bool is_valid_cmd(uint8_t cmd)
 {
     return (cmd == CMD_COMPUTE_ENCLAVE_INFO ||
-            cmd == CMD_VALIDATE_M_UPDATE ||
+            cmd == CMD_VALIDATE_AUTHORIZE ||
             cmd == CMD_GET_MAX_INFERENCES ||
             cmd == CMD_RUN_INFERENCE ||
             cmd == CMD_GET_INFERENCE_COUNT ||
@@ -344,7 +344,7 @@ static bool is_valid_cmd(uint8_t cmd)
             cmd == CMD_GET_TCB_BENCHMARK ||
             cmd == CMD_READ_PROTECTED_MEM ||
             cmd == CMD_READ_PROTECTED_ROM ||
-            cmd == CMD_GET_M_UPDATE_DEBUG);
+            cmd == CMD_GET_AUTHORIZE_DEBUG);
 }
 
 static bool is_valid_len_for_cmd(uint8_t cmd, uint32_t len)
@@ -354,7 +354,7 @@ static bool is_valid_len_for_cmd(uint8_t cmd, uint32_t len)
             /* len=32: attested mode (nonce from host)
              * len=0 : secure-internal compute only */
             return (len == 0U) || (len == 32U);
-        case CMD_VALIDATE_M_UPDATE:
+        case CMD_VALIDATE_AUTHORIZE:
             /* nonce(12) + ciphertext(n) + tag(16) */
             return (len >= 28U) && (len <= MAX_COMMAND_DATA_SIZE);
         case CMD_GET_MAX_INFERENCES:
@@ -374,7 +374,7 @@ static bool is_valid_len_for_cmd(uint8_t cmd, uint32_t len)
         case CMD_READ_PROTECTED_MEM:
         case CMD_READ_PROTECTED_ROM:
             return len == 0U;
-        case CMD_GET_M_UPDATE_DEBUG:
+        case CMD_GET_AUTHORIZE_DEBUG:
             return len == 0U;
         case CMD_RUN_INFERENCE:
             /* Verified-only protocol: encrypted M_inf packet nonce(12)+ciphertext(100)+tag(16). */
@@ -393,7 +393,7 @@ static bool is_valid_len_for_cmd(uint8_t cmd, uint32_t len)
 /* Forward declarations */
 static void process_command(void);
 static void handle_compute_enclave_info(const uint8_t *data, uint32_t len);
-static void handle_validate_m_update(const uint8_t *data, uint32_t len);
+static void handle_validate_authorize(const uint8_t *data, uint32_t len);
 static void handle_get_max_inferences(void);
 static void handle_run_inference(void);
 static void handle_run_inference_with_image(const uint8_t *data, uint32_t len);
@@ -413,7 +413,7 @@ static void handle_read_protected_rom(void);
 static void handle_create_enclave(const uint8_t *data, uint32_t len);
 static void handle_destroy_enclave(void);
 static void handle_update_rate_limit(const uint8_t *data, uint32_t len);
-static void handle_get_m_update_debug(void);
+static void handle_get_authorize_debug(void);
 
 int uart_protocol_init(void)
 {
@@ -601,8 +601,8 @@ static void process_command(void)
             handle_compute_enclave_info(rx_buffer, rx_len);
             break;
         
-        case CMD_VALIDATE_M_UPDATE:
-            handle_validate_m_update(rx_buffer, rx_len);
+        case CMD_VALIDATE_AUTHORIZE:
+            handle_validate_authorize(rx_buffer, rx_len);
             break;
         
         case CMD_GET_MAX_INFERENCES:
@@ -633,8 +633,8 @@ static void process_command(void)
             handle_get_secure_benchmark();
             break;
 
-        case CMD_GET_M_UPDATE_DEBUG:
-            handle_get_m_update_debug();
+        case CMD_GET_AUTHORIZE_DEBUG:
+            handle_get_authorize_debug();
             break;
         
         case CMD_GET_INFERENCE_RESULT:
@@ -768,33 +768,32 @@ static void handle_compute_enclave_info(const uint8_t *data, uint32_t len)
     uart_send_encrypted_response(RESP_OK, enclave_info, sizeof(enclave_info));
 }
 
-static void handle_validate_m_update(const uint8_t *data, uint32_t len)
+static void handle_validate_authorize(const uint8_t *data, uint32_t len)
 {
-    bool m_update_success = false;
+    bool authorize_success = false;
 
-    struct ns_m_update_benchmark_scope {
+    struct ns_authorize_benchmark_scope {
         uint32_t start_cycles;
         bool *success;
 
-        explicit ns_m_update_benchmark_scope(bool *success_flag)
+        explicit ns_authorize_benchmark_scope(bool *success_flag)
             : start_cycles(benchmark_get_cycles()), success(success_flag)
         {
         }
 
-        ~ns_m_update_benchmark_scope()
+        ~ns_authorize_benchmark_scope()
         {
             if (success != NULL && *success) {
                 uint32_t elapsed_cycles = benchmark_get_cycles() - start_cycles;
-                g_benchmark_metrics.m_update_cycles += (uint64_t)elapsed_cycles;
+                g_benchmark_metrics.authorize_cycles += (uint64_t)elapsed_cycles;
             }
         }
-    } m_update_scope(NULL);
-    m_update_scope.success = &m_update_success;
+    } authorize_scope(NULL);
+    authorize_scope.success = &authorize_success;
 
-    /*
-     * NS receives encrypted M_update from host and forwards the raw bytes
+    /* NS receives encrypted Authorize from host and forwards the raw bytes
      * to the Secure partition for AES-256-GCM decryption + EnclaveInfo
-     * validation + counter update.  Secure returns auth fields so NS can
+     * validation + counter update. Secure returns auth fields so NS can
      * store them for later M_inf verification.
      *
      * Secure in[0] = cmd (4B)
@@ -821,7 +820,7 @@ static void handle_validate_m_update(const uint8_t *data, uint32_t len)
         return;
     }
 
-    uint32_t cmd = DP_CMD_VALIDATE_M_UPDATE;
+    uint32_t cmd = DP_CMD_VALIDATE_AUTHORIZE;
     psa_invec  in_v[2] = {
         { &cmd, sizeof(cmd) },   /* in[0]: command word */
         { data, len         }    /* in[1]: full raw packet */
@@ -836,8 +835,9 @@ static void handle_validate_m_update(const uint8_t *data, uint32_t len)
         return;
     }
 
-    /* Parse auth response: c_limit(4) + pk_v(64) + model_id(4) + cert_len(4) + cert(n) */
     size_t resp_len = out_v.len;
+
+    /* Parse auth response: c_limit(4) + pk_v(64) + model_id(4) + cert_len(4) + cert(n) */
     if (resp_len < (4U + 64U + 4U + 4U)) {
         uart_protocol_send_response(RESP_ERROR, NULL, 0);
         return;
@@ -873,13 +873,13 @@ static void handle_validate_m_update(const uint8_t *data, uint32_t len)
         memcpy(stored_cert, auth_resp + roff, clen);
     }
 
-    m_update_success = true;
+    authorize_success = true;
     /* Ensure the NS-side m_update count is visible immediately to host
      * (some hosts read device counters immediately after the response).
      * Increment here rather than relying solely on the RAII destructor so
      * the count is durable before uart_protocol_send_response returns.
      */
-    g_benchmark_metrics.m_update_count++;
+    g_benchmark_metrics.authorize_count++;
     uart_protocol_send_response(RESP_OK, NULL, 0);
 }
 
@@ -890,9 +890,7 @@ static void handle_get_max_inferences(void)
 
 static void handle_run_inference_common(const uint8_t *minf_data, uint32_t minf_len)
 {
-    /*
-     * PHASE 2 – Inference  (Verifier ↔ Device)
-     *
+    /* PHASE 2 – Inference (Verifier ↔ Device)
      * Verified-only mode: encrypted M_inf packet.
      *   Device:
      *     1. Forward encrypted payload to Secure START
@@ -971,17 +969,23 @@ static void handle_run_inference_common(const uint8_t *minf_data, uint32_t minf_
                              g_benchmark_metrics.irq_atomic_max_cycles,
                              g_benchmark_metrics.irq_atomic_count);
         irq_unlock(irq_key_atomic);
-        send_inf_error(3U, (int32_t)handle_start);
+        send_inf_error(4U, (int32_t)handle_start);
         return;
     }
 
-    uint32_t cmd = DP_CMD_INF_START;
-    psa_invec in_vec[2] = {
+    /* NS-side API call: DP_CMD_RUN_INFERENCE, phase=0 (precheck+validation).
+     * Secure: decrypt M_inf, verify signature Tu, open SAU windows.
+     * Output: tx_id (0 = precheck failed, non-zero = transaction ID for phase 1)
+     */
+    uint32_t cmd = 9; /* DP_CMD_RUN_INFERENCE */
+    uint8_t phase = 0U; /* precheck */
+    psa_invec in_vec[3] = {
         { &cmd, sizeof(cmd) },
-        { minf_data, minf_len }
+        { &phase, sizeof(phase) },
+        { minf_data, minf_len }  /* Encrypted M_inf packet */
     };
     psa_outvec out_vec = { &tx_id, sizeof(tx_id) };
-    psa_status_t st = psa_call(handle_start, PSA_IPC_CALL, in_vec, 2, &out_vec, 1);
+    psa_status_t st = psa_call(handle_start, PSA_IPC_CALL, in_vec, 3, &out_vec, 1);
     psa_close(handle_start);
     if (st != PSA_SUCCESS || out_vec.len != sizeof(tx_id) || tx_id == 0U) {
         uint32_t irq_atomic_elapsed = benchmark_get_cycles() - irq_atomic_start;
@@ -1037,13 +1041,18 @@ static void handle_run_inference_common(const uint8_t *minf_data, uint32_t minf_
         return;
     }
 
-    uint32_t cmd_complete = DP_CMD_INF_COMPLETE;
-    psa_invec in_vec_complete[2] = {
+    /* NS-side API call: DP_CMD_RUN_INFERENCE, phase=1 (commit+PoX).
+     * Secure: generate PoX signature, close SAU windows, increment counter.
+     */
+    uint32_t cmd_complete = 9; /* DP_CMD_RUN_INFERENCE */
+    uint8_t phase_complete = 1U; /* commit */
+    psa_invec in_vec_complete[3] = {
         { &cmd_complete, sizeof(cmd_complete) },
-        { complete_req, sizeof(complete_req) }
+        { &phase_complete, sizeof(phase_complete) },
+        { complete_req, sizeof(complete_req) }  /* tx_id(4) + output_class(1) */
     };
     psa_outvec out_vec_complete = { pox_sig, sizeof(pox_sig) };
-    psa_status_t st_complete = psa_call(handle_complete, PSA_IPC_CALL, in_vec_complete, 2, &out_vec_complete, 1);
+    psa_status_t st_complete = psa_call(handle_complete, PSA_IPC_CALL, in_vec_complete, 3, &out_vec_complete, 1);
     psa_close(handle_complete);
     if (st_complete != PSA_SUCCESS || out_vec_complete.len != sizeof(pox_sig)) {
         uint32_t irq_atomic_elapsed = benchmark_get_cycles() - irq_atomic_start;
@@ -1112,12 +1121,12 @@ static void handle_get_inference_count(void)
     uart_protocol_send_response(RESP_OK, count_bytes, 4);
 }
 
-static void handle_get_m_update_debug(void)
+static void handle_get_authorize_debug(void)
 {
     /* Return little-endian: uint64_t m_update_cycles, uint32_t m_update_count */
     uint8_t resp[12];
-    uint64_t cycles = g_benchmark_metrics.m_update_cycles;
-    uint32_t count = g_benchmark_metrics.m_update_count;
+    uint64_t cycles = g_benchmark_metrics.authorize_cycles;
+    uint32_t count = g_benchmark_metrics.authorize_count;
     for (int i = 0; i < 8; i++) {
         resp[i] = (uint8_t)((cycles >> (8 * i)) & 0xFFULL);
     }
@@ -1464,8 +1473,10 @@ static void handle_create_enclave(const uint8_t *data, uint32_t len)
 
 static void handle_destroy_enclave(void)
 {
+    /* NS-side UART handler for Destroy API (Shangri-La)
+     * Invokes destroy_enclave() which calls DP_CMD_DESTROY_ENCLAVE
+     * in Secure World to tear down the enclave instance. */
     bool destroy_success = false;
-
     struct ns_destroy_benchmark_scope {
         uint32_t start_cycles;
         bool *success;

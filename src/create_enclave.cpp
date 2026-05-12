@@ -83,6 +83,7 @@ static struct k_thread enclave_thread;
 
 static int enclave_sau_register_rom_window(const uint8_t *base, uint32_t size)
 {
+    /* NS-side API call: DP_CMD_SAU_REGISTER_ROM. */
     if (base == NULL || size == 0U) {
         return -1;
     }
@@ -108,6 +109,7 @@ static int enclave_sau_register_rom_window(const uint8_t *base, uint32_t size)
 
 static int enclave_sau_register_code_window(const uint8_t *base, uint32_t size)
 {
+    /* NS-side API call: DP_CMD_SAU_REGISTER_CODE. */
     if (base == NULL || size == 0U) {
         return -1;
     }
@@ -171,6 +173,7 @@ int ensure_inference_code_registered(void)
 
 static int seed_late_secret_hash_secure(void)
 {
+    /* NS-side API call: DP_CMD_SET_LATE_SECRET_HASH. */
     psa_handle_t h = psa_connect(ENCLAVE_SID, ENCLAVE_VER);
     if (h <= 0) {
         return -1;
@@ -249,6 +252,7 @@ int initialize_secure_enclave_info_boot(void)
     if (h <= 0) {
         return -1;
     }
+    /* NS-side API call: DP_CMD_COMPUTE_ENCLAVE_INFO. */
     uint32_t cmd = DP_CMD_COMPUTE_ENCLAVE_INFO;
     psa_invec in_v = { &cmd, sizeof(cmd) };
     psa_outvec out_v = { enclave_info, sizeof(enclave_info) };
@@ -265,6 +269,7 @@ int initialize_secure_enclave_info_boot(void)
 
 static int create_enclave_secure_into_ns(size_t decrypt_size_bytes)
 {
+    /* NS-side API call: DP_CMD_CREATE_ENCLAVE. */
     BENCHMARK_START(decrypt);
     
     uint8_t *out_buf = enclave_region_base;
@@ -339,6 +344,7 @@ static int create_enclave_secure_into_ns(size_t decrypt_size_bytes)
 
 static int finalize_create_enclave_secure(void)
 {
+    /* NS-side API call: DP_CMD_FINALIZE_CREATE_ENCLAVE. */
     psa_handle_t handle = psa_connect(ENCLAVE_SID, ENCLAVE_VER);
     if (handle <= 0) {
         printk("[NS] psa_connect failed (finalize create), handle=%d\n", (int)handle);
@@ -562,7 +568,18 @@ int destroy_enclave(void)
 
     printk("[NS] Destroying enclave...\n");
 
-    /* Secure Destroy_Enclave: close regions and reset secure state. */
+    /* NS-side API call: DP_CMD_DESTROY_ENCLAVE (Shangri-La Destroy API)
+     *
+     * Secure-side execution:
+     *  1. Erase all sensitive data in data_priv (zeroize)
+     *  2. Mark F, data_pub, data_priv as Non-Secure (release SAU windows)
+     *  3. Set lifecycle state to Non-Exist
+     *
+     * Normal-side responsibility:
+     *  - Clear enclave_created flag
+     *  - Zeroize Normal World copy of SAU window (enclave_region_base)
+     *  - Set max_inferences_per_enclave to 0 (quota released)
+     */
     psa_handle_t handle = psa_connect(ENCLAVE_SID, ENCLAVE_VER);
     if (handle <= 0) {
         printk("[NS] psa_connect failed (destroy), handle=%d\n", (int)handle);

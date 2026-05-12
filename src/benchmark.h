@@ -171,8 +171,8 @@ typedef struct {
     uint32_t dangerous_read_rom_count;
 
     // NS M_update timing (handle_validate_m_update)
-    uint64_t m_update_cycles;
-    uint32_t m_update_count;
+    uint64_t authorize_cycles;
+    uint32_t authorize_count;
 } benchmark_metrics_t;
 
 extern benchmark_metrics_t g_benchmark_metrics;

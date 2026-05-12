@@ -12,7 +12,7 @@ extern "C" {
 
 /* Protocol Commands (Mac → Device) */
 #define CMD_COMPUTE_ENCLAVE_INFO    0x01
-#define CMD_VALIDATE_M_UPDATE       0x02
+#define CMD_VALIDATE_AUTHORIZE      0x02
 #define CMD_GET_MAX_INFERENCES      0x03
 #define CMD_RUN_INFERENCE           0x04
 #define CMD_GET_INFERENCE_COUNT     0x05
@@ -33,7 +33,7 @@ extern "C" {
 #define CMD_GET_TCB_BENCHMARK       0x15  /* Return TCB footprint (Secure + trusted NS windows) */
 #define CMD_READ_PROTECTED_ROM      0x18  /* DANGEROUS TEST: direct read from protected model ROM */
 /* Debug: return NS-side m_update metrics (uint64 cycles + uint32 count) */
-#define CMD_GET_M_UPDATE_DEBUG      0x1A
+#define CMD_GET_AUTHORIZE_DEBUG     0x1A
 /* Response Codes (Device → Mac) */
 #define RESP_OK                     0x00
 #define RESP_ERROR                  0xFF
