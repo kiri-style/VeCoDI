@@ -1301,29 +1301,53 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
 
     case DP_CMD_DESTROY_ENCLAVE:
         {
-            /* Secure-side implementation: Destroy API (Shangri-La)
-             * See dummy_partition.h for complete API documentation.
-             * 
-             * Teardown: erase data_priv, mark regions Non-Secure, release SAU windows.
+            /* Destroy API handler (Shangri-La) - Algorithm mapping
+             * Algorithm: Function Destroy(Hs_id)
+             * Alg L41: Function Destroy(Hs_id) entry -> this handler (DP_CMD_DESTROY_ENCLAVE)
+             * Alg L42: if Hs_id ∉ CT_X then -> here we check enclave existence / lifecycle
+             * Alg L43: abort -> return success or error as appropriate
+             * Alg L44: erase data_priv -> zeroize secure private region
+             * Alg L45: mark (F, data_pub, data_priv) as Non-secure -> release SAU windows
+             * Alg L46: CT_X[Hs_id].state ← Non-Exist -> clear lifecycle/auth state
              */
             SECURE_BENCHMARK_START(destroy_cmd_start);
             psa_status_t st = PSA_SUCCESS;
 
-            /* Verify enclave exists before destroying */
+            /* Alg L42: If Hs_id not in CT_X then abort
+             * In this implementation the CT_X presence is represented by
+             * `enclave_created_secure` (lifecycle flag) and `s_auth_valid` for auth state.
+             * Check lifecycle first and return success if no enclave exists (idempotent).
+             */
             if (!enclave_created_secure) {
+                /* Alg L43: Abort (idempotent success) */
                 SECURE_BENCHMARK_END(destroy_cmd_start, destroy_enclave_cycles);
                 g_secure_metrics.destroy_enclave_count++;
                 printf("[SECURE] Destroy: enclave not created, returning success\n");
                 return PSA_SUCCESS;
             }
 
-            /* Securely erase all sensitive data in data_priv region
-             * (Implementation: SAU protects this region, so Normal World cannot
-             * access it during zeroization) */
+            /* Alg L44: Erase sensitive private data (data_priv) while region is secure */
             printf("[SECURE] Destroying enclave: erasing sensitive data...\n");
 
-            /* Mark F, data_pub, data_priv as Non-Secure and release SAU windows.
-             * This allows Normal World to regain control of the memory regions. */
+            /* Actual zeroization and reset of transient transaction state */
+            inference_counter_secure = 0U; /* reset usage counter */
+            reset_secure_inference_tx_state();
+
+            /* If we have an enclave RAM window registered, zeroize it now while
+             * it is still marked Secure. This ensures data_priv (and any other
+             * sensitive region within the enclave RAM) is irreversibly erased
+             * before returning the memory to Normal World control.
+             */
+            if (sau_enclave_registered && sau_enclave_size > 0U) {
+                void *enclave_ram = (void *)(uintptr_t)sau_enclave_base;
+                secure_memzero(enclave_ram, (size_t)sau_enclave_size);
+                printf("[SECURE] Enclave RAM region zeroized (base=0x%08X, size=%u)\n",
+                       (unsigned int)sau_enclave_base, (unsigned int)sau_enclave_size);
+            }
+
+            /* Alg L45: Mark F, data_pub, data_priv as Non-Secure by releasing SAU windows.
+             * Call `sau_sync_enclave_and_model_ro(true)` to hand memory back to Normal World.
+             */
             if (sau_enclave_registered || sau_rom_registered) {
                 st = sau_sync_enclave_and_model_ro(true);
                 if (st != PSA_SUCCESS) {
@@ -1333,12 +1357,10 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
                 printf("[SECURE] SAU windows released to Normal World\n");
             }
 
-            /* Reset lifecycle state to Non-Exist */
-            inference_counter_secure = 0U;
+            /* Alg L46: Update CT_X[Hs_id].state := Non-Exist
+             * Here we clear the authoritative Secure-state: lifecycle and auth fields.
+             */
             enclave_created_secure = false;
-            reset_secure_inference_tx_state();
-            
-            /* Clear authorization state (lifecycle → Non-Exist) */
             s_auth_valid = false;
             memset(s_pk_v, 0, sizeof(s_pk_v));
             memset(s_cert, 0, sizeof(s_cert));
