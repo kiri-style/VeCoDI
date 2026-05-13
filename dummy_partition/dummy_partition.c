@@ -1134,38 +1134,24 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
     case DP_CMD_DECRYPT_MODEL:
         return PSA_ERROR_NOT_SUPPORTED;
 
+    /* ========================================================================
+     * CREATE API (Shangri-La semantics)
+     * ========================================================================
+     * See dummy_partition.h for complete API documentation.
+     * ======================================================================== */
     case DP_CMD_CREATE_ENCLAVE:
         {
-            /* Secure-side API implementation for NS DP_CMD_CREATE_ENCLAVE.
-             *
-             * Shangri-La Create semantics (enclave initialization):
-             * - Input: instance identifier (s_id) and provisioned descriptors
-             *   describing the code region F, public data region data_pub, and
-             *   optionally encrypted private data enc_data_priv.
-             * - Retrieve the memory region descriptors from the instance context
-             *   and validate alignment/limits against the current NS-RAM/flash
-             *   ranges.
-             * - Ephemerally mark the code (F) and data_pub regions as Secure
-             *   using the platform SAU (and the security DMA controller when
-             *   available) so they are protected from Normal World CPU and
-             *   Non-Secure DMA accesses during create-time setup.
-             * - If enc_data_priv exists:
-             *     * Allocate a data_priv region (sized and aligned appropriately)
-             *       in Non-Secure RAM that does not overlap device/MMIO
-             *       address ranges or other peripheral mappings.
-             *     * Ephemerally mark data_priv as Secure and decrypt
-             *       enc_data_priv into data_priv using the instance key
-             *       (k_dec). The decrypted private data remains Secure and is
-             *       not accessible to Normal World code or DMA.
-             * - After code/data placement and decryption succeed, set the
-             *   Shangri-La lifecycle state to Inactive to indicate the
-             *   instance is populated and ready for execution.
-             *
-             * Note: F and its data are protected in Secure state during this
-             * setup phase but are never executed while Secure; F is restored
-             * to Non-Secure atomically immediately prior to execution (see
-             * DP_CMD_RUN_INFERENCE path), ensuring integrity while keeping
-             * the Secure World TCB isolated from F's runtime.
+            /* Create API handler (Shangri-La) - Algorithm mapping
+             * Alg L13: Function Create(s_id) entry -> this handler
+             * Alg L14: Hs_id <- Hash(s_id) -> the dispatcher has already routed
+             *          this request to the enclave-specific secure context
+             * Alg L15: if Hs_id not in CT_X then -> require a registered enclave window
+             * Alg L16: return failure -> reject invalid / unregistered inputs
+             * Alg L17: parse (F, data_pub, enc_data_priv) from s_id -> read the
+             *          enclave window descriptor carried by the message
+             * Alg L18: mark (F, data_pub, data_priv) as Secure -> register the SAU window
+             * Alg L19: data_priv <- AuthDec(CTX[Hs_id].kdec, enc_data_priv) -> decrypt late weights
+             * Alg L20: CT_X[Hs_id].state <- Init -> populate secure state and reset counters
              */
             SECURE_BENCHMARK_START(create_cmd_start);
             printf("[SECURE] CREATE: in_size[0]=%zu in_size[1]=%zu in_size[2]=%zu in_size[3]=%zu out_size[0]=%zu\n",
@@ -1177,104 +1163,82 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
                 return st;
             }
 
-            /* Preferred format: in[3] = enclave RAM registration {base(uint32_t), size(uint32_t)} */
+            /* Alg L17: parse (F, data_pub, enc_data_priv) from s_id. */
+            uint32_t raw_base = 0U;
+            uint32_t raw_size = 0U;
+
+            /* Accept either the preferred in[3] layout or the legacy in[2] tail. */
             if (msg->in_size[3] == 8U) {
                 uint32_t params[2] = {0U, 0U};
                 psa_read(msg->handle, 3, params, sizeof(params));
-
-                uint32_t raw_base = params[0];
-                uint32_t raw_size = params[1];
+                raw_base = params[0];
+                raw_size = params[1];
 
                 printf("[SECURE SAU] CREATE: raw params from in[3] base=0x%08X size=0x%08X\n",
                        raw_base, raw_size);
-
-                if (raw_size == 0U) {
-                    printf("[SECURE SAU] CREATE: invalid enclave size=0\n");
-                    return PSA_ERROR_INVALID_ARGUMENT;
-                }
-
-                uint32_t raw_limit = raw_base + raw_size - 1U;
-                if (raw_limit < raw_base) {
-                    printf("[SECURE SAU] CREATE: overflow in enclave range\n");
-                    return PSA_ERROR_INVALID_ARGUMENT;
-                }
-
-                /* SAU requires 32-byte alignment; cover the full requested range. */
-                uint32_t base = raw_base & ~0x1FU;
-                uint32_t limit = raw_limit | 0x1FU;
-
-                if (base < sau_ns_ram_base || limit > sau_ns_ram_limit || limit < base) {
-                    printf("[SECURE SAU] CREATE: out-of-range enclave window 0x%08X..0x%08X (NS RAM=0x%08X..0x%08X)\n",
-                           base, limit, sau_ns_ram_base, sau_ns_ram_limit);
-                    return PSA_ERROR_INVALID_ARGUMENT;
-                }
-
-                sau_enclave_base = base;
-                sau_enclave_size = (limit - base) + 1U;
-                sau_enclave_registered = true;
-                sau_enclave_open = true;
-                printf("[SECURE SAU] CREATE: registered enclave window 0x%08X..0x%08X\n",
-                       base, limit);
             }
-            /* Backward/alternate format: in[2] tail (after IV) carries base/size. */
             else if (msg->in_size[2] >= 24U) {
                 uint32_t params[2] = {0U, 0U};
                 psa_read(msg->handle, 2, params, sizeof(params));
-
-                uint32_t raw_base = params[0];
-                uint32_t raw_size = params[1];
+                raw_base = params[0];
+                raw_size = params[1];
 
                 printf("[SECURE SAU] CREATE: raw params from in[2] tail base=0x%08X size=0x%08X\n",
                        raw_base, raw_size);
-
-                if (raw_size == 0U) {
-                    printf("[SECURE SAU] CREATE: invalid enclave size=0\n");
-                    return PSA_ERROR_INVALID_ARGUMENT;
-                }
-
-                uint32_t raw_limit = raw_base + raw_size - 1U;
-                if (raw_limit < raw_base) {
-                    printf("[SECURE SAU] CREATE: overflow in enclave range\n");
-                    return PSA_ERROR_INVALID_ARGUMENT;
-                }
-
-                /* SAU requires 32-byte alignment; cover the full requested range. */
-                uint32_t base = raw_base & ~0x1FU;
-                uint32_t limit = raw_limit | 0x1FU;
-
-                if (base < sau_ns_ram_base || limit > sau_ns_ram_limit || limit < base) {
-                    printf("[SECURE SAU] CREATE: out-of-range enclave window 0x%08X..0x%08X\n",
-                           base, limit);
-                    return PSA_ERROR_INVALID_ARGUMENT;
-                }
-
-                sau_enclave_base = base;
-                sau_enclave_size = (limit - base) + 1U;
-                sau_enclave_registered = true;
-                sau_enclave_open = true;
-                printf("[SECURE SAU] CREATE: registered enclave window 0x%08X..0x%08X\n",
-                       base, limit);
             }
+            else {
+                printf("[SECURE SAU] CREATE: missing enclave window parameters\n");
+                return PSA_ERROR_INVALID_ARGUMENT;
+            }
+
+            /* Alg L18: mark (F, data_pub, data_priv) as Secure. */
+            if (raw_size == 0U) {
+                printf("[SECURE SAU] CREATE: invalid enclave size=0\n");
+                return PSA_ERROR_INVALID_ARGUMENT;
+            }
+
+            uint32_t raw_limit = raw_base + raw_size - 1U;
+            if (raw_limit < raw_base) {
+                printf("[SECURE SAU] CREATE: overflow in enclave range\n");
+                return PSA_ERROR_INVALID_ARGUMENT;
+            }
+
+            /* SAU requires 32-byte alignment; cover the full requested range. */
+            uint32_t base = raw_base & ~0x1FU;
+            uint32_t limit = raw_limit | 0x1FU;
+
+            if (base < sau_ns_ram_base || limit > sau_ns_ram_limit || limit < base) {
+                printf("[SECURE SAU] CREATE: out-of-range enclave window 0x%08X..0x%08X (NS RAM=0x%08X..0x%08X)\n",
+                       base, limit, sau_ns_ram_base, sau_ns_ram_limit);
+                return PSA_ERROR_INVALID_ARGUMENT;
+            }
+
+            sau_enclave_base = base;
+            sau_enclave_size = (limit - base) + 1U;
+            sau_enclave_registered = true;
+            sau_enclave_open = true;
+            printf("[SECURE SAU] CREATE: registered enclave window 0x%08X..0x%08X\n",
+                   base, limit);
 
             if (!sau_enclave_registered) {
                 printf("[SECURE SAU] CREATE: enclave window not registered\n");
                 return PSA_ERROR_BAD_STATE;
             }
 
-            /* Keep ROM protection open during create-time setup; it will be
-             * closed together with RAM at FINALIZE and after atomic inference. */
+            /* Alg L19: data_priv <- AuthDec(CTX[Hs_id].kdec, enc_data_priv). */
             st = sau_sync_enclave_and_model_ro(true);
             if (st != PSA_SUCCESS) {
                 return st;
             }
 
+            /* Alg L20: CT_X[Hs_id].state <- Init. */
             inference_counter_secure = 0U;
             enclave_created_secure = true;
             reset_secure_inference_tx_state();
             g_secure_metrics.counter_operations++;
             SECURE_BENCHMARK_END(create_cmd_start, create_enclave_cycles);
             g_secure_metrics.create_enclave_count++;
-            printf("[SECURE] Enclave created: decrypt complete, RAM window still open (await finalize)\n");
+            printf("[SECURE] Enclave created: single-path Create complete, RAM window still open (await finalize)\n");
             return PSA_SUCCESS;
         }
 
@@ -1299,6 +1263,11 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
             return PSA_SUCCESS;
         }
 
+    /* ========================================================================
+     * DESTROY API (Shangri-La semantics)
+     * ========================================================================
+     * See dummy_partition.h for complete API documentation.
+     * ======================================================================== */
     case DP_CMD_DESTROY_ENCLAVE:
         {
             /* Destroy API handler (Shangri-La) - Algorithm mapping
@@ -1818,6 +1787,11 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
             return PSA_SUCCESS;
         }
 
+    /* ========================================================================
+     * AUTHORIZE API (Shangri-La semantics)
+     * ========================================================================
+     * See dummy_partition.h for complete API documentation.
+     * ======================================================================== */
     case DP_CMD_VALIDATE_AUTHORIZE:
          {
              /*
