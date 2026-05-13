@@ -29,7 +29,6 @@ typedef struct {
 
     /* Secure lifecycle / transaction operations */
     uint64_t create_enclave_cycles;
-    uint64_t finalize_create_cycles;
     uint64_t destroy_enclave_cycles;
     uint64_t inf_start_cycles;
     uint64_t inf_complete_cycles;
@@ -50,7 +49,6 @@ typedef struct {
 
     /* Operation counts for lifecycle / SAU */
     uint32_t create_enclave_count;
-    uint32_t finalize_create_count;
     uint32_t destroy_enclave_count;
     uint32_t inf_start_count;
     uint32_t inf_complete_count;

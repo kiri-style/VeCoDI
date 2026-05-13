@@ -53,8 +53,7 @@ Defined in [dummy_partition.c](dummy_partition.c):
 - `DP_CMD_INCREMENT_COUNTER = 6` (legacy endpoint, currently NOT_SUPPORTED)
 - `DP_CMD_RESET_COUNTER = 7` (legacy endpoint, currently NOT_SUPPORTED)
 - `DP_CMD_RUN_INFERENCE = 9` (legacy two-phase gate)
-- `DP_CMD_CREATE_ENCLAVE = 22` (decrypt/register/reset, RAM window kept open until finalize)
-- `DP_CMD_FINALIZE_CREATE_ENCLAVE = 24` (close enclave RAM window)
+- `DP_CMD_CREATE_ENCLAVE = 22` (single-shot create: decrypt/register/reset/close setup windows)
 - `DP_CMD_DESTROY_ENCLAVE = 23` (reset secure state, RAM window reopened for NS zeroization)
 
 **Verified Inference Transaction (Current):**
@@ -119,7 +118,7 @@ Secure then computes:
 
 The result is stored in Secure as the boot-time reference and never depends on host-provided model bytes.
 
-### 1. Create flow (cmd=22 + cmd=24)
+### 1. Create flow (cmd=22)
 NS calls `psa_call()` with:
 
 ```
@@ -134,7 +133,7 @@ The secure partition:
 2. Applies the IV from `in_vec[2]`
 3. Decrypts in chunks using `psa_cipher_update()`
 4. Writes plaintext into the NS output buffer
-5. Waits for `DP_CMD_FINALIZE_CREATE_ENCLAVE` to close enclave RAM window
+5. Closes the enclave setup windows before returning
 
 ### 2. Policy + verified run transaction (cmd=25,26)
 

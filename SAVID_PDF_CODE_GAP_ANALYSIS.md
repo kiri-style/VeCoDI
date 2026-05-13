@@ -52,9 +52,9 @@ Preuves:
 - Create enclave cote NS + Secure:
   - src/create_enclave.cpp:299-409
   - dummy_partition/dummy_partition.c:1318-1391 (DP_CMD_CREATE_ENCLAVE)
-- Finalize create (fermeture RAM apres setup):
-  - src/create_enclave.cpp:261-288
-  - dummy_partition/dummy_partition.c:1393-1410
+- Single-shot create closes the setup windows before returning:
+  - src/create_enclave.cpp:299-409
+  - dummy_partition/dummy_partition.c:1318-1391 (DP_CMD_CREATE_ENCLAVE)
 - Destroy enclave:
   - src/create_enclave.cpp:501-547
   - dummy_partition/dummy_partition.c:1412-1438

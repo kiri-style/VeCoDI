@@ -22,8 +22,7 @@ On 11 April 2026, a runtime inference regression was investigated and fixed.
 
 ### SAU window timeline used for these runs
 
-- `Create_Enclave`: SAU windows are opened by Secure for setup/decrypt/hash staging.
-- `Finalize_Create_Enclave`: SAU windows are closed.
+- `Create_Enclave`: SAU windows are opened by Secure for setup/decrypt/hash staging and closed before returning.
 - Atomic inference (`INF_START` / `INF_COMPLETE`): windows open only during the execution window, then close immediately.
 - `Destroy_Enclave`: windows are reopened to allow NS memory cleanup path.
 

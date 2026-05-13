@@ -40,8 +40,7 @@ Complete end-to-end verification of the 3-phase Enclave Authorization Protocol o
 
 ### SAU lifecycle clarification (current architecture)
 
-- During `Create_Enclave`, Secure opens RAM+ROM windows for setup/decrypt/hash preparation.
-- Windows are then closed at `Finalize_Create_Enclave`.
+- During `Create_Enclave`, Secure opens RAM+ROM windows for setup/decrypt/hash preparation and closes them before returning.
 - During verified atomic inference:
   - `INF_START` re-opens required windows.
   - `INF_COMPLETE` closes them immediately after commit/signature.

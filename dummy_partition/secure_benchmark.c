@@ -159,19 +159,6 @@ void secure_benchmark_print_report(void)
         printf("║ Create Enclave:        0 cycles  (     0 ms)  [0 ops]      ║\n");
     }
 
-    if (g_secure_metrics.finalize_create_count > 0) {
-        uint32_t avg_cycles = (uint32_t)(g_secure_metrics.finalize_create_cycles / g_secure_metrics.finalize_create_count);
-        printf("║ Finalize Create:%10llu cycles  (%6u ms)  [%u ops]      ║\n",
-               (unsigned long long)g_secure_metrics.finalize_create_cycles,
-               secure_benchmark_cycles_to_ms(g_secure_metrics.finalize_create_cycles),
-               g_secure_metrics.finalize_create_count);
-        printf("║   Avg/op:      %10u cycles  (%6u ms)                  ║\n",
-               avg_cycles,
-               secure_benchmark_cycles_to_ms(avg_cycles));
-    } else {
-        printf("║ Finalize Create:       0 cycles  (     0 ms)  [0 ops]      ║\n");
-    }
-
     if (g_secure_metrics.inf_start_count > 0) {
         uint32_t avg_cycles = (uint32_t)(g_secure_metrics.inf_start_cycles / g_secure_metrics.inf_start_count);
         printf("║ Inf START:      %10llu cycles  (%6u ms)  [%u ops]      ║\n",
@@ -213,7 +200,6 @@ void secure_benchmark_print_report(void)
 
     printf("║ TX Ops total:  %10u                                       ║\n",
            g_secure_metrics.create_enclave_count +
-           g_secure_metrics.finalize_create_count +
            g_secure_metrics.destroy_enclave_count +
            g_secure_metrics.inf_start_count +
            g_secure_metrics.inf_complete_count);

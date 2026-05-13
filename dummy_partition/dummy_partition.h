@@ -24,7 +24,7 @@ extern "C" {
 #define DP_CMD_GET_BENCHMARK        8
 #define DP_CMD_RUN_INFERENCE        9   /* Atomic: check + increment counter */
 #define DP_CMD_COMPUTE_ENCLAVE_INFO 10  /* Compute EnclaveInfo hash */
-#define DP_CMD_VALIDATE_AUTHORIZE   11  /* Authorize: validate authorization token and refresh the provisioned policy context */
+#define DP_CMD_VALIDATE_AUTHORIZE   11  /* Authorize: validate token, user key, and invocation limit for a provisioned Shangri-La */
 #define DP_CMD_SET_MAX_INFERENCES   12  /* Override max inferences and reset counter */
 #define DP_CMD_SAU_REGISTER         14  /* Register enclave RAM window: in[1]={base(4)+size(4)} */
 #define DP_CMD_SAU_CONTROL          15  /* SAU control: in[1]=cmd(1B): 1=CLOSE_RAM, 2=OPEN_RAM, 3=CLOSE_MODEL_RO, 4=OPEN_MODEL_RO */
@@ -34,7 +34,6 @@ extern "C" {
 #define DP_CMD_SAU_REGISTER_CODE    19  /* Register inference code window: in[1]={base(4)+size(4)} */
 #define DP_CMD_SET_LATE_SECRET_HASH 20  /* Hash encrypted late weights into secure model_secret */
 #define DP_CMD_GET_SAU_ROM_STATE    21  /* Return ROM SAU state: state(1)+base(4)+size(4) */
-#define DP_CMD_FINALIZE_CREATE_ENCLAVE 24 /* Close enclave RAM after create-time setup */
 #define DP_CMD_INF_START            25  /* Verify M_inf in Secure and open transaction window */
 #define DP_CMD_INF_COMPLETE         26  /* Commit secure transaction and sign PoX */
 #define DP_CMD_GET_DEVICE_PUBKEY    27  /* Return secure device public key (65-byte uncompressed) */
@@ -66,28 +65,19 @@ extern "C" {
 
 /* Create API (Shangri-La semantics)
  *
- * This command initializes a Shangri-La instance (an enclave in our context)
- * from its provisioned configuration. Input: s_id identifying the instance.
- *
- * Semantics (high-level):
- *  - Retrieve memory region descriptors for F (code), data_pub (public data),
- *    and enc_data_priv (encrypted private data) from the instance context.
- *  - Ephemerally mark the code and data_pub regions as Secure using the
- *    platform SAU and, where available, the security DMA controller so they
- *    are protected from Normal World CPU and Non-Secure DMA accesses.
- *  - If enc_data_priv is present: allocate a secure data_priv region, ensure
- *    the allocated region resides in Non-Secure RAM that does not overlap any
- *    memory-mapped peripheral regions, ephemerally mark it Secure, and
- *    decrypt enc_data_priv into data_priv using the instance decryption key
- *    (k_dec). The decrypted private data remains Secure and is not readable
- *    by Normal World peripherals or DMA.
- *  - After successful placement and decryption, set the Shangri-La
- *    lifecycle state to Inactive (populated but not yet executable).
- *
- * Remark: F and its data are Secure after create-time but are never executed
- * while Secure; F is atomically restored to Non-Secure immediately before
- * execution to preserve integrity and maintain separation between the
- * Shangri-La instance and the Secure World TCB.
+ * This command initializes a Shangri-La instance from its provisioned
+ * configuration, taking s_id as input. It retrieves the memory regions for F
+ * (code), data_pub (public data), and enc_data_priv (encrypted private data)
+ * from the instance context, then uses the TrustZone-M SAU and security DMA
+ * controller to ephemerally mark F and data_pub as Secure so they are
+ * protected from Normal World access and Non-Secure DMA. If encrypted private
+ * data exists, the API allocates a data_priv region in Non-Secure RAM that
+ * does not overlap memory-mapped peripheral regions, marks it Secure, and
+ * decrypts enc_data_priv into data_priv using k_dec. The API then restores the
+ * setup windows before returning so the populated instance is ready for
+ * execution. Finally, it sets the Shangri-La lifecycle state to Inactive and
+ * leaves all Shangri-La code and data in the Secure state from the Normal
+ * World point of view.
  */
 
 /* Execute/Run API (Shangri-La semantics)

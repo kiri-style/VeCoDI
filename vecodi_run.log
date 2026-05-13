@@ -1,0 +1,45 @@
+[OK] Loaded image from Mac: cifar_input.raw (3072 bytes)
+[OK] Connected to /dev/cu.usbmodem11203 @ 115200
+
+[Provider] Step 2 - Fetch/verify EnclaveInfo
+[OK] EnclaveInfo attestation verified
+
+[Provider] Step 3 - Send M_update
+[OK] M_update accepted with c_limit=110
+
+[Model Customer] Step 4 - Create enclave
+[OK] Enclave created
+
+[Run 1/1]
+
+[Model Customer] Step 5 - Verified inference
+[OK] PoX verified, pred=6
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+
+========== CASE STUDY SUMMARY ==========
+Image from Mac uploaded   : YES
+Before destroy -> max/used/rem : 110/1/109
+Authorized max_inferences : 0
+Used inference_count      : 0
+Remaining                : 0
+Decoded PoX responses     : 1/1
+========================================
+
+========== DETAILED BENCHMARK (HOST) ==========
+action,status,duration_ms,detail
+provider.enclave_info,ok,281.336,
+provider.m_update,ok,20.208,
+customer.create_enclave,ok,90.014,
+customer.verified_inference.run_1,ok,1461.445,
+customer.verified_inference.run_1.meta,ok,0.0,{"pred": 6; "pox_valid": true; "used_image_upload": true}
+metrics.max_before_destroy,ok,2.353,
+metrics.used_before_destroy,ok,2.028,
+metrics.remaining_before_destroy,ok,1.966,
+customer.destroy_enclave,ok,4.139,
+metrics.max_after_destroy,ok,1.875,
+metrics.used_after_destroy,ok,1.945,
+metrics.remaining_after_destroy,ok,2.0,
+================================================
+[OK] Serial disconnected
