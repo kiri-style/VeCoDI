@@ -55,13 +55,10 @@ extern "C" {
 /* EnclaveInfo size (SHA-256 hash) */
 #define ENCLAVE_INFO_SIZE 32
 
-/* Authorize payload limits */
-#define AUTHORIZE_NONCE_SIZE      12
-#define AUTHORIZE_TAG_SIZE        16
-#define AUTHORIZE_PK_V_SIZE       64
-#define AUTHORIZE_CERT_MAX_SIZE   128
-#define AUTHORIZE_PLAINTEXT_MIN   (4 + AUTHORIZE_PK_V_SIZE + ENCLAVE_INFO_SIZE + 4)
-#define AUTHORIZE_PLAINTEXT_MAX   (AUTHORIZE_PLAINTEXT_MIN + AUTHORIZE_CERT_MAX_SIZE)
+/* Authorize payload limits (M_update is plaintext, not encrypted) */
+#define AUTHORIZE_PK_U_SIZE       64  /* User public key */
+#define AUTHORIZE_SIGNATURE_SIZE  64  /* ECDSA P-256 signature (r||s) */
+#define AUTHORIZE_PLAINTEXT_SIZE  (AUTHORIZE_PK_U_SIZE + 4 + ENCLAVE_INFO_SIZE + AUTHORIZE_SIGNATURE_SIZE)
 
 /* Create API (Shangri-La semantics)
  *

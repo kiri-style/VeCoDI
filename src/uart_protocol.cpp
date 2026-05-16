@@ -355,8 +355,8 @@ static bool is_valid_len_for_cmd(uint8_t cmd, uint32_t len)
              * len=0 : secure-internal compute only */
             return (len == 0U) || (len == 32U);
         case CMD_VALIDATE_AUTHORIZE:
-            /* nonce(12) + ciphertext(n) + tag(16) */
-            return (len >= 28U) && (len <= MAX_COMMAND_DATA_SIZE);
+            /* M_update plaintext format (new): pk_u(64) | limit(4) | H_{s_id}(32) | T_o(64) = 164 bytes */
+            return (len == 164U);
         case CMD_GET_MAX_INFERENCES:
         case CMD_GET_INFERENCE_COUNT:
         case CMD_GET_REMAINING_INFERENCES:
@@ -791,16 +791,17 @@ static void handle_validate_authorize(const uint8_t *data, uint32_t len)
     } authorize_scope(NULL);
     authorize_scope.success = &authorize_success;
 
-    /* NS receives encrypted Authorize from host and forwards the raw bytes
-     * to the Secure partition for AES-256-GCM decryption + EnclaveInfo
+    /* NS receives M_update plaintext from host (not encrypted).
+     * M_update format (NEW): pk_u(64) | limit(4) | H_{s_id}(32) | T_o(64) = 164 bytes
+     * Forwards to Secure partition for signature verification + EnclaveInfo
      * validation + counter update. Secure returns auth fields so NS can
      * store them for later M_inf verification.
      *
      * Secure in[0] = cmd (4B)
-     * Secure in[1] = full packet: nonce(12) || ciphertext || tag(16)
-     * Secure out[0] = c_limit(4) + pk_v(64) + model_id(4) + cert_len(4) + cert(n)
+     * Secure in[1] = M_update plaintext (pk_u|limit|H_sid|T_o)
+     * Secure out[0] = c_limit(4) + pk_u(64)
      */
-    if (data == NULL || len < 28U) {
+    if (data == NULL || len != 164U) {
         uart_protocol_send_response(RESP_ERROR, NULL, 0);
         return;
     }
@@ -810,8 +811,8 @@ static void handle_validate_authorize(const uint8_t *data, uint32_t len)
         return;
     }
 
-    /* Build auth-state response buffer (max 204B) */
-    uint8_t auth_resp[204];
+    /* Build auth-state response buffer (c_limit(4) + pk_u(64) = 68B) */
+    uint8_t auth_resp[68];
     memset(auth_resp, 0, sizeof(auth_resp));
 
     psa_handle_t psa_h = psa_connect(TFM_DP_SERVICE_SID, 1);
@@ -837,8 +838,8 @@ static void handle_validate_authorize(const uint8_t *data, uint32_t len)
 
     size_t resp_len = out_v.len;
 
-    /* Parse auth response: c_limit(4) + pk_v(64) + model_id(4) + cert_len(4) + cert(n) */
-    if (resp_len < (4U + 64U + 4U + 4U)) {
+    /* Parse auth response: c_limit(4) + pk_u(64) */
+    if (resp_len != (4U + 64U)) {
         uart_protocol_send_response(RESP_ERROR, NULL, 0);
         return;
     }
@@ -855,23 +856,10 @@ static void handle_validate_authorize(const uint8_t *data, uint32_t len)
     mock_max_inferences  = c_limit;
     mock_inference_count = 0U;
 
-    /* pk_v (64B raw x||y) */
+    /* pk_u (64B raw x||y) - user public key for M_inf signature verification */
     memcpy(stored_pk_v, auth_resp + roff, 64U);
     pk_v_valid = true;
     roff += 64U;
-
-    /* model_id (4B LE) */
-    memcpy(&stored_model_id, auth_resp + roff, 4U);
-    roff += 4U;
-
-    /* cert_len + cert */
-    uint32_t clen = 0;
-    memcpy(&clen, auth_resp + roff, 4U);
-    roff += 4U;
-    if (clen <= sizeof(stored_cert) && roff + clen <= resp_len) {
-        stored_cert_len = clen;
-        memcpy(stored_cert, auth_resp + roff, clen);
-    }
 
     authorize_success = true;
     /* Ensure the NS-side m_update count is visible immediately to host

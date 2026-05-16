@@ -316,29 +316,36 @@ class VecodiCaseStudy:
                 f"c_limit={c_limit} rejected by policy (must be strictly > current max {current_max})"
             )
 
-        verifier_key = ec.generate_private_key(ec.SECP256R1(), default_backend())
-        verifier_pub = verifier_key.public_key().public_bytes(
+        # Generate user key pair (pk_u, sk_u)
+        user_key = ec.generate_private_key(ec.SECP256R1(), default_backend())
+        user_pub = user_key.public_key().public_bytes(
             encoding=serialization.Encoding.X962,
             format=serialization.PublicFormat.UncompressedPoint,
         )
-        verifier_pub_raw = verifier_pub[1:]  # 64 bytes X||Y
+        user_pub_raw = user_pub[1:]  # 64 bytes X||Y
 
-        plaintext = (
-            struct.pack("<I", c_limit)
-            + verifier_pub_raw
+        # M_update format (plaintext, not encrypted):
+        # pk_u(64) | limit(4) | H_{s_id}(32) | T_o(64)
+        # T_o = Sign(sk_u, SHA256(pk_u || limit))
+        msg_to_sign = user_pub_raw + struct.pack("<I", c_limit)
+        sig_der = user_key.sign(msg_to_sign, ec.ECDSA(hashes.SHA256()))
+        r, s = decode_dss_signature(sig_der)
+        sig_raw = r.to_bytes(32, "big") + s.to_bytes(32, "big")  # 64 bytes T_o
+
+        m_update = (
+            user_pub_raw
+            + struct.pack("<I", c_limit)
             + self.state.enclave_info
-            + struct.pack("<I", len(self.cert))
-            + self.cert
+            + sig_raw
         )
-        packet = self._encrypt(plaintext)
 
-        self.device.send_command(CMD_VALIDATE_M_UPDATE, packet)
+        self.device.send_command(CMD_VALIDATE_M_UPDATE, m_update)
         status, _ = self.device.read_response()
         if status != RESP_OK:
             raise RuntimeError("M_update rejected by device")
 
-        self.state.verifier_key = verifier_key
-        self.state.verifier_pub_raw = verifier_pub_raw
+        self.state.verifier_key = user_key
+        self.state.verifier_pub_raw = user_pub_raw
         log(f"[OK] M_update accepted with c_limit={c_limit}")
 
     def customer_create_enclave(self) -> None:
@@ -357,7 +364,7 @@ class VecodiCaseStudy:
         return payload[0] != 0
 
     @staticmethod
-    def _verify_pox(device_pk_d: bytes, model_id: int, cert: bytes, nonce_inf: bytes, pred: int, sig_raw: bytes) -> bool:
+    def _verify_pox(device_pk_d: bytes, model_id: int, nonce_inf: bytes, pred: int, sig_raw: bytes) -> bool:
         if len(device_pk_d) != 65 or len(nonce_inf) != 32 or len(sig_raw) != 64:
             return False
         try:
@@ -365,7 +372,7 @@ class VecodiCaseStudy:
             r = int.from_bytes(sig_raw[:32], "big")
             s = int.from_bytes(sig_raw[32:], "big")
             sig_der = encode_dss_signature(r, s)
-            msg = struct.pack("<I", model_id) + cert + nonce_inf + bytes([pred & 0xFF])
+            msg = struct.pack("<I", model_id) + nonce_inf + bytes([pred & 0xFF])
             pub.verify(sig_der, msg, ec.ECDSA(hashes.SHA256()))
             return True
         except (ValueError, InvalidSignature):
@@ -440,7 +447,7 @@ class VecodiCaseStudy:
 
         pred = dec[0]
         pox_sig = dec[1:65]
-        pox_valid = self._verify_pox(self.state.device_pubkey, self.model_id, self.cert, nonce_inf, pred, pox_sig)
+        pox_valid = self._verify_pox(self.state.device_pubkey, self.model_id, nonce_inf, pred, pox_sig)
         self.last_inference_meta = {
             "pred": int(pred),
             "pox_valid": bool(pox_valid),
