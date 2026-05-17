@@ -1438,15 +1438,13 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
                 
                 SECURE_BENCHMARK_START(inf_start_cycles_start);
                 psa_status_t result = PSA_SUCCESS;
-                uint8_t packet[128];
                 uint8_t m_inf[100];
                 uint8_t msg_hash[32];
                 size_t hash_len = 0U;
                 uint32_t tx_id = 0U;
-                size_t plaintext_len = 0U;
 
-                /* Validate input/output sizes: output is tx_id (uint32_t), not allowed */
-                if (msg->in_size[1] != 1U || msg->in_size[2] != sizeof(packet) || msg->out_size[0] != sizeof(tx_id)) {
+                /* Validate input/output sizes: M_inf is 100 bytes plaintext, output is tx_id (uint32_t) */
+                if (msg->in_size[1] != 1U || msg->in_size[2] != sizeof(m_inf) || msg->out_size[0] != sizeof(tx_id)) {
                     result = PSA_ERROR_INVALID_ARGUMENT;
                     goto inf_phase0_out;
                 }
@@ -1471,46 +1469,12 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
                     goto inf_phase0_out;
                 }
 
-                /* Read encrypted M_inf packet */
-                psa_read(msg->handle, 2, packet, sizeof(packet));
-
-                /* Decrypt M_inf: nonce(12) || ciphertext(100) || tag(16) */
+                /* Read plaintext M_inf: nonce(32) || model_id(4) || signature(64) = 100 bytes */
+                psa_read(msg->handle, 2, m_inf, sizeof(m_inf));
+                
                 psa_status_t st = psa_crypto_init();
                 if (st != PSA_SUCCESS) {
                     result = st;
-                    goto inf_phase0_out;
-                }
-
-                psa_key_attributes_t dec_attr = PSA_KEY_ATTRIBUTES_INIT;
-                psa_set_key_type(&dec_attr, PSA_KEY_TYPE_AES);
-                psa_set_key_bits(&dec_attr, 256);
-                psa_set_key_usage_flags(&dec_attr, PSA_KEY_USAGE_DECRYPT);
-                psa_set_key_algorithm(&dec_attr, PSA_ALG_GCM);
-
-                psa_key_id_t dec_key = 0;
-                st = psa_import_key(&dec_attr, secure_session_key, 32U, &dec_key);
-                psa_reset_key_attributes(&dec_attr);
-                if (st != PSA_SUCCESS) {
-                    result = st;
-                    goto inf_phase0_out;
-                }
-
-                st = psa_aead_decrypt(dec_key,
-                                      PSA_ALG_GCM,
-                                      packet,
-                                      12U,
-                                      NULL,
-                                      0U,
-                                      packet + 12U,
-                                      116U,
-                                      m_inf,
-                                      sizeof(m_inf),
-                                      &plaintext_len);
-                psa_destroy_key(dec_key);
-                if (st != PSA_SUCCESS || plaintext_len != sizeof(m_inf)) {
-                    secure_memzero(m_inf, sizeof(m_inf));
-                    secure_memzero(packet, sizeof(packet));
-                    result = PSA_ERROR_INVALID_SIGNATURE;
                     goto inf_phase0_out;
                 }
 
@@ -1535,7 +1499,6 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
                                       &hash_len);
                 if (st != PSA_SUCCESS || hash_len != sizeof(msg_hash)) {
                     secure_memzero(m_inf, sizeof(m_inf));
-                    secure_memzero(packet, sizeof(packet));
                     result = PSA_ERROR_GENERIC_ERROR;
                     goto inf_phase0_out;
                 }
@@ -1557,7 +1520,6 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
                 psa_reset_key_attributes(&attr);
                 if (st != PSA_SUCCESS) {
                     secure_memzero(m_inf, sizeof(m_inf));
-                    secure_memzero(packet, sizeof(packet));
                     result = PSA_ERROR_INVALID_SIGNATURE;
                     goto inf_phase0_out;
                 }
@@ -1572,7 +1534,6 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
                 psa_destroy_key(pk_v_id);
                 if (st != PSA_SUCCESS) {
                     secure_memzero(m_inf, sizeof(m_inf));
-                    secure_memzero(packet, sizeof(packet));
                     result = PSA_ERROR_INVALID_SIGNATURE;
                     goto inf_phase0_out;
                 }
@@ -1597,7 +1558,6 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
                 s_tx_model_id = req_model_id;
 
                 secure_memzero(m_inf, sizeof(m_inf));
-                secure_memzero(packet, sizeof(packet));
 
             inf_phase0_out:
                 SECURE_BENCHMARK_END(inf_start_cycles_start, inf_start_cycles);

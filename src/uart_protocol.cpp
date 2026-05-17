@@ -23,7 +23,7 @@
 #define DP_CMD_GET_DEVICE_PUBKEY    27U
 #define DP_CMD_SIGN_ATTEST_MSG      28U
 #define CIFAR_IMAGE_SIZE_BYTES      3072U
-#define VERIFIED_MINF_SIZE_BYTES    128U
+#define VERIFIED_MINF_SIZE_BYTES    100U
 #define RUN_WITH_IMAGE_DATA_SIZE    (1U + CIFAR_IMAGE_SIZE_BYTES + VERIFIED_MINF_SIZE_BYTES)
 #include "benchmark.h"
 #include "secure_benchmark_ns.h"
@@ -1061,7 +1061,7 @@ static void handle_run_inference_common(const uint8_t *minf_data, uint32_t minf_
     response_plain[0] = output_class;
     memcpy(response_plain + 1U, pox_sig, 64U);
 
-    uart_send_encrypted_response(RESP_OK, response_plain, sizeof(response_plain));
+    uart_protocol_send_response(RESP_OK, response_plain, sizeof(response_plain));
     uint32_t irq_atomic_elapsed = benchmark_get_cycles() - irq_atomic_start;
     BENCHMARK_ACCUMULATE(irq_atomic_elapsed,
                          g_benchmark_metrics.irq_atomic_sum_cycles,

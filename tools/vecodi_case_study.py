@@ -395,8 +395,8 @@ class VecodiCaseStudy:
         r, s = decode_dss_signature(sig_der)
         sig_raw = r.to_bytes(32, "big") + s.to_bytes(32, "big")
 
-        m_inf_plain = nonce_inf + model_id_bytes + sig_raw
-        m_inf_packet = self._encrypt(m_inf_plain)
+        # M_inf is now plaintext (not encrypted): nonce(32) || model_id(4) || signature(64)
+        m_inf_packet = nonce_inf + model_id_bytes + sig_raw
 
         # If an image is provided from host, explicitly send it to the board.
         used_image_upload = image_payload is not None
@@ -440,13 +440,13 @@ class VecodiCaseStudy:
             log("[WARN] Inference succeeded but response payload is empty")
             return -1
 
-        dec = self._decrypt(payload)
-        if dec is None or len(dec) < 65:
-            log("[WARN] Inference succeeded but encrypted PoX response could not be decoded")
+        # PoX response is now plaintext: pred(1) || signature(64)
+        if len(payload) < 65:
+            log("[WARN] Inference succeeded but PoX response payload too short")
             return -1
 
-        pred = dec[0]
-        pox_sig = dec[1:65]
+        pred = payload[0]
+        pox_sig = payload[1:65]
         pox_valid = self._verify_pox(self.state.device_pubkey, self.model_id, nonce_inf, pred, pox_sig)
         self.last_inference_meta = {
             "pred": int(pred),
