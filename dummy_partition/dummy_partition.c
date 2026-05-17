@@ -147,13 +147,13 @@ static uint8_t      s_device_pubkey[65] = {0};
 static bool         s_device_key_ready = false;
 static bool         s_tx_active = false;
 static uint32_t     s_tx_id = 0U;
-static uint8_t      s_tx_nonce[32] = {0};
+static uint8_t      s_tx_code_hash[32] = {0};
 static uint32_t     s_tx_model_id = 0U;
 
 static void reset_secure_inference_tx_state(void)
 {
     s_tx_active = false;
-    memset(s_tx_nonce, 0, sizeof(s_tx_nonce));
+    memset(s_tx_code_hash, 0, sizeof(s_tx_code_hash));
     s_tx_model_id = 0U;
 }
 
@@ -1439,6 +1439,7 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
                 SECURE_BENCHMARK_START(inf_start_cycles_start);
                 psa_status_t result = PSA_SUCCESS;
                 uint8_t m_inf[100];
+                uint8_t req_code_hash[32];
                 uint8_t msg_hash[32];
                 size_t hash_len = 0U;
                 uint32_t tx_id = 0U;
@@ -1469,7 +1470,7 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
                     goto inf_phase0_out;
                 }
 
-                /* Read plaintext M_inf: nonce(32) || model_id(4) || signature(64) = 100 bytes */
+                /* Read plaintext M_inf: model_id(4) || code_hash(32) || signature(64) = 100 bytes */
                 psa_read(msg->handle, 2, m_inf, sizeof(m_inf));
                 
                 psa_status_t st = psa_crypto_init();
@@ -1478,14 +1479,22 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
                     goto inf_phase0_out;
                 }
 
-                /* ALG L24: Retrieve CT_X[Hs_id] fields (model identity). Extract model_id from M_inf */
+                /* ALG L24: Retrieve CT_X[Hs_id] fields (model identity). Extract model_id and F hash from M_inf */
                 /* Extract model_id from M_inf */
-                uint32_t req_model_id = (uint32_t)m_inf[32]
-                                      | ((uint32_t)m_inf[33] << 8)
-                                      | ((uint32_t)m_inf[34] << 16)
-                                      | ((uint32_t)m_inf[35] << 24);
+                uint32_t req_model_id = (uint32_t)m_inf[0]
+                                      | ((uint32_t)m_inf[1] << 8)
+                                      | ((uint32_t)m_inf[2] << 16)
+                                      | ((uint32_t)m_inf[3] << 24);
+                memcpy(req_code_hash, m_inf + 4U, sizeof(req_code_hash));
 
                 if (s_model_id != 0U && req_model_id != s_model_id) {
+                    result = PSA_ERROR_INVALID_ARGUMENT;
+                    goto inf_phase0_out;
+                }
+
+                st = refresh_code_hash_from_registered_code();
+                if (st != PSA_SUCCESS || memcmp(req_code_hash, current_code_hash, sizeof(current_code_hash)) != 0) {
+                    secure_memzero(m_inf, sizeof(m_inf));
                     result = PSA_ERROR_INVALID_ARGUMENT;
                     goto inf_phase0_out;
                 }
@@ -1546,15 +1555,15 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
                     goto inf_phase0_out;
                 }
 
-                /* ALG L30: Set CT_X[Hs_id].state := Active (mark transaction active) and store nonce */
-                /* Mark transaction as active and store nonce for PoX generation */
+                /* ALG L30: Set CT_X[Hs_id].state := Active (mark transaction active) and store F hash */
+                /* Mark transaction as active and store F hash for PoX generation */
                 s_tx_active = true;
                 s_tx_id++;
                 if (s_tx_id == 0U) {
                     s_tx_id = 1U;
                 }
                 tx_id = s_tx_id;
-                memcpy(s_tx_nonce, m_inf, sizeof(s_tx_nonce));
+                memcpy(s_tx_code_hash, req_code_hash, sizeof(s_tx_code_hash));
                 s_tx_model_id = req_model_id;
 
                 secure_memzero(m_inf, sizeof(m_inf));
@@ -1578,11 +1587,12 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
                 psa_status_t result = PSA_SUCCESS;
                 uint8_t req[5];
                 uint8_t pox_hash[32];
-                uint8_t pox_msg[4U + sizeof(s_tx_nonce) + 1U];
+                uint8_t pox_msg[4U + 32U + 1U];
                 size_t pox_hash_len = 0U;
                 size_t pox_msg_len = 0U;
                 size_t sig_len = 0U;
                 uint8_t sig[64];
+                psa_status_t st = PSA_SUCCESS;
 
                 /* Validate input/output sizes */
                 if (msg->in_size[2] != sizeof(req) || msg->out_size[0] != sizeof(sig)) {
@@ -1610,24 +1620,31 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
                     goto inf_phase1_out;
                 }
 
-                /* ALG L38: If proof requested, assemble PoX material (model_id || nonce || output) */
-                /* Generate PoX: sign (model_id || nonce || output) */
+                /* ALG L38: If proof requested, assemble PoX material (model_id || F_binary_hash || output) */
+                /* Generate PoX: sign (model_id || F_binary_hash || output) */
                 pox_msg[pox_msg_len++] = (uint8_t)(s_tx_model_id & 0xFFU);
                 pox_msg[pox_msg_len++] = (uint8_t)((s_tx_model_id >> 8) & 0xFFU);
                 pox_msg[pox_msg_len++] = (uint8_t)((s_tx_model_id >> 16) & 0xFFU);
                 pox_msg[pox_msg_len++] = (uint8_t)((s_tx_model_id >> 24) & 0xFFU);
 
-                memcpy(pox_msg + pox_msg_len, s_tx_nonce, sizeof(s_tx_nonce));
-                pox_msg_len += sizeof(s_tx_nonce);
+                st = refresh_code_hash_from_registered_code();
+                if (st != PSA_SUCCESS) {
+                    result = PSA_ERROR_GENERIC_ERROR;
+                    goto inf_phase1_out;
+                }
+
+                memcpy(pox_msg + pox_msg_len, s_tx_code_hash, sizeof(s_tx_code_hash));
+                pox_msg_len += sizeof(s_tx_code_hash);
+
                 pox_msg[pox_msg_len++] = output_class;
 
                 /* Hash PoX message */
-                psa_status_t st = psa_hash_compute(PSA_ALG_SHA_256,
-                                                   pox_msg,
-                                                   pox_msg_len,
-                                                   pox_hash,
-                                                   sizeof(pox_hash),
-                                                   &pox_hash_len);
+                st = psa_hash_compute(PSA_ALG_SHA_256,
+                                      pox_msg,
+                                      pox_msg_len,
+                                      pox_hash,
+                                      sizeof(pox_hash),
+                                      &pox_hash_len);
                 if (st != PSA_SUCCESS || pox_hash_len != sizeof(pox_hash)) {
                     result = PSA_ERROR_GENERIC_ERROR;
                     goto inf_phase1_out;
@@ -1657,7 +1674,7 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
 
                 /* ALG L36/L34: Clear transient stack/nonce/state */
                 s_tx_active = false;
-                memset(s_tx_nonce, 0, sizeof(s_tx_nonce));
+                memset(s_tx_code_hash, 0, sizeof(s_tx_code_hash));
                 s_tx_model_id = 0U;
 
             inf_phase1_out:

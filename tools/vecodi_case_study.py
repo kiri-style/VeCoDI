@@ -18,6 +18,7 @@ Flow implemented:
 
 import argparse
 import csv
+import hashlib
 import json
 import os
 import struct
@@ -188,8 +189,6 @@ class VecodiCaseStudy:
         self.state = SessionState()
         self.benchmarks: List[Dict[str, Any]] = []
         self.last_inference_meta: Dict[str, Any] = {}
-        # 20 bytes certificate placeholder used in existing flow: model_id(4 LE)+16B payload
-        self.cert = struct.pack("<I", model_id) + bytes(range(16))
 
     def _timed_call(self, action: str, fn, *args, **kwargs):
         start = time.perf_counter()
@@ -364,15 +363,87 @@ class VecodiCaseStudy:
         return payload[0] != 0
 
     @staticmethod
-    def _verify_pox(device_pk_d: bytes, model_id: int, nonce_inf: bytes, pred: int, sig_raw: bytes) -> bool:
-        if len(device_pk_d) != 65 or len(nonce_inf) != 32 or len(sig_raw) != 64:
+    def _load_inference_code_hash() -> bytes:
+        root = Path(__file__).resolve().parents[1]
+        elf_path = root / "build" / "zephyr" / "zephyr.elf"
+        data = elf_path.read_bytes()
+        if len(data) < 52 or data[:4] != b"\x7fELF":
+            raise RuntimeError("Invalid ELF file")
+
+        elf_class = data[4]
+        elf_endian = data[5]
+        if elf_endian == 1:
+            endian = "<"
+        elif elf_endian == 2:
+            endian = ">"
+        else:
+            raise RuntimeError("Unsupported ELF endianness")
+
+        if elf_class == 1:
+            header = struct.unpack_from(endian + "HHIIIIIHHHHHH", data, 16)
+            e_shoff = header[5]
+            e_shentsize = header[10]
+            e_shnum = header[11]
+            e_shstrndx = header[12]
+            sh_fmt = endian + "IIIIIIIIII"
+        elif elf_class == 2:
+            header = struct.unpack_from(endian + "HHIQQQIHHHHHH", data, 16)
+            e_shoff = header[5]
+            e_shentsize = header[10]
+            e_shnum = header[11]
+            e_shstrndx = header[12]
+            sh_fmt = endian + "IIQQQQIIQQ"
+        else:
+            raise RuntimeError("Unsupported ELF class")
+
+        if e_shoff == 0 or e_shnum == 0:
+            raise RuntimeError("ELF has no section headers")
+
+        def read_sh(index: int):
+            sh_off = e_shoff + index * e_shentsize
+            return struct.unpack_from(sh_fmt, data, sh_off)
+
+        shstr = read_sh(e_shstrndx)
+        if elf_class == 1:
+            shstr_off = shstr[4]
+            shstr_size = shstr[5]
+        else:
+            shstr_off = shstr[4]
+            shstr_size = shstr[5]
+
+        shstr_bytes = data[shstr_off:shstr_off + shstr_size]
+
+        def section_name(sh_name_offset: int) -> str:
+            end = shstr_bytes.find(b"\x00", sh_name_offset)
+            if end < 0:
+                end = len(shstr_bytes)
+            return shstr_bytes[sh_name_offset:end].decode("ascii", errors="ignore")
+
+        for idx in range(e_shnum):
+            sh = read_sh(idx)
+            sh_name = sh[0]
+            name = section_name(sh_name)
+            if name == ".inference_ro":
+                if elf_class == 1:
+                    sh_offset = sh[4]
+                    sh_size = sh[5]
+                else:
+                    sh_offset = sh[4]
+                    sh_size = sh[5]
+                return hashlib.sha256(data[sh_offset:sh_offset + sh_size]).digest()
+
+        raise RuntimeError("Failed to locate .inference_ro section in ELF")
+
+    @staticmethod
+    def _verify_pox(device_pk_d: bytes, model_id: int, code_hash: bytes, pred: int, sig_raw: bytes) -> bool:
+        if len(device_pk_d) != 65 or len(code_hash) != 32 or len(sig_raw) != 64:
             return False
         try:
             pub = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), device_pk_d)
             r = int.from_bytes(sig_raw[:32], "big")
             s = int.from_bytes(sig_raw[32:], "big")
             sig_der = encode_dss_signature(r, s)
-            msg = struct.pack("<I", model_id) + nonce_inf + bytes([pred & 0xFF])
+            msg = struct.pack("<I", model_id) + code_hash + bytes([pred & 0xFF])
             pub.verify(sig_der, msg, ec.ECDSA(hashes.SHA256()))
             return True
         except (ValueError, InvalidSignature):
@@ -388,15 +459,15 @@ class VecodiCaseStudy:
         if not self.get_enclave_state():
             raise RuntimeError("Enclave is not created. Run create first.")
 
-        nonce_inf = os.urandom(32)
         model_id_bytes = struct.pack("<I", self.model_id)
-        msg = nonce_inf + model_id_bytes
+        code_hash = self._load_inference_code_hash()
+        msg = model_id_bytes + code_hash
         sig_der = self.state.verifier_key.sign(msg, ec.ECDSA(hashes.SHA256()))
         r, s = decode_dss_signature(sig_der)
         sig_raw = r.to_bytes(32, "big") + s.to_bytes(32, "big")
 
-        # M_inf is now plaintext (not encrypted): nonce(32) || model_id(4) || signature(64)
-        m_inf_packet = nonce_inf + model_id_bytes + sig_raw
+        # M_inf is now plaintext (not encrypted): model_id(4) || code_hash(32) || signature(64)
+        m_inf_packet = model_id_bytes + code_hash + sig_raw
 
         # If an image is provided from host, explicitly send it to the board.
         used_image_upload = image_payload is not None
@@ -447,7 +518,7 @@ class VecodiCaseStudy:
 
         pred = payload[0]
         pox_sig = payload[1:65]
-        pox_valid = self._verify_pox(self.state.device_pubkey, self.model_id, nonce_inf, pred, pox_sig)
+        pox_valid = self._verify_pox(self.state.device_pubkey, self.model_id, code_hash, pred, pox_sig)
         self.last_inference_meta = {
             "pred": int(pred),
             "pox_valid": bool(pox_valid),
