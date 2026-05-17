@@ -59,7 +59,7 @@ static void print_secure_memory_stats(void)
 #define DP_CMD_GET_BENCHMARK        8
 #define DP_CMD_RUN_INFERENCE        9   /* Atomic: check + increment counter */
 #define DP_CMD_COMPUTE_ENCLAVE_INFO 10  /* Compute EnclaveInfo hash */
-#define DP_CMD_VALIDATE_AUTHORIZE   11  /* Validate and decrypt Authorize */
+#define DP_CMD_VALIDATE_AUTHORIZE   11  /* Validate Authorize (plaintext M_update, verify T_o signature) */
 #define DP_CMD_SET_MAX_INFERENCES   12  /* Override max inferences and reset counter */
 #define DP_CMD_VALIDATE_BOOT_ENCLAVE_INFO 17  /* Recompute current EnclaveInfo and compare with boot-time sealed value */
 #define DP_CMD_SAU_REGISTER_ROM     18  /* Register model ROM window */
@@ -128,7 +128,7 @@ static void init_secure_model_identity(void)
     printf("[SECURE] Model identity context initialized (model_id=%u)\n", current_model_id);
 }
 
-/* Static session key used to decrypt Authorize and verified inference payloads. */
+/* Static session key used to decrypt M_inf (verified inference) payloads with AES-256-GCM. */
 static const uint8_t secure_session_key[32] = {
     0xA0,0xA1,0xA2,0xA3,0xA4,0xA5,0xA6,0xA7,
     0xA8,0xA9,0xAA,0xAB,0xAC,0xAD,0xAE,0xAF,
@@ -209,14 +209,6 @@ static const uint8_t aes_key[16] = {
     0x14,0x15,0x16,0x17,
     0x18,0x19,0x1A,0x1B,
     0x1C,0x1D,0x1E,0x1F
-};
-
-/* Static AES-256 key for Authorize message encryption (predefined in Secure Flash). */
-static const uint8_t authorize_aes256_key[32] = {
-    0xA0,0xA1,0xA2,0xA3,0xA4,0xA5,0xA6,0xA7,
-    0xA8,0xA9,0xAA,0xAB,0xAC,0xAD,0xAE,0xAF,
-    0xB0,0xB1,0xB2,0xB3,0xB4,0xB5,0xB6,0xB7,
-    0xB8,0xB9,0xBA,0xBB,0xBC,0xBD,0xBE,0xBF
 };
 
 /* Authorize sizes and limits (M_update is now plaintext, not encrypted) */
@@ -508,19 +500,9 @@ static psa_status_t validate_current_enclave_info_against_boot(uint8_t *match_ou
  * public key and invocation limit, and keeps the Secure copy of the
  * policy state authoritative.
  *
- * Input vectors:
- *  in[0] = cmd (4 bytes)
- *  in[1] = nonce (12 bytes)
- *  in[2] = ciphertext (variable size)
- *  in[3] = tag (16 bytes)
- *
- * Operation:
- *  - AES-256-GCM decrypt with authorize_aes256_key
- *  - Parse plaintext: c_limit || pk_v || enclave_info || cert_len || cert
- *  - Recompute EnclaveInfo and compare (constant-time)
- *  - Anti-replay: c_limit must be strictly increasing
+ * OLD DOCUMENTATION - Kept for reference only
+ * (Algorithm now uses plaintext M_update with signature verification)
  */
-/* tfm_dp_validate_authorize removed — implementation inlined into case handler */
 
 /*
  * Decrypt late weights using AES-CTR.
