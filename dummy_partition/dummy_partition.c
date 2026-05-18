@@ -128,13 +128,6 @@ static void init_secure_model_identity(void)
     printf("[SECURE] Model identity context initialized (model_id=%u)\n", current_model_id);
 }
 
-/* Static session key used to decrypt M_inf (verified inference) payloads with AES-256-GCM. */
-static const uint8_t secure_session_key[32] = {
-    0xA0,0xA1,0xA2,0xA3,0xA4,0xA5,0xA6,0xA7,
-    0xA8,0xA9,0xAA,0xAB,0xAC,0xAD,0xAE,0xAF,
-    0xB0,0xB1,0xB2,0xB3,0xB4,0xB5,0xB6,0xB7,
-    0xB8,0xB9,0xBA,0xBB,0xBC,0xBD,0xBE,0xBF
-};
 
 /* Authorization state extracted from Authorize plaintext (authoritative Secure copy). */
 static uint8_t  s_pk_u[64]    = {0};  /* User public key (not certificate) */
