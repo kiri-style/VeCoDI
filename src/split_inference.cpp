@@ -623,3 +623,41 @@ uint8_t get_last_expected_label(void)
 {
     return last_expected_label;
 }
+
+/* Étape 5: Entry point for atomic Secure-to-NS function call
+ * 
+ * This function is called directly from Secure World during DP_CMD_RUN_INFERENCE.
+ * It executes the inference function F and returns the output.
+ * 
+ * Marked as Non-Secure Callable (NSC) with cmse_nsfentry so it can be invoked
+ * from Secure World and ensures control returns to Secure after completion.
+ *
+ * Parameter:
+ *  - input: pointer to the input image (NULL to use pre-loaded custom image)
+ *
+ * Returns: prediction (class label 0-9, or 255 on error)
+ * 
+ * Note: The image should be pre-loaded via set_custom_test_image() in NS before
+ * the Secure IPC call. This function will use the pre-loaded image if input is NULL.
+ */
+__attribute__((cmse_nsfentry))
+uint8_t entry(const uint8_t *input)
+{
+    /* If an explicit input is provided, use it; otherwise rely on pre-loaded custom image */
+    if (input != nullptr) {
+        if (set_custom_test_image(input, 0U) != 0) {
+            printk("[ENTRY] ✗ Failed to set custom test image\n");
+            return 255;
+        }
+    } else {
+        printk("[ENTRY] Using pre-loaded image from earlier set_custom_test_image() call\n");
+    }
+
+    /* Execute the split inference (will use either the provided input or pre-loaded image) */
+    run_split_inference();
+
+    /* Return the prediction result */
+    uint8_t pred = get_last_prediction();
+    printk("[ENTRY] ✓ Inference complete, prediction=%u\n", pred);
+    return pred;
+}

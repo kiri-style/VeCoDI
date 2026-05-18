@@ -33,6 +33,12 @@ extern int tfm_platform_secure_sram(uint32_t base, uint32_t size);
 extern char __bss_start__;
 extern char __bss_end__;
 
+/* Étape 5: Extern declaration for entry() - Non-Secure callable function
+ * Secure World calls this to execute the inference function F.
+ * Defined in split_inference.cpp with __attribute__((cmse_nsfentry)).
+ */
+extern uint8_t entry(const uint8_t *input);
+
 /*
  * Print basic secure memory stats to help verify secure memory placement.
  */

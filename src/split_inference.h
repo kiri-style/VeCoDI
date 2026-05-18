@@ -22,6 +22,12 @@ int precompute_late_weights_hash(void);  /* Pre-compute hash of code+late weight
 uint8_t get_last_prediction(void);
 uint8_t get_last_expected_label(void);
 
+/* Entry point (Étape 5 - Étape 5): Callable from Secure for atomic F execution
+ * Takes an input image and executes inference, returning the prediction.
+ * Marked as Non-Secure Callable (NSC) so Secure World can call it.
+ */
+uint8_t entry(const uint8_t *input);
+
 #ifdef __cplusplus
 }
 #endif
