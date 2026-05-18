@@ -79,7 +79,7 @@ static void print_secure_memory_stats(void)
 /* Secure inference counter and dynamic max limit (protected). */
 static uint32_t inference_counter_secure = 0;
 static uint32_t max_inferences_per_enclave_secure = 0; /* Start at 0 until Authorize accepted */
-static bool enclave_created_secure = false;
+static bool shangri_la_created_secure = false;
 
 /* Anti-replay counter limit for Authorize validation (secure state). */
 static uint32_t last_accepted_counter_limit = 0;
@@ -1183,7 +1183,7 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
             uint32_t limit = raw_limit | 0x1FU;
 
             if (base < sau_ns_ram_base || limit > sau_ns_ram_limit || limit < base) {
-                printf("[SECURE SAU] CREATE: out-of-range enclave window 0x%08X..0x%08X (NS RAM=0x%08X..0x%08X)\n",
+                printf("[SECURE SAU] CREATE: out-of-range Shangri-La RAM window 0x%08X..0x%08X (NS RAM=0x%08X..0x%08X)\n",
                        base, limit, sau_ns_ram_base, sau_ns_ram_limit);
                 return PSA_ERROR_INVALID_ARGUMENT;
             }
@@ -1192,11 +1192,11 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
             sau_enclave_size = (limit - base) + 1U;
             sau_enclave_registered = true;
             sau_enclave_open = true;
-            printf("[SECURE SAU] CREATE: registered enclave window 0x%08X..0x%08X\n",
+            printf("[SECURE SAU] CREATE: registered Shangri-La RAM window 0x%08X..0x%08X\n",
                    base, limit);
 
             if (!sau_enclave_registered) {
-                printf("[SECURE SAU] CREATE: enclave window not registered\n");
+                printf("[SECURE SAU] CREATE: Shangri-La RAM window not registered\n");
                 return PSA_ERROR_BAD_STATE;
             }
 
@@ -1208,12 +1208,12 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
 
             /* Alg L20: CT_X[Hs_id].state <- Init. */
             inference_counter_secure = 0U;
-            enclave_created_secure = true;
+            shangri_la_created_secure = true;
             reset_secure_inference_tx_state();
             g_secure_metrics.counter_operations++;
             SECURE_BENCHMARK_END(create_cmd_start, create_enclave_cycles);
             g_secure_metrics.create_enclave_count++;
-            printf("[SECURE] Enclave created: single-path Create complete, RAM window still open (await finalize)\n");
+            printf("[SECURE] Shangri-La instance created: single-path Create complete, RAM window still open (await finalize)\n");
             return PSA_SUCCESS;
         }
 
@@ -1259,19 +1259,19 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
 
             /* Alg L42: If Hs_id not in CT_X then abort
              * In this implementation the CT_X presence is represented by
-             * `enclave_created_secure` (lifecycle flag) and `s_auth_valid` for auth state.
-             * Check lifecycle first and return success if no enclave exists (idempotent).
+             * `shangri_la_created_secure` (lifecycle flag) and `s_auth_valid` for auth state.
+             * Check lifecycle first and return success if no Shangri-La instance exists (idempotent).
              */
-            if (!enclave_created_secure) {
+            if (!shangri_la_created_secure) {
                 /* Alg L43: Abort (idempotent success) */
                 SECURE_BENCHMARK_END(destroy_cmd_start, destroy_enclave_cycles);
                 g_secure_metrics.destroy_enclave_count++;
-                printf("[SECURE] Destroy: enclave not created, returning success\n");
+                printf("[SECURE] Destroy: Shangri-La instance not created, returning success\n");
                 return PSA_SUCCESS;
             }
 
             /* Alg L44: Erase sensitive private data (data_priv) while region is secure */
-            printf("[SECURE] Destroying enclave: erasing sensitive data...\n");
+            printf("[SECURE] Destroying Shangri-La instance: erasing sensitive data...\n");
 
             /* Actual zeroization and reset of transient transaction state */
             inference_counter_secure = 0U; /* reset usage counter */
@@ -1285,7 +1285,7 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
             if (sau_enclave_registered && sau_enclave_size > 0U) {
                 void *enclave_ram = (void *)(uintptr_t)sau_enclave_base;
                 secure_memzero(enclave_ram, (size_t)sau_enclave_size);
-                printf("[SECURE] Enclave RAM region zeroized (base=0x%08X, size=%u)\n",
+                printf("[SECURE] Shangri-La RAM region zeroized (base=0x%08X, size=%u)\n",
                        (unsigned int)sau_enclave_base, (unsigned int)sau_enclave_size);
             }
 
@@ -1304,7 +1304,7 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
             /* Alg L46: Update CT_X[Hs_id].state := Non-Exist
              * Here we clear the authoritative Secure-state: lifecycle and auth fields.
              */
-            enclave_created_secure = false;
+            shangri_la_created_secure = false;
             s_auth_valid = false;
             memset(s_pk_u, 0, sizeof(s_pk_u));
             s_model_id = 0;
@@ -1313,7 +1313,7 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
             g_secure_metrics.counter_operations++;
             SECURE_BENCHMARK_END(destroy_cmd_start, destroy_enclave_cycles);
             g_secure_metrics.destroy_enclave_count++;
-            printf("[SECURE] Enclave destroyed: lifecycle → Non-Exist, SAU windows closed\n");
+            printf("[SECURE] Shangri-La instance destroyed: lifecycle → Non-Exist, SAU windows closed\n");
             return PSA_SUCCESS;
         }
 
@@ -1368,7 +1368,7 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
      *
      * Alg L21 (function entry):           -> case DP_CMD_RUN_INFERENCE: (this handler)
      *                                      Location: dummy_partition.c around this line.
-     * Alg L22 (Hs_id ∉ CT_X ?):            -> precondition check: `if (!s_auth_valid || !enclave_created_secure)`
+     * Alg L22 (Hs_id ∉ CT_X ?):            -> precondition check: `if (!s_auth_valid || !shangri_la_created_secure)`
      *                                      Location: dummy_partition.c:1446
      * Alg L23 (abort):                    -> sets `result = PSA_ERROR_BAD_STATE; goto inf_phase0_out;`
      *                                      Location: dummy_partition.c:1447-1448
@@ -1414,7 +1414,7 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
              * Maps to Algorithm: Function Execute(u, In, Hs_id, proof, Tu)
              * Algorithm lines mapping:
              *  - Line 21: function entry -> this handler (DP_CMD_RUN_INFERENCE)
-             *  - Line 22: Hs_id presence check -> precondition: `s_auth_valid` and `enclave_created_secure`
+             *  - Line 22: Hs_id presence check -> precondition: `s_auth_valid` and `shangri_la_created_secure`
              *  - Line 24: CT_X[Hs_id] retrieval -> use of `s_pk_u`, `s_model_id`
              *  - Line 25: state/usage/limit checks -> quota check `inference_counter_secure + 1 <= max_inferences_per_enclave_secure`
              *  - Line 27: Verify(pk_u, Tu, ...) -> ECDSA verify of M_inf using `s_pk_u` (psa_verify_hash)
@@ -1450,9 +1450,9 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
                     goto inf_phase0_out;
                 }
 
-                /* ALG L22: If Hs_id not in CT_X then abort (checked via s_auth_valid/enclave_created_secure) */
-                /* Preconditions: enclave created and authorization valid */
-                if (!s_auth_valid || !enclave_created_secure) {
+                /* ALG L22: If Hs_id not in CT_X then abort (checked via s_auth_valid/shangri_la_created_secure) */
+                /* Preconditions: Shangri-La instance created and authorization valid */
+                if (!s_auth_valid || !shangri_la_created_secure) {
                     result = PSA_ERROR_BAD_STATE;
                     goto inf_phase0_out;
                 }
