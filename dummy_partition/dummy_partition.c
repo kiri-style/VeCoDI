@@ -142,11 +142,13 @@ static bool         s_tx_active = false;
 static uint32_t     s_tx_id = 0U;
 static uint8_t      s_tx_code_hash[32] = {0};
 static uint32_t     s_tx_model_id = 0U;
+static uint8_t      s_tx_nonce[12] = {0};  /* Nonce from M_inf for PoX assembly */
 
 static void reset_secure_inference_tx_state(void)
 {
     s_tx_active = false;
     memset(s_tx_code_hash, 0, sizeof(s_tx_code_hash));
+    memset(s_tx_nonce, 0, sizeof(s_tx_nonce));
     s_tx_model_id = 0U;
 }
 
@@ -1580,7 +1582,7 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
                 psa_status_t result = PSA_SUCCESS;
                 uint8_t req[5];
                 uint8_t pox_hash[32];
-                uint8_t pox_msg[4U + 32U + 1U];
+                uint8_t pox_msg[4U + 16U + 12U + 1U];  /* model_id + cert + nonce + output = 33 bytes */
                 size_t pox_hash_len = 0U;
                 size_t pox_msg_len = 0U;
                 size_t sig_len = 0U;
@@ -1613,22 +1615,28 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
                     goto inf_phase1_out;
                 }
 
-                /* ALG L38: If proof requested, assemble PoX material (model_id || F_binary_hash || output) */
-                /* Generate PoX: sign (model_id || F_binary_hash || output) */
+                /* ALG L38: If proof requested, assemble PoX material (model_id || cert || nonce || output) */
+                /* Assemble PoX: model_id (4) || cert (16) || nonce (12) || output (1) */
+                /* Provider cert (16 bytes) - using zeros for now as placeholder */
+                static const uint8_t provider_cert[16] = {
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+                };
+                
                 pox_msg[pox_msg_len++] = (uint8_t)(s_tx_model_id & 0xFFU);
                 pox_msg[pox_msg_len++] = (uint8_t)((s_tx_model_id >> 8) & 0xFFU);
                 pox_msg[pox_msg_len++] = (uint8_t)((s_tx_model_id >> 16) & 0xFFU);
                 pox_msg[pox_msg_len++] = (uint8_t)((s_tx_model_id >> 24) & 0xFFU);
 
-                st = refresh_code_hash_from_registered_code();
-                if (st != PSA_SUCCESS) {
-                    result = PSA_ERROR_GENERIC_ERROR;
-                    goto inf_phase1_out;
-                }
+                /* Add provider certificate (16 bytes) */
+                memcpy(pox_msg + pox_msg_len, provider_cert, sizeof(provider_cert));
+                pox_msg_len += sizeof(provider_cert);
 
-                memcpy(pox_msg + pox_msg_len, s_tx_code_hash, sizeof(s_tx_code_hash));
-                pox_msg_len += sizeof(s_tx_code_hash);
+                /* Add nonce from M_inf (12 bytes) */
+                memcpy(pox_msg + pox_msg_len, s_tx_nonce, sizeof(s_tx_nonce));
+                pox_msg_len += sizeof(s_tx_nonce);
 
+                /* Add inference output (1 byte) */
                 pox_msg[pox_msg_len++] = output_class;
 
                 /* Hash PoX message */
