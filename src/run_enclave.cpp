@@ -115,9 +115,9 @@ void run_enclave(void)
            benchmark_cycles_to_ms(g_benchmark_metrics.run_enclave_cycles));
 }
 
-int execute_verified_inference(uint32_t tx_id, uint8_t *output_class, uint8_t pox_sig[64])
+int execute_verified_inference(uint32_t tx_id, uint8_t *output_class)
 {
-    if (output_class == NULL || pox_sig == NULL || tx_id == 0U) {
+    if (output_class == NULL || tx_id == 0U) {
         return -1;
     }
 
@@ -127,36 +127,7 @@ int execute_verified_inference(uint32_t tx_id, uint8_t *output_class, uint8_t po
     printk("[ENCLAVE] entry() returned output=%u\n", *output_class);
 
     g_benchmark_metrics.inference_count++;
-
-    psa_handle_t handle = psa_connect(ENCLAVE_SID, ENCLAVE_VER);
-    if (handle <= 0) {
-        set_atomic_inference_window_open(false);
-        return -1;
-    }
-
-    uint32_t cmd = 9; /* DP_CMD_RUN_INFERENCE */
-    uint8_t phase = 1U; /* commit */
-    uint8_t req[5];
-    req[0] = (uint8_t)(tx_id & 0xFFU);
-    req[1] = (uint8_t)((tx_id >> 8) & 0xFFU);
-    req[2] = (uint8_t)((tx_id >> 16) & 0xFFU);
-    req[3] = (uint8_t)((tx_id >> 24) & 0xFFU);
-    req[4] = *output_class;
-
-    psa_invec in_vec[3] = {
-        { &cmd, sizeof(cmd) },
-        { &phase, sizeof(phase) },
-        { req, sizeof(req) }
-    };
-    psa_outvec out_vec = { pox_sig, 64U };
-    psa_status_t status = psa_call(handle, PSA_IPC_CALL, in_vec, 3, &out_vec, 1);
-    psa_close(handle);
-
     set_atomic_inference_window_open(false);
-
-    if (status != PSA_SUCCESS || out_vec.len != 64U) {
-        return -1;
-    }
 
     return 0;
 }

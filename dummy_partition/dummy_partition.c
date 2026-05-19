@@ -1411,21 +1411,18 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
     case DP_CMD_RUN_INFERENCE:
         {
             /*
-             * Execute/Run API handler (Shangri-La semantics) - unified two-phase flow.
-             * Maps to Algorithm: Function Execute(u, In, Hs_id, proof, Tu)
-             * Algorithm lines mapping:
-             *  - Line 21: function entry -> this handler (DP_CMD_RUN_INFERENCE)
-             *  - Line 22: Hs_id presence check -> precondition: `s_auth_valid` and `shangri_la_created_secure`
-             *  - Line 24: CT_X[Hs_id] retrieval -> use of `s_pk_u`, `s_model_id`
-             *  - Line 25: state/usage/limit checks -> quota check `inference_counter_secure + 1 <= max_inferences_per_enclave_secure`
-             *  - Line 27: Verify(pk_u, Tu, ...) -> ECDSA verify of M_inf using `s_pk_u` (psa_verify_hash)
-             *  - Lines 29-33: disable interrupts / set Active / open SAU / mark NS memory -> `sau_sync_enclave_and_model_ro(true)` and `s_tx_active` setup
-             *  - Line 33: execute entry -> NS-side execution happens while SAU is open; phase 0 returns `tx_id` for commit
-             *  - Lines 34-37: erase stack / resecure memory / update CT_X -> in phase 1 we close SAU (`sau_sync_enclave_and_model_ro(false)`) and increment `inference_counter_secure`
-             *  - Lines 38-40: optional proof/signature -> PoX generation and `psa_sign_hash` in phase 1; signature returned to host
+             * Execute/Run API handler (Shangri-La) - Consolidated two-phase with tight coordination.
+             * Secure handles validation + SAU control, NS executes entry() with interrupts masked.
+             * 
+             * PHASE 0: Validate M_inf, open SAU, disable IRQ, return control to NS
+             * PHASE 1 (implicit via run_enclave): NS calls entry(), then Secure completes
+             * PHASE 1: Sign PoX, close SAU, enable IRQ
              */
-            /* Secure-side implementation: Execute/Run API (Shangri-La) - UNIFIED */
-            uint8_t phase = 1U;
+            SECURE_BENCHMARK_START(inf_start_cycles_start);
+            psa_status_t result = PSA_SUCCESS;
+            uint8_t phase = 0U;
+            
+            /* Check if this is phase 0 or phase 1 */
             if (msg->in_size[1] == 1U) {
                 psa_read(msg->handle, 1, &phase, 1U);
             }
@@ -1435,43 +1432,33 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
             }
 
             if (phase == 0U) {
-                /* PHASE 0: PRECHECK - Validate user authorization + open SAU */
-                
-                SECURE_BENCHMARK_START(inf_start_cycles_start);
-                psa_status_t result = PSA_SUCCESS;
+                /* ===== PHASE 0: VALIDATION + SETUP ===== */
                 uint8_t m_inf[100];
                 uint8_t req_code_hash[32];
                 uint8_t msg_hash[32];
                 size_t hash_len = 0U;
                 uint32_t tx_id = 0U;
 
-                /* Validate input/output sizes: M_inf is 100 bytes plaintext, output is tx_id (uint32_t) */
-                if (msg->in_size[1] != 1U || msg->in_size[2] != sizeof(m_inf) || msg->out_size[0] != sizeof(tx_id)) {
+                if (msg->in_size[2] != sizeof(m_inf) || msg->out_size[0] != sizeof(tx_id)) {
                     result = PSA_ERROR_INVALID_ARGUMENT;
                     goto inf_phase0_out;
                 }
 
-                /* ALG L22: If Hs_id not in CT_X then abort (checked via s_auth_valid/shangri_la_created_secure) */
-                /* Preconditions: Shangri-La instance created and authorization valid */
                 if (!s_auth_valid || !shangri_la_created_secure) {
                     result = PSA_ERROR_BAD_STATE;
                     goto inf_phase0_out;
                 }
 
-                /* Recover from stale transaction state if needed */
                 if (s_tx_active) {
                     (void)sau_sync_enclave_and_model_ro(false);
                     reset_secure_inference_tx_state();
                 }
 
-                /* ALG L25: Check state/usage/limit: ensure usage+1 <= limit */
-                /* Check quota: counter + 1 <= c_limit */
                 if (inference_counter_secure + 1U > max_inferences_per_enclave_secure) {
                     result = PSA_ERROR_NOT_PERMITTED;
                     goto inf_phase0_out;
                 }
 
-                /* Read plaintext M_inf: model_id(4) || code_hash(32) || signature(64) = 100 bytes */
                 psa_read(msg->handle, 2, m_inf, sizeof(m_inf));
                 
                 psa_status_t st = psa_crypto_init();
@@ -1480,8 +1467,6 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
                     goto inf_phase0_out;
                 }
 
-                /* ALG L24: Retrieve CT_X[Hs_id] fields (model identity). Extract model_id and F hash from M_inf */
-                /* Extract model_id from M_inf */
                 uint32_t req_model_id = (uint32_t)m_inf[0]
                                       | ((uint32_t)m_inf[1] << 8)
                                       | ((uint32_t)m_inf[2] << 16)
@@ -1500,7 +1485,6 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
                     goto inf_phase0_out;
                 }
 
-                /* Hash M_inf for signature verification */
                 st = psa_hash_compute(PSA_ALG_SHA_256,
                                       m_inf,
                                       36U,
@@ -1513,8 +1497,6 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
                     goto inf_phase0_out;
                 }
 
-                /* ALG L27: Verify(pk_u, Tu, u||In||Hs_id||proof) -- verify user's signature Tu using pk_u */
-                /* Verify user's signature Tu using pk_u */
                 uint8_t pk_v_full[65];
                 pk_v_full[0] = 0x04U;
                 memcpy(pk_v_full + 1U, s_pk_u, 64U);
@@ -1534,7 +1516,6 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
                     goto inf_phase0_out;
                 }
 
-                /* ALG L28: Abort if verification fails */
                 st = psa_verify_hash(pk_v_id,
                                      PSA_ALG_ECDSA(PSA_ALG_SHA_256),
                                      msg_hash,
@@ -1548,19 +1529,15 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
                     goto inf_phase0_out;
                 }
 
-                /* ALG L29: Disable interrupts / open execution region (SAU) for NS execution */
-                /* All validation passed: open SAU windows for NS execution */
                 st = sau_sync_enclave_and_model_ro(true);
                 if (st != PSA_SUCCESS) {
                     result = st;
                     goto inf_phase0_out;
                 }
 
-                /* Étape 3: Disable interrupts for atomic execution section */
+                /* Étape 3: Disable interrupts */
                 __disable_irq();
 
-                /* ALG L30: Set CT_X[Hs_id].state := Active (mark transaction active) and store F hash */
-                /* Mark transaction as active and store F hash for PoX generation */
                 s_tx_active = true;
                 s_tx_id++;
                 if (s_tx_id == 0U) {
@@ -1577,56 +1554,47 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
                 if (result == PSA_SUCCESS) {
                     g_secure_metrics.inf_start_count++;
                 } else {
-                    tx_id = 0U;  /* Return 0 on error instead of allowing */
+                    tx_id = 0U;
                 }
-                /* ALG L33: Return tx_id (OutF) so NS can perform the execution while SAU is open */
                 psa_write(msg->handle, 0, &tx_id, sizeof(tx_id));
                 g_secure_metrics.counter_operations++;
                 return result == PSA_SUCCESS ? PSA_SUCCESS : PSA_ERROR_INVALID_ARGUMENT;
 
             } else {
-                /* PHASE 1: COMMIT - Generate PoX + close SAU + increment counter */
-                
-                SECURE_BENCHMARK_START(inf_complete_cycles_start);
-                psa_status_t result = PSA_SUCCESS;
+                /* ===== PHASE 1: SIGNING + CLEANUP ===== */
                 uint8_t req[5];
+                uint8_t output_class = 0U;
                 uint8_t pox_hash[32];
-                uint8_t pox_msg[4U + 16U + 12U + 1U];  /* model_id + cert + nonce + output = 33 bytes */
+                uint8_t pox_msg[4U + 16U + 12U + 1U];
                 size_t pox_hash_len = 0U;
                 size_t pox_msg_len = 0U;
                 size_t sig_len = 0U;
-                uint8_t sig[64];
+                uint8_t sig[64] = {0};
                 psa_status_t st = PSA_SUCCESS;
+                uint8_t pox_response[65];
 
-                /* Validate input/output sizes */
-                if (msg->in_size[2] != sizeof(req) || msg->out_size[0] != sizeof(sig)) {
+                if (msg->in_size[2] != sizeof(req) || msg->out_size[0] != sizeof(pox_response)) {
                     result = PSA_ERROR_INVALID_ARGUMENT;
                     goto inf_phase1_out;
                 }
 
-                /* Preconditions: transaction must be active and device key ready */
                 if (!s_tx_active || !s_device_key_ready) {
                     result = PSA_ERROR_BAD_STATE;
                     goto inf_phase1_out;
                 }
 
-                /* Read inference output result */
                 psa_read(msg->handle, 2, req, sizeof(req));
                 uint32_t req_tx_id = (uint32_t)req[0]
                                    | ((uint32_t)req[1] << 8)
                                    | ((uint32_t)req[2] << 16)
                                    | ((uint32_t)req[3] << 24);
-                uint8_t output_class = req[4];
+                output_class = req[4];
 
-                /* Verify transaction ID matches */
                 if (req_tx_id != s_tx_id) {
                     result = PSA_ERROR_INVALID_ARGUMENT;
                     goto inf_phase1_out;
                 }
 
-                /* ALG L38: If proof requested, assemble PoX material (model_id || cert || nonce || output) */
-                /* Assemble PoX: model_id (4) || cert (16) || nonce (12) || output (1) */
-                /* Provider cert (16 bytes) - using zeros for now as placeholder */
                 static const uint8_t provider_cert[16] = {
                     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
@@ -1636,19 +1604,12 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
                 pox_msg[pox_msg_len++] = (uint8_t)((s_tx_model_id >> 8) & 0xFFU);
                 pox_msg[pox_msg_len++] = (uint8_t)((s_tx_model_id >> 16) & 0xFFU);
                 pox_msg[pox_msg_len++] = (uint8_t)((s_tx_model_id >> 24) & 0xFFU);
-
-                /* Add provider certificate (16 bytes) */
                 memcpy(pox_msg + pox_msg_len, provider_cert, sizeof(provider_cert));
                 pox_msg_len += sizeof(provider_cert);
-
-                /* Add nonce from M_inf (12 bytes) */
                 memcpy(pox_msg + pox_msg_len, s_tx_nonce, sizeof(s_tx_nonce));
                 pox_msg_len += sizeof(s_tx_nonce);
-
-                /* Add inference output (1 byte) */
                 pox_msg[pox_msg_len++] = output_class;
 
-                /* Hash PoX message */
                 st = psa_hash_compute(PSA_ALG_SHA_256,
                                       pox_msg,
                                       pox_msg_len,
@@ -1660,8 +1621,6 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
                     goto inf_phase1_out;
                 }
 
-                /* ALG L39: Sign the PoX with device key (T_proof := Sign(skDev, PoX)) */
-                /* Sign PoX with device key sk_Dev */
                 st = psa_sign_hash(s_device_sign_key_id,
                                    PSA_ALG_ECDSA(PSA_ALG_SHA_256),
                                    pox_hash,
@@ -1674,29 +1633,28 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
                     goto inf_phase1_out;
                 }
 
-                /* ALG L36: Update CT_X[Hs_id].usage := u and set state := Inactive (increment usage) */
-                /* Atomically increment counter and close SAU */
                 inference_counter_secure++;
                 g_secure_metrics.counter_operations++;
 
-                /* Étape 3: Re-enable interrupts (atomic section complete) */
+                /* Étape 3: Re-enable interrupts */
                 __enable_irq();
 
-                /* ALG L35: Mark memory Secure again (close SAU) */
                 (void)sau_sync_enclave_and_model_ro(false);
-
-                /* ALG L36/L34: Clear transient stack/nonce/state */
                 s_tx_active = false;
                 memset(s_tx_code_hash, 0, sizeof(s_tx_code_hash));
                 s_tx_model_id = 0U;
 
             inf_phase1_out:
-                SECURE_BENCHMARK_END(inf_complete_cycles_start, inf_complete_cycles);
+                SECURE_BENCHMARK_END(inf_start_cycles_start, inf_start_cycles);
                 if (result == PSA_SUCCESS) {
                     g_secure_metrics.inf_complete_count++;
                 }
-                /* ALG L40: Return (OutF, T_proof) -> write signature back to host */
-                psa_write(msg->handle, 0, sig, sizeof(sig));
+                
+                /* Return response: output_class(1) + pox_sig(64) */
+                memset(pox_response, 0, sizeof(pox_response));
+                pox_response[0] = output_class;
+                memcpy(pox_response + 1U, sig, sizeof(sig));
+                psa_write(msg->handle, 0, pox_response, sizeof(pox_response));
                 return result == PSA_SUCCESS ? PSA_SUCCESS : PSA_ERROR_INVALID_ARGUMENT;
             }
         }

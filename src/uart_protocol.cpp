@@ -872,13 +872,13 @@ static void handle_get_max_inferences(void)
 static void handle_run_inference_common(const uint8_t *minf_data, uint32_t minf_len)
 {
     /* PHASE 2 – Inference (Verifier ↔ Device)
-     * Verified-only mode: encrypted M_inf packet.
+     * Verified-only mode: plaintext M_inf packet.
      *   Device:
-     *     1. Forward encrypted payload to Secure START
-     *     2. Secure decrypts + verifies M_inf signature
-     *     3. NS executes inference atomically
-     *     4. Return to Secure COMPLETE for PoX signing + commit
-     *     5. Return encrypted response: output_class(1) || pox_sig(64)
+     *     1. Validate M_inf size in NS (100 bytes plaintext)
+     *     2. Call Secure PHASE 0 (validate + open SAU)
+     *     3. NS executes inference via entry()
+     *     4. Call Secure PHASE 1 (sign PoX + close SAU)
+     *     5. Return response: output_class(1) || pox_sig(64)
      */
     struct full_execute_benchmark_scope {
         uint32_t start_cycles;
@@ -911,6 +911,7 @@ static void handle_run_inference_common(const uint8_t *minf_data, uint32_t minf_
         uart_protocol_send_response(RESP_ERROR, err, sizeof(err));
     };
 
+    /* Input: plaintext M_inf model_id(4) || code_hash(32) || signature(64) = 100 bytes */
     if (!session_key_established || minf_len != VERIFIED_MINF_SIZE_BYTES) {
         send_inf_error(1U, -1);
         return;
@@ -926,6 +927,9 @@ static void handle_run_inference_common(const uint8_t *minf_data, uint32_t minf_
         return;
     }
 
+    const uint8_t *m_inf_plaintext = minf_data;
+    size_t m_inf_plaintext_len = minf_len;
+
     /* Pre-check secure EnclaveInfo before entering the atomic run window. */
     if (validate_enclave_info_before_inference() != 0) {
         g_benchmark_metrics.enclave_info_validation_failures++;
@@ -933,16 +937,15 @@ static void handle_run_inference_common(const uint8_t *minf_data, uint32_t minf_
     }
 
     /*
-     * ATOMIC INFERENCE SECTION:
-     * Keep IRQ masked from Secure START (opens enclave RAM to NS) until
-     * Secure COMPLETE (closes enclave RAM + signs PoX).
+     * ATOMIC INFERENCE SECTION (Two Secure Calls with Tight Coordination):
+     * IRQ masked throughout both calls (Phase 0: validate+open → Phase 1: sign+close).
      */
     uint32_t irq_atomic_start = benchmark_get_cycles();
     unsigned int irq_key_atomic = irq_lock();
 
-    /* START in Secure: decrypt + verify M_inf and open transaction window. */
-    psa_handle_t handle_start = psa_connect(TFM_DP_SERVICE_SID, 1);
-    if (handle_start <= 0) {
+    /* PHASE 0 in Secure: verify M_inf and open transaction window. */
+    psa_handle_t handle_phase0 = psa_connect(TFM_DP_SERVICE_SID, 1);
+    if (handle_phase0 <= 0) {
         uint32_t irq_atomic_elapsed = benchmark_get_cycles() - irq_atomic_start;
         BENCHMARK_ACCUMULATE(irq_atomic_elapsed,
                              g_benchmark_metrics.irq_atomic_sum_cycles,
@@ -950,25 +953,22 @@ static void handle_run_inference_common(const uint8_t *minf_data, uint32_t minf_
                              g_benchmark_metrics.irq_atomic_max_cycles,
                              g_benchmark_metrics.irq_atomic_count);
         irq_unlock(irq_key_atomic);
-        send_inf_error(4U, (int32_t)handle_start);
+        send_inf_error(4U, (int32_t)handle_phase0);
         return;
     }
 
-    /* NS-side API call: DP_CMD_RUN_INFERENCE, phase=0 (precheck+validation).
-     * Secure: decrypt M_inf, verify signature Tu, open SAU windows.
-     * Output: tx_id (0 = precheck failed, non-zero = transaction ID for phase 1)
-     */
+    /* Phase 0: Validate M_inf signature, open SAU, disable IRQ */
     uint32_t cmd = 9; /* DP_CMD_RUN_INFERENCE */
-    uint8_t phase = 0U; /* precheck */
-    psa_invec in_vec[3] = {
+    uint8_t phase = 0U;
+    psa_invec in_vec_phase0[3] = {
         { &cmd, sizeof(cmd) },
         { &phase, sizeof(phase) },
-        { minf_data, minf_len }  /* Encrypted M_inf packet */
+        { m_inf_plaintext, m_inf_plaintext_len }
     };
-    psa_outvec out_vec = { &tx_id, sizeof(tx_id) };
-    psa_status_t st = psa_call(handle_start, PSA_IPC_CALL, in_vec, 3, &out_vec, 1);
-    psa_close(handle_start);
-    if (st != PSA_SUCCESS || out_vec.len != sizeof(tx_id) || tx_id == 0U) {
+    psa_outvec out_vec_phase0 = { &tx_id, sizeof(tx_id) };
+    psa_status_t st = psa_call(handle_phase0, PSA_IPC_CALL, in_vec_phase0, 3, &out_vec_phase0, 1);
+    psa_close(handle_phase0);
+    if (st != PSA_SUCCESS || out_vec_phase0.len != sizeof(tx_id) || tx_id == 0U) {
         uint32_t irq_atomic_elapsed = benchmark_get_cycles() - irq_atomic_start;
         BENCHMARK_ACCUMULATE(irq_atomic_elapsed,
                              g_benchmark_metrics.irq_atomic_sum_cycles,
@@ -980,9 +980,9 @@ static void handle_run_inference_common(const uint8_t *minf_data, uint32_t minf_
         return;
     }
 
+    /* NS executes inference while SAU is open and IRQ is masked */
     uint8_t output_class = 255U;
-    uint8_t pox_sig[64] = {0};
-    if (execute_verified_inference(tx_id, &output_class, pox_sig) != 0) {
+    if (execute_verified_inference(tx_id, &output_class) != 0) {
         uint32_t irq_atomic_elapsed = benchmark_get_cycles() - irq_atomic_start;
         BENCHMARK_ACCUMULATE(irq_atomic_elapsed,
                              g_benchmark_metrics.irq_atomic_sum_cycles,
@@ -996,10 +996,65 @@ static void handle_run_inference_common(const uint8_t *minf_data, uint32_t minf_
 
     mock_inference_count++;
 
-    /* Response plaintext: output_class(1) || pox_sig(64) */
+    /* PHASE 1 in Secure: sign PoX + close SAU + enable IRQ */
+    psa_handle_t handle_phase1 = psa_connect(TFM_DP_SERVICE_SID, 1);
+    if (handle_phase1 <= 0) {
+        uint32_t irq_atomic_elapsed = benchmark_get_cycles() - irq_atomic_start;
+        BENCHMARK_ACCUMULATE(irq_atomic_elapsed,
+                             g_benchmark_metrics.irq_atomic_sum_cycles,
+                             g_benchmark_metrics.irq_atomic_min_cycles,
+                             g_benchmark_metrics.irq_atomic_max_cycles,
+                             g_benchmark_metrics.irq_atomic_count);
+        irq_unlock(irq_key_atomic);
+        send_inf_error(8U, (int32_t)handle_phase1);
+        return;
+    }
+
+    uint8_t pox_resp[65] = {0};
+    uint8_t req[5];
+    req[0] = (uint8_t)(tx_id & 0xFFU);
+    req[1] = (uint8_t)((tx_id >> 8) & 0xFFU);
+    req[2] = (uint8_t)((tx_id >> 16) & 0xFFU);
+    req[3] = (uint8_t)((tx_id >> 24) & 0xFFU);
+    req[4] = output_class;
+
+    phase = 1U;
+    psa_invec in_vec_phase1[3] = {
+        { &cmd, sizeof(cmd) },
+        { &phase, sizeof(phase) },
+        { req, sizeof(req) }
+    };
+    psa_outvec out_vec_phase1 = { pox_resp, sizeof(pox_resp) };
+    st = psa_call(handle_phase1, PSA_IPC_CALL, in_vec_phase1, 3, &out_vec_phase1, 1);
+    psa_close(handle_phase1);
+    if (st != PSA_SUCCESS || out_vec_phase1.len != sizeof(pox_resp)) {
+        uint32_t irq_atomic_elapsed = benchmark_get_cycles() - irq_atomic_start;
+        BENCHMARK_ACCUMULATE(irq_atomic_elapsed,
+                             g_benchmark_metrics.irq_atomic_sum_cycles,
+                             g_benchmark_metrics.irq_atomic_min_cycles,
+                             g_benchmark_metrics.irq_atomic_max_cycles,
+                             g_benchmark_metrics.irq_atomic_count);
+        irq_unlock(irq_key_atomic);
+        send_inf_error(9U, (int32_t)st);
+        return;
+    }
+
+    uint8_t secure_output_class = pox_resp[0];
+    if (secure_output_class != output_class) {
+        uint32_t irq_atomic_elapsed = benchmark_get_cycles() - irq_atomic_start;
+        BENCHMARK_ACCUMULATE(irq_atomic_elapsed,
+                             g_benchmark_metrics.irq_atomic_sum_cycles,
+                             g_benchmark_metrics.irq_atomic_min_cycles,
+                             g_benchmark_metrics.irq_atomic_max_cycles,
+                             g_benchmark_metrics.irq_atomic_count);
+        irq_unlock(irq_key_atomic);
+        send_inf_error(10U, (int32_t)secure_output_class);
+        return;
+    }
+
     uint8_t response_plain[65];
     response_plain[0] = output_class;
-    memcpy(response_plain + 1U, pox_sig, 64U);
+    memcpy(response_plain + 1U, pox_resp + 1U, 64U);
 
     uart_protocol_send_response(RESP_OK, response_plain, sizeof(response_plain));
     uint32_t irq_atomic_elapsed = benchmark_get_cycles() - irq_atomic_start;
