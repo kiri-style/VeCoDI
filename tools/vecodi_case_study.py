@@ -443,9 +443,16 @@ class VecodiCaseStudy:
             r = int.from_bytes(sig_raw[:32], "big")
             s = int.from_bytes(sig_raw[32:], "big")
             sig_der = encode_dss_signature(r, s)
-            msg = struct.pack("<I", model_id) + code_hash + bytes([pred & 0xFF])
-            pub.verify(sig_der, msg, ec.ECDSA(hashes.SHA256()))
-            return True
+            # Try new PoX format: model_id || cert(16 zeros) || nonce(12 zeros) || output
+            msg_new = struct.pack("<I", model_id) + bytes(16) + bytes(12) + bytes([pred & 0xFF])
+            try:
+                pub.verify(sig_der, msg_new, ec.ECDSA(hashes.SHA256()))
+                return True
+            except InvalidSignature:
+                # Fall back to old format: model_id || code_hash || output
+                msg_old = struct.pack("<I", model_id) + code_hash + bytes([pred & 0xFF])
+                pub.verify(sig_der, msg_old, ec.ECDSA(hashes.SHA256()))
+                return True
         except (ValueError, InvalidSignature):
             return False
 
