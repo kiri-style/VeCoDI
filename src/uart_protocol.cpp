@@ -340,7 +340,6 @@ static bool is_valid_cmd(uint8_t cmd)
             cmd == CMD_CREATE_ENCLAVE ||
             cmd == CMD_DESTROY_ENCLAVE ||
             cmd == CMD_UPDATE_RATE_LIMIT ||
-            cmd == CMD_RUN_INFERENCE_NO_SAU ||
             cmd == CMD_GET_TCB_BENCHMARK ||
             cmd == CMD_READ_PROTECTED_MEM ||
             cmd == CMD_READ_PROTECTED_ROM ||
@@ -370,7 +369,6 @@ static bool is_valid_len_for_cmd(uint8_t cmd, uint32_t len)
         case CMD_CREATE_ENCLAVE:
             return (len == 0U) || (len == 4U);
         case CMD_DESTROY_ENCLAVE:
-        case CMD_RUN_INFERENCE_NO_SAU:
         case CMD_READ_PROTECTED_MEM:
         case CMD_READ_PROTECTED_ROM:
             return len == 0U;
@@ -407,7 +405,6 @@ static void handle_get_device_pubkey(void);
 static void handle_get_sau_state(void);
 static void handle_get_enclave_state(void);
 static void handle_get_tcb_benchmark(void);
-static void handle_run_inference_no_sau(void);
 static void handle_read_protected_mem(void);
 static void handle_read_protected_rom(void);
 static void handle_create_enclave(const uint8_t *data, uint32_t len);
@@ -671,10 +668,6 @@ static void process_command(void)
 
         case CMD_UPDATE_RATE_LIMIT:
             handle_update_rate_limit(rx_buffer, rx_len);
-            break;
-
-        case CMD_RUN_INFERENCE_NO_SAU:
-            handle_run_inference_no_sau();
             break;
 
         case CMD_READ_PROTECTED_MEM:
@@ -987,37 +980,9 @@ static void handle_run_inference_common(const uint8_t *minf_data, uint32_t minf_
         return;
     }
 
-    /* Inference executes in NS during the active secure transaction window. */
-    set_atomic_inference_window_open(true);
-    run_split_inference();
-    set_atomic_inference_window_open(false);
-    g_benchmark_metrics.inference_count++;
-
-    uint8_t output_class = get_last_prediction();
-    uint8_t expected_class = get_last_expected_label();
-    if (output_class == 255U || expected_class == 255U) {
-        uint32_t irq_atomic_elapsed = benchmark_get_cycles() - irq_atomic_start;
-        BENCHMARK_ACCUMULATE(irq_atomic_elapsed,
-                             g_benchmark_metrics.irq_atomic_sum_cycles,
-                             g_benchmark_metrics.irq_atomic_min_cycles,
-                             g_benchmark_metrics.irq_atomic_max_cycles,
-                             g_benchmark_metrics.irq_atomic_count);
-        irq_unlock(irq_key_atomic);
-        send_inf_error(5U, -1);
-        return;
-    }
-
-    /* COMPLETE in Secure: increments secure counter, closes SAU, returns PoX signature. */
+    uint8_t output_class = 255U;
     uint8_t pox_sig[64] = {0};
-    uint8_t complete_req[5];
-    complete_req[0] = (uint8_t)(tx_id & 0xFFU);
-    complete_req[1] = (uint8_t)((tx_id >> 8) & 0xFFU);
-    complete_req[2] = (uint8_t)((tx_id >> 16) & 0xFFU);
-    complete_req[3] = (uint8_t)((tx_id >> 24) & 0xFFU);
-    complete_req[4] = output_class;
-
-    psa_handle_t handle_complete = psa_connect(TFM_DP_SERVICE_SID, 1);
-    if (handle_complete <= 0) {
+    if (execute_verified_inference(tx_id, &output_class, pox_sig) != 0) {
         uint32_t irq_atomic_elapsed = benchmark_get_cycles() - irq_atomic_start;
         BENCHMARK_ACCUMULATE(irq_atomic_elapsed,
                              g_benchmark_metrics.irq_atomic_sum_cycles,
@@ -1025,32 +990,7 @@ static void handle_run_inference_common(const uint8_t *minf_data, uint32_t minf_
                              g_benchmark_metrics.irq_atomic_max_cycles,
                              g_benchmark_metrics.irq_atomic_count);
         irq_unlock(irq_key_atomic);
-        send_inf_error(6U, (int32_t)handle_complete);
-        return;
-    }
-
-    /* NS-side API call: DP_CMD_RUN_INFERENCE, phase=1 (commit+PoX).
-     * Secure: generate PoX signature, close SAU windows, increment counter.
-     */
-    uint32_t cmd_complete = 9; /* DP_CMD_RUN_INFERENCE */
-    uint8_t phase_complete = 1U; /* commit */
-    psa_invec in_vec_complete[3] = {
-        { &cmd_complete, sizeof(cmd_complete) },
-        { &phase_complete, sizeof(phase_complete) },
-        { complete_req, sizeof(complete_req) }  /* tx_id(4) + output_class(1) */
-    };
-    psa_outvec out_vec_complete = { pox_sig, sizeof(pox_sig) };
-    psa_status_t st_complete = psa_call(handle_complete, PSA_IPC_CALL, in_vec_complete, 3, &out_vec_complete, 1);
-    psa_close(handle_complete);
-    if (st_complete != PSA_SUCCESS || out_vec_complete.len != sizeof(pox_sig)) {
-        uint32_t irq_atomic_elapsed = benchmark_get_cycles() - irq_atomic_start;
-        BENCHMARK_ACCUMULATE(irq_atomic_elapsed,
-                             g_benchmark_metrics.irq_atomic_sum_cycles,
-                             g_benchmark_metrics.irq_atomic_min_cycles,
-                             g_benchmark_metrics.irq_atomic_max_cycles,
-                             g_benchmark_metrics.irq_atomic_count);
-        irq_unlock(irq_key_atomic);
-        send_inf_error(7U, (int32_t)st_complete);
+        send_inf_error(7U, -1);
         return;
     }
 
@@ -1138,46 +1078,6 @@ static void handle_get_remaining_inferences(void)
     remaining_bytes[3] = (remaining >> 24) & 0xFF;
     
     uart_protocol_send_response(RESP_OK, remaining_bytes, 4);
-}
-
-static void handle_run_inference_no_sau(void)
-{
-    /*
-     * DANGEROUS TEST PATH:
-     * Intentionally attempts inference without calling enclave_sau_open().
-     * Used only to validate that protected late-weights are not accessible
-     * when SAU is closed.
-     *
-     * Expected behavior on protected systems: BusFault/HardFault or error.
-     */
-    printk("[UART TEST] CMD_RUN_INFERENCE_NO_SAU received\n");
-    g_benchmark_metrics.dangerous_inference_no_sau_count++;
-
-    if (!is_enclave_created()) {
-        printk("[UART TEST] enclave not created -> reject (create explicitly first)\n");
-        uart_protocol_send_response(RESP_ERROR, NULL, 0);
-        return;
-    }
-
-    /* Keep policy semantics aligned with normal path. */
-    if (mock_max_inferences == 0U || mock_inference_count >= mock_max_inferences) {
-        uart_protocol_send_response(RESP_ERROR, NULL, 0);
-        return;
-    }
-
-    /* Prepare split-inference context (but DO NOT open SAU). */
-    set_late_weights_buffer(get_enclave_region(), get_enclave_region_size());
-    if (precompute_late_weights_hash() != 0) {
-        uart_protocol_send_response(RESP_ERROR, NULL, 0);
-        return;
-    }
-
-    printk("[UART TEST] Running split inference WITHOUT SAU OPEN (expected to fault if closed)\n");
-    run_split_inference();
-    mock_inference_count++;
-
-    uint8_t pred = get_last_prediction();
-    uart_protocol_send_response(RESP_OK, &pred, 1);
 }
 
 static void handle_read_protected_mem(void)
