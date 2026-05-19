@@ -1556,6 +1556,9 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
                     goto inf_phase0_out;
                 }
 
+                /* Étape 3: Disable interrupts for atomic execution section */
+                __disable_irq();
+
                 /* ALG L30: Set CT_X[Hs_id].state := Active (mark transaction active) and store F hash */
                 /* Mark transaction as active and store F hash for PoX generation */
                 s_tx_active = true;
@@ -1675,6 +1678,9 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
                 /* Atomically increment counter and close SAU */
                 inference_counter_secure++;
                 g_secure_metrics.counter_operations++;
+
+                /* Étape 3: Re-enable interrupts (atomic section complete) */
+                __enable_irq();
 
                 /* ALG L35: Mark memory Secure again (close SAU) */
                 (void)sau_sync_enclave_and_model_ro(false);
