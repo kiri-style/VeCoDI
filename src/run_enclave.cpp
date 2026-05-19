@@ -16,6 +16,7 @@ void run_enclave(void)
 {
     BENCHMARK_START(run_enc);
     bool should_execute_inference = true;
+    uint32_t tx_id = 0U;  /* Store tx_id from Phase 0 for Phase 1 */
     
     printk("[ENCLAVE] ===== ENTER =====\n");
     
@@ -35,8 +36,7 @@ void run_enclave(void)
                 { &cmd, sizeof(cmd) },
                 { &phase, sizeof(phase) }
             };
-            uint32_t allowed = 0;
-            psa_outvec out_vec = { &allowed, sizeof(allowed) };
+            psa_outvec out_vec = { &tx_id, sizeof(tx_id) };
 
             psa_status_t status = psa_call(handle, PSA_IPC_CALL, in_vec, 2, &out_vec, 1);
             psa_close(handle);
@@ -45,8 +45,8 @@ void run_enclave(void)
                 printk("[ENCLAVE] ✗ Precheck failed (status=%d)\n", status);
                 should_execute_inference = false;
             } else {
-                printk("[ENCLAVE] Secure response: allowed=%u\n", allowed);
-                if (allowed == 0) {
+                printk("[ENCLAVE] Secure response: tx_id=%u\n", tx_id);
+                if (tx_id == 0) {
                     printk("[ENCLAVE] ✗ Secure denied inference\n");
                     should_execute_inference = false;
                 }
@@ -57,8 +57,12 @@ void run_enclave(void)
     /* Execute inference */
     if (should_execute_inference) {
         set_atomic_inference_window_open(true);
-        printk("[ENCLAVE] Executing split inference...\n");
-        run_split_inference();
+        printk("[ENCLAVE] Executing inference via entry()...\n");
+        
+        /* Étape 5: Call entry() directly to execute F */
+        uint8_t output_class = entry(NULL);
+        printk("[ENCLAVE] entry() returned output=%u\n", output_class);
+        
         g_benchmark_metrics.inference_count++;
 
         /* Secure commit: increment only after successful execution. */
@@ -70,13 +74,21 @@ void run_enclave(void)
         } else {
             uint32_t cmd = 9; /* DP_CMD_RUN_INFERENCE */
             uint8_t phase = 1U; /* commit */
-            psa_invec in_vec[2] = {
+            uint8_t req[5];
+            req[0] = (uint8_t)(tx_id & 0xFFU);
+            req[1] = (uint8_t)((tx_id >> 8) & 0xFFU);
+            req[2] = (uint8_t)((tx_id >> 16) & 0xFFU);
+            req[3] = (uint8_t)((tx_id >> 24) & 0xFFU);
+            req[4] = output_class;
+            
+            psa_invec in_vec[3] = {
                 { &cmd, sizeof(cmd) },
-                { &phase, sizeof(phase) }
+                { &phase, sizeof(phase) },
+                { &req, sizeof(req) }
             };
             uint32_t allowed = 0;
             psa_outvec out_vec = { &allowed, sizeof(allowed) };
-            psa_status_t status = psa_call(handle, PSA_IPC_CALL, in_vec, 2, &out_vec, 1);
+            psa_status_t status = psa_call(handle, PSA_IPC_CALL, in_vec, 3, &out_vec, 1);
             psa_close(handle);
             if (status != PSA_SUCCESS || allowed == 0U) {
                 printk("[ENCLAVE] ✗ Commit failed (status=%d, allowed=%u)\n", status, allowed);
