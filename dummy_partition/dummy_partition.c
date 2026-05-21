@@ -1410,25 +1410,31 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
      */
     case DP_CMD_RUN_INFERENCE:
         {
+            /* 21 Function Execute(u, In, Hs_id, proof, Tu) */
             SECURE_BENCHMARK_START(inf_start_cycles_start);
 
+            /* 22 if Hs_id ∉ CT_X then abort */
             if (msg->in_size[1] != 100U || msg->out_size[0] != 65U) {
                 return PSA_ERROR_INVALID_ARGUMENT;
             }
 
+            /* 23 abort (preconditions): require authorization and enclave created */
             if (!s_auth_valid || !shangri_la_created_secure) {
                 return PSA_ERROR_BAD_STATE;
             }
 
+            /* Clean any leftover transaction state */
             if (s_tx_active) {
                 (void)sau_sync_enclave_and_model_ro(false);
                 reset_secure_inference_tx_state();
             }
 
+            /* 25 if state ≠ Init or usage ≥ limit or u ≠ usage + 1 then abort */
             if (inference_counter_secure + 1U > max_inferences_per_enclave_secure) {
                 return PSA_ERROR_NOT_PERMITTED;
             }
 
+            /* Read M_inf from caller (model_id || code_hash || signature) */
             uint8_t m_inf[100];
             psa_read(msg->handle, 1, m_inf, sizeof(m_inf));
 
@@ -1438,6 +1444,10 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
                 return st;
             }
 
+            /* 24 (pk_o, pku, data_id, entry, usage, limit, state) <- CT_X[Hs_id]
+             * Here we use stored secure state (s_pk_u, s_model_id, etc.) and
+             * extract requested model_id/code_hash from M_inf for comparison.
+             */
             uint32_t req_model_id = (uint32_t)m_inf[0]
                                   | ((uint32_t)m_inf[1] << 8)
                                   | ((uint32_t)m_inf[2] << 16)
@@ -1456,6 +1466,7 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
                 return PSA_ERROR_INVALID_ARGUMENT;
             }
 
+            /* Compute hash over fields needed for signature verification */
             uint8_t msg_hash[32];
             size_t hash_len = 0U;
             st = psa_hash_compute(PSA_ALG_SHA_256,
@@ -1469,6 +1480,7 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
                 return PSA_ERROR_GENERIC_ERROR;
             }
 
+            /* Build verifier public key from stored CT_X entry (s_pk_u) */
             uint8_t pk_v_full[65];
             pk_v_full[0] = 0x04U;
             memcpy(pk_v_full + 1U, s_pk_u, 64U);
@@ -1487,6 +1499,7 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
                 return PSA_ERROR_INVALID_SIGNATURE;
             }
 
+            /* 27 if not Verify(pku, Tu, u||In||Hs_id||proof) then abort */
             st = psa_verify_hash(pk_v_id,
                                  PSA_ALG_ECDSA(PSA_ALG_SHA_256),
                                  msg_hash,
@@ -1499,13 +1512,16 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
                 return PSA_ERROR_INVALID_SIGNATURE;
             }
 
+            /* 29 disable interrupts + 31 allocate Shangri-La stack + 32 mark as Non-secure */
             st = sau_sync_enclave_and_model_ro(true);
             if (st != PSA_SUCCESS) {
                 secure_memzero(m_inf, sizeof(m_inf));
                 return st;
             }
 
+            /* 29 disable interrupts */
             __disable_irq();
+            /* 30 CT_X[Hs_id].state <- Active */
             s_tx_active = true;
             s_tx_id++;
             if (s_tx_id == 0U) {
@@ -1515,9 +1531,11 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
             s_tx_model_id = req_model_id;
             memset(s_tx_nonce, 0, sizeof(s_tx_nonce));
 
+            /* 33 OutF <- execute entry(In) */
             typedef uint8_t (*ns_entry_t)(const uint8_t *);
             ns_entry_t ns_entry = (ns_entry_t)cmse_nsfptr_create((void *)NS_ENTRY_ADDR);
             if (ns_entry == NULL) {
+                /* restore state on error */
                 __enable_irq();
                 (void)sau_sync_enclave_and_model_ro(false);
                 s_tx_active = false;
@@ -1527,6 +1545,7 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
 
             uint8_t output_class = ns_entry(NULL);
 
+            /* 34 erase stack + 35 mark F/datapub/datapriv as Secure + 36 update CT_X usage/state + 37 enable interrupts */
             __enable_irq();
             (void)sau_sync_enclave_and_model_ro(false);
 
@@ -1536,6 +1555,7 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
             memset(s_tx_code_hash, 0, sizeof(s_tx_code_hash));
             s_tx_model_id = 0U;
 
+            /* Build PoX message and optionally sign it */
             uint8_t pox_msg[4U + 16U + 12U + 1U];
             size_t pox_msg_len = 0U;
             pox_msg[pox_msg_len++] = (uint8_t)(req_model_id & 0xFFU);
@@ -1549,6 +1569,7 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
             pox_msg_len += sizeof(s_tx_nonce);
             pox_msg[pox_msg_len++] = output_class;
 
+            /* 38 if proof then Tproof <- Sign(skDev, F || u || data_id || InF || OutF || pko) */
             uint8_t pox_hash[32];
             size_t pox_hash_len = 0U;
             st = psa_hash_compute(PSA_ALG_SHA_256,
@@ -1576,6 +1597,7 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
                 return PSA_ERROR_GENERIC_ERROR;
             }
 
+            /* 40 return (OutF, Tproof) */
             uint8_t resp[65];
             resp[0] = output_class;
             memcpy(resp + 1U, sig, sizeof(sig));
