@@ -1290,9 +1290,7 @@ static void handle_create_enclave(const uint8_t *data, uint32_t len)
     }
 
     uint32_t atomic_start = benchmark_get_cycles();
-    unsigned int irq_key_atomic = irq_lock();
     int create_ret = create_enclave_with_size(decrypt_size_bytes);
-    irq_unlock(irq_key_atomic);
     uint32_t atomic_elapsed = benchmark_get_cycles() - atomic_start;
     BENCHMARK_ACCUMULATE(atomic_elapsed,
                          g_benchmark_metrics.create_atomic_sum_cycles,
@@ -1344,9 +1342,7 @@ static void handle_destroy_enclave(void)
     }
 
     uint32_t atomic_start = benchmark_get_cycles();
-    unsigned int irq_key_atomic = irq_lock();
     int destroy_ret = destroy_enclave();
-    irq_unlock(irq_key_atomic);
     uint32_t atomic_elapsed = benchmark_get_cycles() - atomic_start;
     BENCHMARK_ACCUMULATE(atomic_elapsed,
                          g_benchmark_metrics.destroy_atomic_sum_cycles,

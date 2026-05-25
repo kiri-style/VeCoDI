@@ -62,6 +62,7 @@ static uint32_t max_inferences_per_enclave = 0;
 static bool model_ro_registered_once = false;
 static bool inference_code_registered_once = false;
 static bool boot_enclave_info_seeded_once = false;
+static uint8_t boot_enclave_info_cache[32] = {0};
 static int32_t last_create_secure_status = 0;
 
 /* Forward declaration for reset function */
@@ -262,6 +263,7 @@ int initialize_secure_enclave_info_boot(void)
         return -1;
     }
 
+    memcpy(boot_enclave_info_cache, enclave_info, sizeof(boot_enclave_info_cache));
     boot_enclave_info_seeded_once = true;
     printk("[NS] Secure boot EnclaveInfo initialized\n");
     return 0;
@@ -298,16 +300,17 @@ static int create_enclave_secure_into_ns(size_t decrypt_size_bytes)
     }
 
     uint32_t cmd = DP_CMD_CREATE_ENCLAVE;
-    uint8_t iv_and_meta[24] = {0};
-    memcpy(iv_and_meta, late_wt_iv, sizeof(late_wt_iv));
-    uint32_t *meta = (uint32_t *)(void *)(iv_and_meta + sizeof(late_wt_iv));
-    meta[0] = (uint32_t)(uintptr_t)out_buf;
-    meta[1] = (uint32_t)out_size;
+    uint8_t iv_hsid_and_region[56] = {0};
+    memcpy(iv_hsid_and_region, late_wt_iv, sizeof(late_wt_iv));
+    memcpy(iv_hsid_and_region + sizeof(late_wt_iv), boot_enclave_info_cache, sizeof(boot_enclave_info_cache));
+    uint32_t *region_params = (uint32_t *)(void *)(iv_hsid_and_region + 48U);
+    region_params[0] = (uint32_t)(uintptr_t)out_buf;
+    region_params[1] = (uint32_t)out_size;
 
     psa_invec in_vec[3] = {
         { &cmd, sizeof(cmd) },
         { late_wt_encrypted, send_size },
-        { iv_and_meta, sizeof(iv_and_meta) }
+        { iv_hsid_and_region, sizeof(iv_hsid_and_region) }
     };
 
     psa_outvec out_vec = {

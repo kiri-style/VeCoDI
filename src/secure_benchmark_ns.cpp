@@ -117,19 +117,31 @@ void print_secure_benchmark_report(const secure_benchmark_metrics_ns_t *metrics)
         printk("║ Digest:               0 cycles  (     0 ms)  [0 ops]        ║\n");
     }
 
-    /* M_update validation */
-    if (metrics->m_update_count > 0) {
-        uint32_t avg_cycles = (uint32_t)(metrics->m_update_cycles / metrics->m_update_count);
-        printk("║ M_update:     %10llu cycles  (%6u ms)  [%u ops]         ║\n",
-               (unsigned long long)metrics->m_update_cycles,
-               cycles_to_ms(metrics->m_update_cycles),
-               metrics->m_update_count);
+    /* Authorize validation */
+    if (metrics->authorize_count > 0) {
+        uint32_t avg_cycles = (uint32_t)(metrics->authorize_cycles / metrics->authorize_count);
+        printk("║ Authorize:    %10llu cycles  (%6u ms)  [%u ops]         ║\n",
+               (unsigned long long)metrics->authorize_cycles,
+               cycles_to_ms(metrics->authorize_cycles),
+               metrics->authorize_count);
         printk("║   Avg/op:    %10u cycles  (%6u ms)                   ║\n",
                avg_cycles,
                cycles_to_ms(avg_cycles));
     } else {
-        printk("║ M_update:             0 cycles  (     0 ms)  [0 ops]        ║\n");
+        printk("║ Authorize:            0 cycles  (     0 ms)  [0 ops]        ║\n");
     }
+    printk("║   Auth Parse: %10llu cycles  (%6u ms)                   ║\n",
+           (unsigned long long)metrics->authorize_parse_cycles,
+           cycles_to_ms(metrics->authorize_parse_cycles));
+    printk("║   Auth Verify:%10llu cycles  (%6u ms)                   ║\n",
+           (unsigned long long)metrics->authorize_verify_cycles,
+           cycles_to_ms(metrics->authorize_verify_cycles));
+    printk("║   Auth Update:%10llu cycles  (%6u ms)                   ║\n",
+           (unsigned long long)metrics->authorize_update_cycles,
+           cycles_to_ms(metrics->authorize_update_cycles));
+    printk("║   Create HsId:%10llu cycles  (%6u ms)                   ║\n",
+           (unsigned long long)metrics->create_validate_cycles,
+           cycles_to_ms(metrics->create_validate_cycles));
     
     printk("╟──────────────────────────────────────────────────────────────╢\n");
     printk("║ COUNTER MANAGEMENT                                           ║\n");

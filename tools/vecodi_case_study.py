@@ -78,6 +78,8 @@ CMD_GET_ENCLAVE_STATE = 0x10
 CMD_CREATE_ENCLAVE = 0x11
 CMD_DESTROY_ENCLAVE = 0x12
 CMD_RUN_INFERENCE_WITH_IMAGE = 0x14
+CMD_GET_BENCHMARK = 0x08
+CMD_GET_SECURE_BENCHMARK = 0x09
 
 RESP_OK = 0x00
 CUSTOM_IMAGE_SIZE = 32 * 32 * 3
@@ -87,6 +89,45 @@ STATIC_SESSION_KEY = bytes([
     0xB0, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7,
     0xB8, 0xB9, 0xBA, 0xBB, 0xBC, 0xBD, 0xBE, 0xBF,
 ])
+
+DEVICE_BENCHMARK_NAMES = [
+    "enclave_create_cycles", "enclave_destroy_cycles", "aes_decrypt_cycles",
+    "early_layers_cycles", "late_layers_cycles", "total_inference_cycles", "run_enclave_cycles", "full_execute_cycles",
+    "heap_used_bytes", "heap_free_bytes", "stack_used_bytes",
+    "ram_used_bytes", "ram_total_bytes", "flash_used_bytes", "flash_total_bytes",
+    "inference_count", "enclave_recreations", "inference_requests_total", "enclave_info_validation_failures",
+    "enclave_create_sum_cycles", "enclave_destroy_sum_cycles", "aes_decrypt_sum_cycles",
+    "early_layers_sum_cycles", "late_layers_sum_cycles", "total_inference_sum_cycles", "run_enclave_sum_cycles", "irq_atomic_sum_cycles",
+    "enclave_create_min_cycles", "enclave_create_max_cycles", "enclave_destroy_min_cycles", "enclave_destroy_max_cycles",
+    "aes_decrypt_min_cycles", "aes_decrypt_max_cycles", "early_layers_min_cycles", "early_layers_max_cycles",
+    "late_layers_min_cycles", "late_layers_max_cycles", "total_inference_min_cycles", "total_inference_max_cycles",
+    "run_enclave_min_cycles", "run_enclave_max_cycles", "irq_atomic_min_cycles", "irq_atomic_max_cycles",
+    "enclave_create_count", "enclave_destroy_count", "aes_decrypt_count", "early_layers_count", "late_layers_count",
+    "total_inference_count", "run_enclave_count", "irq_atomic_count",
+    "full_execute_count", "full_execute_sum_cycles", "full_execute_min_cycles", "full_execute_max_cycles",
+    "create_atomic_sum_cycles", "destroy_atomic_sum_cycles",
+    "create_atomic_min_cycles", "create_atomic_max_cycles", "destroy_atomic_min_cycles", "destroy_atomic_max_cycles",
+    "create_atomic_count", "destroy_atomic_count",
+    "run_inference_with_image_count", "dangerous_inference_no_sau_count", "dangerous_read_ram_count", "dangerous_read_rom_count",
+    "authorize_cycles", "authorize_count",
+]
+DEVICE_BENCHMARK_FMT = "<" + "I" * 19 + "xxxx" + "Q" * 8 + "I" * 16 + "I" * 8 + "I" + "xxxx" + "Q" + "I" * 2 + "Q" * 2 + "I" * 6 + "I" * 4 + "xxxxQI"
+
+SECURE_BENCHMARK_NAMES = [
+    "aes_decrypt_cycles", "late_hash_cycles", "digest_compute_cycles", "authorize_cycles", "global_crypto_init_cycles",
+    "create_validate_cycles", "authorize_parse_cycles", "authorize_verify_cycles", "authorize_update_cycles", "authorize_crypto_init_cycles",
+    "authorize_read_cycles", "authorize_import_key_cycles", "authorize_hash_msg_cycles", "authorize_verify_sig_cycles", "authorize_destroy_key_cycles",
+    "authorize_verify_message_cycles", "authorize_verify_old_cycles", "create_recompute_cycles",
+    "get_max_cycles", "check_allowed_cycles", "increment_cycles", "reset_cycles",
+    "create_enclave_cycles", "finalize_create_cycles", "destroy_enclave_cycles", "inf_start_cycles", "inf_complete_cycles",
+    "sau_sync_open_cycles", "sau_sync_close_cycles", "sau_flash_close_cycles", "sau_flash_open_cycles", "sau_flash_pulse_cycles",
+    "aes_decrypt_count", "late_hash_count", "digest_count", "authorize_count", "authorize_crypto_init_count",
+    "authorize_import_key_count", "authorize_verify_sig_count", "authorize_verify_message_count", "create_recompute_count", "counter_operations",
+    "create_enclave_count", "finalize_create_count", "destroy_enclave_count", "inf_start_count", "inf_complete_count",
+    "sau_sync_open_count", "sau_sync_close_count", "sau_flash_close_count", "sau_flash_open_count", "sau_flash_pulse_count",
+    "ram_used_bytes", "ram_total_bytes", "flash_used_bytes", "flash_total_bytes",
+]
+SECURE_BENCHMARK_FMT = "<" + ("Q" * 32) + ("I" * 24)
 
 
 def log(msg: str) -> None:
@@ -230,6 +271,28 @@ class VecodiCaseStudy:
         except Exception:
             return None
 
+    def read_ns_benchmark(self) -> Dict[str, int]:
+        self.device.send_command(CMD_GET_BENCHMARK)
+        status, payload = self.device.read_response(timeout=8.0)
+        if status != RESP_OK:
+            raise RuntimeError("CMD_GET_BENCHMARK failed")
+        expected = struct.calcsize(DEVICE_BENCHMARK_FMT)
+        if len(payload) < expected:
+            raise RuntimeError(f"NS benchmark payload too short: got {len(payload)}, expected {expected}")
+        values = struct.unpack(DEVICE_BENCHMARK_FMT, payload[:expected])
+        return {name: int(value) for name, value in zip(DEVICE_BENCHMARK_NAMES, values)}
+
+    def read_secure_benchmark(self) -> Dict[str, int]:
+        self.device.send_command(CMD_GET_SECURE_BENCHMARK)
+        status, payload = self.device.read_response(timeout=8.0)
+        if status != RESP_OK:
+            raise RuntimeError("CMD_GET_SECURE_BENCHMARK failed")
+        expected = struct.calcsize(SECURE_BENCHMARK_FMT)
+        if len(payload) < expected:
+            raise RuntimeError(f"Secure benchmark payload too short: got {len(payload)}, expected {expected}")
+        values = struct.unpack(SECURE_BENCHMARK_FMT, payload[:expected])
+        return {name: int(value) for name, value in zip(SECURE_BENCHMARK_NAMES, values)}
+
     def get_device_pubkey(self) -> bytes:
         self.device.send_command(CMD_GET_DEVICE_PUBKEY)
         status, payload = self.device.read_response()
@@ -325,8 +388,8 @@ class VecodiCaseStudy:
 
         # M_update format (plaintext, not encrypted):
         # pk_u(64) | limit(4) | H_{s_id}(32) | T_o(64)
-        # T_o = Sign(sk_u, SHA256(pk_u || limit))
-        msg_to_sign = user_pub_raw + struct.pack("<I", c_limit)
+        # T_o = Sign(sk_u, SHA256(pk_u || limit || H_{s_id}))
+        msg_to_sign = user_pub_raw + struct.pack("<I", c_limit) + self.state.enclave_info
         sig_der = user_key.sign(msg_to_sign, ec.ECDSA(hashes.SHA256()))
         r, s = decode_dss_signature(sig_der)
         sig_raw = r.to_bytes(32, "big") + s.to_bytes(32, "big")  # 64 bytes T_o
@@ -350,8 +413,11 @@ class VecodiCaseStudy:
     def customer_create_enclave(self) -> None:
         log("\n[Model Customer] Step 4 - Create enclave")
         self.device.send_command(CMD_CREATE_ENCLAVE)
-        status, _ = self.device.read_response(timeout=4.0)
+        status, payload = self.device.read_response(timeout=4.0)
         if status != RESP_OK:
+            if len(payload) >= 4:
+                detail = struct.unpack("<i", payload[:4])[0]
+                raise RuntimeError(f"CMD_CREATE_ENCLAVE failed (detail={detail})")
             raise RuntimeError("CMD_CREATE_ENCLAVE failed")
         log("[OK] Enclave created")
 
@@ -587,6 +653,21 @@ class VecodiCaseStudy:
         used = self._timed_call("metrics.used_after_destroy", self.get_inference_count)
         rem = self._timed_call("metrics.remaining_after_destroy", self.get_remaining)
 
+        ns_metrics = self._timed_call("metrics.ns_benchmark", self.read_ns_benchmark)
+        secure_metrics = self._timed_call("metrics.secure_benchmark", self.read_secure_benchmark)
+        self._record_extra(
+            action="metrics.ns_benchmark.all",
+            status="ok",
+            duration_ms=0.0,
+            detail=json.dumps(ns_metrics, separators=(",", ":")),
+        )
+        self._record_extra(
+            action="metrics.secure_benchmark.all",
+            status="ok",
+            duration_ms=0.0,
+            detail=json.dumps(secure_metrics, separators=(",", ":")),
+        )
+
         log("\n========== CASE STUDY SUMMARY ==========")
         log(f"Image from Mac uploaded   : {'YES' if image_payload is not None else 'NO (device/default path)'}")
         log(f"Before destroy -> max/used/rem : {max_before_destroy}/{used_before_destroy}/{rem_before_destroy}")
@@ -594,6 +675,12 @@ class VecodiCaseStudy:
         log(f"Used inference_count      : {used}")
         log(f"Remaining                : {rem}")
         log(f"Decoded PoX responses     : {ok_count}/{num_inferences}")
+        log("\n[NS] All benchmark values")
+        for key in DEVICE_BENCHMARK_NAMES:
+            log(f"  {key}={ns_metrics.get(key, 0)}")
+        log("\n[SECURE] All benchmark values")
+        for key in SECURE_BENCHMARK_NAMES:
+            log(f"  {key}={secure_metrics.get(key, 0)}")
         log("========================================")
         self.print_benchmark_table()
         return 0

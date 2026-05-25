@@ -21,6 +21,22 @@ typedef struct {
     uint64_t late_hash_cycles;
     uint64_t digest_compute_cycles;
     uint64_t authorize_cycles;
+    uint64_t global_crypto_init_cycles;
+
+    /* Fine-grained Authorize/Create metrics */
+    uint64_t create_validate_cycles;
+    uint64_t authorize_parse_cycles;
+    uint64_t authorize_verify_cycles;
+    uint64_t authorize_update_cycles;
+    uint64_t authorize_crypto_init_cycles;
+    uint64_t authorize_read_cycles;
+    uint64_t authorize_import_key_cycles;
+    uint64_t authorize_hash_msg_cycles;
+    uint64_t authorize_verify_sig_cycles;
+    uint64_t authorize_destroy_key_cycles;
+    uint64_t authorize_verify_message_cycles;
+    uint64_t authorize_verify_old_cycles;
+    uint64_t create_recompute_cycles;
     
     /* Counter management */
     uint64_t get_max_cycles;
@@ -47,6 +63,11 @@ typedef struct {
     uint32_t late_hash_count;
     uint32_t digest_count;
     uint32_t authorize_count;
+    uint32_t authorize_crypto_init_count;
+    uint32_t authorize_import_key_count;
+    uint32_t authorize_verify_sig_count;
+    uint32_t authorize_verify_message_count;
+    uint32_t create_recompute_count;
     uint32_t counter_operations;
 
     /* Operation counts for lifecycle / SAU */

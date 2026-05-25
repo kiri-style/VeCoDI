@@ -139,6 +139,12 @@ static void init_secure_model_identity(void)
 static uint8_t  s_pk_u[64]    = {0};  /* User public key (not certificate) */
 static uint32_t s_model_id    = 0;
 static bool     s_auth_valid  = false;
+static bool     s_psa_crypto_initialized = false;
+static psa_key_id_t s_cached_verify_key_id = 0;
+static uint8_t s_cached_pk_u[AUTHORIZE_PK_U_SIZE] = {0};
+static bool s_cached_verify_key_valid = false;
+static uint8_t s_authorize_enclave_info[ENCLAVE_INFO_SIZE] = {0};
+static bool s_authorize_enclave_info_valid = false;
 
 /* Secure-only device signing key and transient inference transaction state. */
 static psa_key_id_t s_device_sign_key_id = 0;
@@ -158,9 +164,59 @@ static void reset_secure_inference_tx_state(void)
     s_tx_model_id = 0U;
 }
 
+static psa_status_t ensure_psa_crypto_initialized(void)
+{
+    if (s_psa_crypto_initialized) {
+        return PSA_SUCCESS;
+    }
+
+    SECURE_BENCHMARK_START(global_crypto_init_start);
+    psa_status_t st = psa_crypto_init();
+    SECURE_BENCHMARK_END(global_crypto_init_start, global_crypto_init_cycles);
+    if (st != PSA_SUCCESS) {
+        printf("[SECURE] PSA Crypto init failed: %d\n", (int)st);
+        return st;
+    }
+
+    s_psa_crypto_initialized = true;
+    printf("[SECURE] PSA Crypto initialized once (cost=%u cycles)\n",
+           (unsigned)g_secure_metrics.global_crypto_init_cycles);
+
+    printf("[SECURE] =========================================\n");
+    printf("[SECURE] PSA Crypto initialized (cost=%u cycles)\n",
+           (unsigned)g_secure_metrics.global_crypto_init_cycles);
+
+#if defined(MBEDTLS_ECDSA_VERIFY_ALT)
+    printf("[SECURE] ECDSA_VERIFY_ALT enabled (HW acceleration)\n");
+#else
+    printf("[SECURE] ECDSA_VERIFY_ALT NOT enabled (software only)\n");
+#endif
+
+#if defined(MBEDTLS_ECDSA_SIGN_ALT)
+    printf("[SECURE] ECDSA_SIGN_ALT enabled (HW acceleration)\n");
+#else
+    printf("[SECURE] ECDSA_SIGN_ALT NOT enabled\n");
+#endif
+
+#if defined(CRYPTO_HW_ACCELERATOR)
+    printf("[SECURE] CRYPTO_HW_ACCELERATOR enabled\n");
+#else
+    printf("[SECURE] CRYPTO_HW_ACCELERATOR NOT enabled\n");
+#endif
+
+#if defined(STM32_PKA)
+    printf("[SECURE] STM32_PKA enabled\n");
+#else
+    printf("[SECURE] STM32_PKA NOT enabled\n");
+#endif
+
+    printf("[SECURE] =========================================\n");
+    return PSA_SUCCESS;
+}
+
 static psa_status_t init_secure_device_signing_key(void)
 {
-    psa_status_t st = psa_crypto_init();
+    psa_status_t st = ensure_psa_crypto_initialized();
     if (st != PSA_SUCCESS) {
         return st;
     }
@@ -510,7 +566,7 @@ static psa_status_t validate_current_enclave_info_against_boot(uint8_t *match_ou
  * Input:  encrypted blob (in[1]) + IV (in[2])
  * Output: decrypted bytes (out[0])
  */
-static psa_status_t tfm_dp_decrypt_late_weights(psa_msg_t *msg)
+static psa_status_t tfm_dp_decrypt_late_weights(psa_msg_t *msg, const uint8_t *iv_override)
 {
     if (msg->in_size[1] == 0 || msg->out_size[0] == 0 || msg->in_size[2] < 16) {
         return PSA_ERROR_INVALID_ARGUMENT;
@@ -537,7 +593,11 @@ static psa_status_t tfm_dp_decrypt_late_weights(psa_msg_t *msg)
     }
 
     uint8_t iv[16];
-    psa_read(msg->handle, 2, iv, sizeof(iv));
+    if (iv_override != NULL) {
+        memcpy(iv, iv_override, sizeof(iv));
+    } else {
+        psa_read(msg->handle, 2, iv, sizeof(iv));
+    }
 
     psa_cipher_operation_t op = PSA_CIPHER_OPERATION_INIT;
     status = psa_cipher_decrypt_setup(&op, key_id, PSA_ALG_CTR);
@@ -1133,7 +1193,45 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
             printf("[SECURE] CREATE: in_size[0]=%zu in_size[1]=%zu in_size[2]=%zu in_size[3]=%zu out_size[0]=%zu\n",
                    msg->in_size[0], msg->in_size[1], msg->in_size[2], msg->in_size[3], msg->out_size[0]);
 
-            psa_status_t st = tfm_dp_decrypt_late_weights(msg);
+            if (msg->in_size[2] < (16U + ENCLAVE_INFO_SIZE)) {
+                printf("[SECURE] CREATE: missing Hs_id in in[2], need %u bytes (IV+Hs_id)\n",
+                       (unsigned)(16U + ENCLAVE_INFO_SIZE));
+                return PSA_ERROR_INVALID_ARGUMENT;
+            }
+
+            uint8_t iv[16] = {0};
+            uint8_t received_enclave_info[ENCLAVE_INFO_SIZE] = {0};
+            psa_read(msg->handle, 2, iv, sizeof(iv));
+            psa_read(msg->handle, 2, received_enclave_info, sizeof(received_enclave_info));
+
+            SECURE_BENCHMARK_START(create_validate_start);
+            SECURE_BENCHMARK_START(create_recompute_start);
+            psa_status_t st = recompute_current_enclave_info();
+            SECURE_BENCHMARK_END(create_recompute_start, create_recompute_cycles);
+            g_secure_metrics.create_recompute_count++;
+            if (st != PSA_SUCCESS) {
+                printf("[SECURE] CREATE: current EnclaveInfo recompute failed: %d\n", (int)st);
+                SECURE_BENCHMARK_END(create_validate_start, create_validate_cycles);
+                return st;
+            }
+
+            if (!s_authorize_enclave_info_valid ||
+                !secure_memequal(received_enclave_info, s_authorize_enclave_info, ENCLAVE_INFO_SIZE) ||
+                !secure_memequal(received_enclave_info, current_enclave_info, ENCLAVE_INFO_SIZE)) {
+                printf("[SECURE] CREATE: EnclaveInfo mismatch - possible tampering between Authorize and Create!\n");
+                printf("[SECURE]   Current : ");
+                for (int i = 0; i < 16; i++) printf("%02X ", current_enclave_info[i]);
+                printf("\n[SECURE]   Received: ");
+                for (int i = 0; i < 16; i++) printf("%02X ", received_enclave_info[i]);
+                printf("\n");
+                SECURE_BENCHMARK_END(create_validate_start, create_validate_cycles);
+                return PSA_ERROR_INVALID_SIGNATURE;
+            }
+
+            printf("[SECURE] CREATE: EnclaveInfo validated against current SAU registrations\n");
+            SECURE_BENCHMARK_END(create_validate_start, create_validate_cycles);
+
+            st = tfm_dp_decrypt_late_weights(msg, iv);
             if (st != PSA_SUCCESS) {
                 printf("[SECURE] CREATE: decrypt failed st=%d\n", (int)st);
                 return st;
@@ -1143,7 +1241,6 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
             uint32_t raw_base = 0U;
             uint32_t raw_size = 0U;
 
-            /* Accept either the preferred in[3] layout or the legacy in[2] tail. */
             if (msg->in_size[3] == 8U) {
                 uint32_t params[2] = {0U, 0U};
                 psa_read(msg->handle, 3, params, sizeof(params));
@@ -1152,8 +1249,7 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
 
                 printf("[SECURE SAU] CREATE: raw params from in[3] base=0x%08X size=0x%08X\n",
                        raw_base, raw_size);
-            }
-            else if (msg->in_size[2] >= 24U) {
+            } else if (msg->in_size[2] >= (16U + ENCLAVE_INFO_SIZE + 8U)) {
                 uint32_t params[2] = {0U, 0U};
                 psa_read(msg->handle, 2, params, sizeof(params));
                 raw_base = params[0];
@@ -1161,8 +1257,7 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
 
                 printf("[SECURE SAU] CREATE: raw params from in[2] tail base=0x%08X size=0x%08X\n",
                        raw_base, raw_size);
-            }
-            else {
+            } else {
                 printf("[SECURE SAU] CREATE: missing enclave window parameters\n");
                 return PSA_ERROR_INVALID_ARGUMENT;
             }
@@ -1673,7 +1768,7 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
               *  - pk_u (64 bytes): user public key
               *  - limit (4 bytes): inference limit
               *  - H_{s_id} (32 bytes): enclave info hash
-              *  - T_o (64 bytes): signature over pk_u || limit (ECDSA P-256)
+             *  - T_o (64 bytes): signature over pk_u || limit || H_{s_id} (ECDSA P-256)
               */
              printf("[SECURE] DP_CMD_VALIDATE_AUTHORIZE received\n");
              printf("[SECURE]   in_size[1]=%zu (M_update plaintext)\n", msg->in_size[1]);
@@ -1684,6 +1779,7 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
              /* Alg line 6: function precondition - ensure model identity context exists */
              if (!current_model_info_valid) {
                  printf("[SECURE] Authorize rejected: model identity context unavailable\n");
+                 SECURE_BENCHMARK_END(authorize_start, authorize_cycles);
                  return PSA_ERROR_BAD_STATE;
              }
 
@@ -1693,18 +1789,23 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
              if (m_update_len != AUTHORIZE_PLAINTEXT_SIZE) {
                  printf("[SECURE] M_update invalid size: got %zu, expected %zu\n", 
                         m_update_len, AUTHORIZE_PLAINTEXT_SIZE);
+                 SECURE_BENCHMARK_END(authorize_start, authorize_cycles);
                  return PSA_ERROR_INVALID_ARGUMENT;
              }
              
              /* out[0] must fit: limit(4) + pk_u(64) = 68 bytes */
              if (msg->out_size[0] < (4U + AUTHORIZE_PK_U_SIZE)) {
+                 SECURE_BENCHMARK_END(authorize_start, authorize_cycles);
                  return PSA_ERROR_INVALID_ARGUMENT;
              }
 
              /* Read M_update plaintext. */
              uint8_t m_update[AUTHORIZE_PLAINTEXT_SIZE];
+             SECURE_BENCHMARK_START(authorize_read_start);
              psa_read(msg->handle, 1, m_update, m_update_len);
+             SECURE_BENCHMARK_END(authorize_read_start, authorize_read_cycles);
 
+             SECURE_BENCHMARK_START(authorize_parse_start);
              /* Parse M_update: pk_u(64) | limit(4) | H_{s_id}(32) | T_o(64) */
              size_t off = 0;
              uint8_t *pk_u_ptr             = &m_update[off]; off += AUTHORIZE_PK_U_SIZE;
@@ -1716,27 +1817,26 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
              printf("[SECURE] M_update parsed: limit=%u, enclave_info_ptr=%p, signature_ptr=%p\n",
                     c_limit, enclave_info_rcvd, signature_ptr);
 
-             /*
-              * Alg line 7: ensure H_{s_id} (enclave_info) matches
-              * the expected, sealed boot-time EnclaveInfo. Abort if mismatch.
-              */
-             status = seal_boot_enclave_info_once();
-             if (status != PSA_SUCCESS) {
-                 secure_memzero(m_update, sizeof(m_update));
-                 return status;
-             }
-             if (!secure_memequal(enclave_info_rcvd, boot_enclave_info, ENCLAVE_INFO_SIZE)) {
-                 printf("[SECURE] M_update EnclaveInfo mismatch\n");
-                 secure_memzero(m_update, sizeof(m_update));
-                 return PSA_ERROR_INVALID_ARGUMENT;
-             }
+             printf("[SECURE] Authorize received EnclaveInfo (will be validated during Create)\n");
+             printf("[SECURE] EnclaveInfo (first 16 bytes): ");
+             for (int i = 0; i < 16; i++) printf("%02X ", enclave_info_rcvd[i]);
+             printf("\n");
+             SECURE_BENCHMARK_END(authorize_parse_start, authorize_parse_cycles);
+             memcpy(s_authorize_enclave_info, enclave_info_rcvd, ENCLAVE_INFO_SIZE);
+             s_authorize_enclave_info_valid = true;
 
              /*
-              * Alg line 9: Verify(...) -- verify signature T_o over (pk_u || limit)
+             * Alg line 9: Verify(...) -- verify signature T_o over (pk_u || limit || H_{s_id})
               * Signature verification ensures integrity and authenticity of M_update.
               */
-             status = psa_crypto_init();
+             SECURE_BENCHMARK_START(authorize_verify_start);
+             SECURE_BENCHMARK_START(authorize_crypto_init_start);
+             status = ensure_psa_crypto_initialized();
+             SECURE_BENCHMARK_END(authorize_crypto_init_start, authorize_crypto_init_cycles);
+             g_secure_metrics.authorize_crypto_init_count++;
              if (status != PSA_SUCCESS) {
+                 SECURE_BENCHMARK_END(authorize_verify_start, authorize_verify_cycles);
+                 SECURE_BENCHMARK_END(authorize_start, authorize_cycles);
                  secure_memzero(m_update, sizeof(m_update));
                  return status;
              }
@@ -1754,47 +1854,56 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
              psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_VERIFY_HASH);
              psa_set_key_algorithm(&attr, PSA_ALG_ECDSA(PSA_ALG_SHA_256));
 
-             psa_key_id_t verify_key_id;
-             status = psa_import_key(&attr, pk_u_ec_point, sizeof(pk_u_ec_point), &verify_key_id);
+             psa_key_id_t verify_key_id = 0;
+             bool key_reused = false;
+             bool imported_new_key = false;
+             bool cache_adopted = false;
+
+             SECURE_BENCHMARK_START(authorize_import_key_start);
+             if (s_cached_verify_key_valid &&
+                 memcmp(pk_u_ptr, s_cached_pk_u, AUTHORIZE_PK_U_SIZE) == 0) {
+                 verify_key_id = s_cached_verify_key_id;
+                 key_reused = true;
+                 printf("[SECURE] Authorize: reusing cached verification key\n");
+             } else {
+                 status = psa_import_key(&attr, pk_u_ec_point, sizeof(pk_u_ec_point), &verify_key_id);
+                 if (status != PSA_SUCCESS) {
+                     psa_reset_key_attributes(&attr);
+                     printf("[SECURE] Failed to import user public key for verification: %d\n", (int)status);
+                     SECURE_BENCHMARK_END(authorize_import_key_start, authorize_import_key_cycles);
+                     SECURE_BENCHMARK_END(authorize_verify_start, authorize_verify_cycles);
+                     SECURE_BENCHMARK_END(authorize_start, authorize_cycles);
+                     secure_memzero(m_update, sizeof(m_update));
+                     secure_memzero(pk_u_ec_point, sizeof(pk_u_ec_point));
+                     return status;
+                 }
+                 imported_new_key = true;
+                 g_secure_metrics.authorize_import_key_count++;
+             }
              psa_reset_key_attributes(&attr);
-             if (status != PSA_SUCCESS) {
-                 printf("[SECURE] Failed to import user public key for verification: %d\n", (int)status);
-                 secure_memzero(m_update, sizeof(m_update));
-                 secure_memzero(pk_u_ec_point, sizeof(pk_u_ec_point));
-                 return status;
-             }
-
-             /* Hash the message (pk_u || limit) for signature verification. */
-             uint8_t msg_to_sign[AUTHORIZE_PK_U_SIZE + 4];
-             memcpy(msg_to_sign, pk_u_ptr, AUTHORIZE_PK_U_SIZE);
-             memcpy(msg_to_sign + AUTHORIZE_PK_U_SIZE, &c_limit, 4);
-
-             uint8_t msg_hash[32];  /* SHA-256 */
-             size_t hash_len = 0;
-             status = psa_hash_compute(PSA_ALG_SHA_256,
-                                       msg_to_sign, sizeof(msg_to_sign),
-                                       msg_hash, sizeof(msg_hash),
-                                       &hash_len);
-             if (status != PSA_SUCCESS) {
-                 printf("[SECURE] Failed to hash message: %d\n", (int)status);
-                 psa_destroy_key(verify_key_id);
-                 secure_memzero(m_update, sizeof(m_update));
-                 secure_memzero(msg_to_sign, sizeof(msg_to_sign));
-                 return status;
-             }
-
-             /* Verify signature. */
-             status = psa_verify_hash(verify_key_id, PSA_ALG_ECDSA(PSA_ALG_SHA_256),
-                                      msg_hash, hash_len,
-                                      signature_ptr, AUTHORIZE_SIGNATURE_SIZE);
-             psa_destroy_key(verify_key_id);
+             SECURE_BENCHMARK_END(authorize_import_key_start, authorize_import_key_cycles);
+             /* Verify signature directly on the message to avoid a second hash pass. */
+             SECURE_BENCHMARK_START(authorize_verify_message_start);
+             status = psa_verify_message(verify_key_id,
+                                         PSA_ALG_ECDSA(PSA_ALG_SHA_256),
+                                         m_update,
+                                         AUTHORIZE_PLAINTEXT_SIZE - AUTHORIZE_SIGNATURE_SIZE,
+                                         signature_ptr,
+                                         AUTHORIZE_SIGNATURE_SIZE);
+             SECURE_BENCHMARK_END(authorize_verify_message_start, authorize_verify_message_cycles);
+             g_secure_metrics.authorize_verify_message_count++;
 
              if (status != PSA_SUCCESS) {
                  printf("[SECURE] Authorize signature verification failed: %d\n", (int)status);
+                 if (imported_new_key && verify_key_id != 0U) {
+                     SECURE_BENCHMARK_START(authorize_destroy_key_start);
+                     psa_destroy_key(verify_key_id);
+                     SECURE_BENCHMARK_END(authorize_destroy_key_start, authorize_destroy_key_cycles);
+                 }
+                 SECURE_BENCHMARK_END(authorize_verify_start, authorize_verify_cycles);
+                 SECURE_BENCHMARK_END(authorize_start, authorize_cycles);
                  secure_memzero(m_update, sizeof(m_update));
                  secure_memzero(pk_u_ec_point, sizeof(pk_u_ec_point));
-                 secure_memzero(msg_to_sign, sizeof(msg_to_sign));
-                 secure_memzero(msg_hash, sizeof(msg_hash));
                  return PSA_ERROR_INVALID_SIGNATURE;
              }
 
@@ -1805,17 +1914,43 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
              if (c_limit <= last_accepted_counter_limit) {
                  printf("[SECURE] Anti-replay check failed: limit %u <= previous %u\n",
                         c_limit, last_accepted_counter_limit);
+                 if (imported_new_key && verify_key_id != 0U) {
+                     SECURE_BENCHMARK_START(authorize_destroy_key_start);
+                     psa_destroy_key(verify_key_id);
+                     SECURE_BENCHMARK_END(authorize_destroy_key_start, authorize_destroy_key_cycles);
+                 }
+                 SECURE_BENCHMARK_END(authorize_verify_start, authorize_verify_cycles);
+                 SECURE_BENCHMARK_END(authorize_start, authorize_cycles);
                  secure_memzero(m_update, sizeof(m_update));
-                 secure_memzero(msg_to_sign, sizeof(msg_to_sign));
-                 secure_memzero(msg_hash, sizeof(msg_hash));
                  return PSA_ERROR_NOT_PERMITTED;
              }
+
+             if (imported_new_key) {
+                 if (s_cached_verify_key_valid && s_cached_verify_key_id != 0U) {
+                     SECURE_BENCHMARK_START(authorize_destroy_key_start);
+                     psa_destroy_key(s_cached_verify_key_id);
+                     SECURE_BENCHMARK_END(authorize_destroy_key_start, authorize_destroy_key_cycles);
+                 }
+                 s_cached_verify_key_id = verify_key_id;
+                 memcpy(s_cached_pk_u, pk_u_ptr, AUTHORIZE_PK_U_SIZE);
+                 s_cached_verify_key_valid = true;
+                 cache_adopted = true;
+             }
+
+             if (!key_reused && !cache_adopted && verify_key_id != 0U) {
+                 SECURE_BENCHMARK_START(authorize_destroy_key_start);
+                 psa_destroy_key(verify_key_id);
+                 SECURE_BENCHMARK_END(authorize_destroy_key_start, authorize_destroy_key_cycles);
+             }
+             g_secure_metrics.authorize_verify_sig_cycles = g_secure_metrics.authorize_verify_message_cycles;
+             SECURE_BENCHMARK_END(authorize_verify_start, authorize_verify_cycles);
 
              /*
               * Alg line 10: update the certificate table entry CT_X[H_{s_id}]
               * with the new user public key (pk_u) and limit.
               */
              /* All checks passed — update Secure state atomically. */
+             SECURE_BENCHMARK_START(authorize_update_start);
              last_accepted_counter_limit       = c_limit;
              max_inferences_per_enclave_secure = c_limit;
              inference_counter_secure          = 0;
@@ -1824,6 +1959,7 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
              memcpy(s_pk_u, pk_u_ptr, AUTHORIZE_PK_U_SIZE);
              s_model_id = 0;  /* Model ID not part of new M_update format */
              s_auth_valid = true;
+             SECURE_BENCHMARK_END(authorize_update_start, authorize_update_cycles);
 
              printf("[SECURE] Authorize OK: limit=%u, sig verified\n", c_limit);
 
@@ -1840,8 +1976,6 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
              /* Zeroize sensitive data. */
              secure_memzero(m_update, sizeof(m_update));
              secure_memzero(pk_u_ec_point, sizeof(pk_u_ec_point));
-             secure_memzero(msg_to_sign, sizeof(msg_to_sign));
-             secure_memzero(msg_hash, sizeof(msg_hash));
              secure_memzero(resp, sizeof(resp));
 
              SECURE_BENCHMARK_END(authorize_start, authorize_cycles);
@@ -2114,6 +2248,11 @@ psa_status_t tfm_dp_req_mngr_init(void)
 
     /* Initialize secure-only model identity and cache EnclaveInfo in S world. */
     init_secure_model_identity();
+
+    psa_status_t crypto_st = ensure_psa_crypto_initialized();
+    if (crypto_st != PSA_SUCCESS) {
+        return crypto_st;
+    }
 
     psa_status_t key_st = init_secure_device_signing_key();
     if (key_st != PSA_SUCCESS) {
