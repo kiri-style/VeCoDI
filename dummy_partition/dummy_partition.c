@@ -164,6 +164,9 @@ static void reset_secure_inference_tx_state(void)
     s_tx_model_id = 0U;
 }
 
+/* Forward declaration for diagnostics function (defined later) */
+static void print_crypto_capabilities(void);
+
 static psa_status_t ensure_psa_crypto_initialized(void)
 {
     if (s_psa_crypto_initialized) {
@@ -179,6 +182,8 @@ static psa_status_t ensure_psa_crypto_initialized(void)
     }
 
     s_psa_crypto_initialized = true;
+    /* Diagnostic print of detected crypto capabilities */
+    print_crypto_capabilities();
     printf("[SECURE] PSA Crypto initialized once (cost=%u cycles)\n",
            (unsigned)g_secure_metrics.global_crypto_init_cycles);
 
@@ -290,6 +295,29 @@ static void secure_memzero(void *ptr, size_t len)
     while (len--) {
         *p++ = 0;
     }
+}
+
+/* Diagnostic: print compile-time crypto capability macros detected */
+static void print_crypto_capabilities(void)
+{
+    printf("[SECURE] =========================================\n");
+    printf("[SECURE] Crypto Hardware Status:\n");
+#ifdef CONFIG_STM32_PKA
+    printf("[SECURE]   ✅ STM32_PKA enabled\n");
+#else
+    printf("[SECURE]   STM32_PKA NOT enabled\n");
+#endif
+#ifdef CONFIG_PSA_CRYPTO_DRIVER_STM32_PKA
+    printf("[SECURE]   ✅ PSA_CRYPTO_DRIVER_STM32_PKA enabled\n");
+#else
+    printf("[SECURE]   PSA_CRYPTO_DRIVER_STM32_PKA NOT enabled\n");
+#endif
+#ifdef CONFIG_MBEDTLS_ECDSA_VERIFY_ALT
+    printf("[SECURE]   ✅ MBEDTLS_ECDSA_VERIFY_ALT enabled\n");
+#else
+    printf("[SECURE]   MBEDTLS_ECDSA_VERIFY_ALT NOT enabled\n");
+#endif
+    printf("[SECURE] =========================================\n");
 }
 
 /* Example secrets for digest requests. */

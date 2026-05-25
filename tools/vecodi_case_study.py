@@ -243,12 +243,10 @@ class VecodiCaseStudy:
             detail = str(exc)
             raise
         finally:
-            duration_ms = (time.perf_counter() - start) * 1000.0
             self.benchmarks.append(
                 {
                     "action": action,
                     "status": status,
-                    "duration_ms": round(duration_ms, 3),
                     "detail": detail,
                 }
             )
@@ -636,7 +634,6 @@ class VecodiCaseStudy:
                 self._record_extra(
                     action=f"customer.verified_inference.run_{idx + 1}.meta",
                     status="ok",
-                    duration_ms=0.0,
                     detail=json.dumps(self.last_inference_meta),
                 )
             if pred >= 0:
@@ -658,13 +655,11 @@ class VecodiCaseStudy:
         self._record_extra(
             action="metrics.ns_benchmark.all",
             status="ok",
-            duration_ms=0.0,
             detail=json.dumps(ns_metrics, separators=(",", ":")),
         )
         self._record_extra(
             action="metrics.secure_benchmark.all",
             status="ok",
-            duration_ms=0.0,
             detail=json.dumps(secure_metrics, separators=(",", ":")),
         )
 
@@ -682,15 +677,117 @@ class VecodiCaseStudy:
         for key in SECURE_BENCHMARK_NAMES:
             log(f"  {key}={secure_metrics.get(key, 0)}")
         log("========================================")
+        self.print_cycles_report(secure_metrics)
         self.print_benchmark_table()
         return 0
 
+    @staticmethod
+    def _fmt_cycles(value: int) -> str:
+        return f"{value:,} cycles"
+
+    @staticmethod
+    def _fmt_ratio(numerator: int, denominator: int) -> str:
+        if numerator <= 0 or denominator <= 0:
+            return "0x"
+        return f"{max(1, numerator // denominator):,}x"
+
+    def format_authorize_comparison(self, metrics: Dict[str, int]) -> str:
+        sw_total_cycles = metrics.get("authorize_cycles", 0)
+        if sw_total_cycles == 0:
+            return ""
+
+        sw_read = metrics.get("authorize_read_cycles", 0)
+        sw_parse = metrics.get("authorize_parse_cycles", 0)
+        sw_crypto_init = metrics.get("authorize_crypto_init_cycles", 0)
+        sw_import = metrics.get("authorize_import_key_cycles", 0)
+        sw_verify = metrics.get("authorize_verify_message_cycles", metrics.get("authorize_verify_sig_cycles", 0))
+        sw_update = metrics.get("authorize_update_cycles", 0)
+
+        hw_verify = 5000
+        hw_total_cycles = max(0, sw_total_cycles - sw_verify + hw_verify)
+        speedup = (sw_total_cycles / hw_total_cycles) if hw_total_cycles > 0 else 0.0
+        sw_verify_pct = (sw_verify / sw_total_cycles * 100.0) if sw_total_cycles > 0 else 0.0
+        hw_verify_pct = (hw_verify / hw_total_cycles * 100.0) if hw_total_cycles > 0 else 0.0
+
+        lines = [
+            "╔════════════════════════════════════════════════════════════════════════════════════════════╗",
+            "║                           AUTHORIZE PERFORMANCE COMPARISON                                  ║",
+            "╠════════════════════════════════════════╤═══════════════════════════════════════════════════╣",
+            "║         SOFTWARE (actuel)              │         HARDWARE (avec PKA - théorique)           ║",
+            "╠════════════════════════════════════════╪═══════════════════════════════════════════════════╣",
+            f"║ Total: {self._fmt_cycles(sw_total_cycles):<29}│ Total: {self._fmt_cycles(hw_total_cycles)} [{speedup:.0f}x faster] ║",
+            "╠════════════════════════════════════════╪═══════════════════════════════════════════════════╣",
+            f"║ ├── PSA Read          : {self._fmt_cycles(sw_read):<18}│ ├── PSA Read          : {self._fmt_cycles(sw_read):<18} ║",
+            f"║ ├── Parsing           : {self._fmt_cycles(sw_parse):<18}│ ├── Parsing           : {self._fmt_cycles(sw_parse):<18} ║",
+            f"║ ├── Crypto init       : {self._fmt_cycles(sw_crypto_init):<18}│ ├── Crypto init       : {self._fmt_cycles(sw_crypto_init):<18} ║",
+            f"║ ├── Import public key : {self._fmt_cycles(sw_import):<18}│ ├── Import public key : {self._fmt_cycles(sw_import):<18} ║",
+            f"║ ├── ECDSA VERIFY      : {self._fmt_cycles(sw_verify):<18}│ ├── ECDSA VERIFY (HW) : {self._fmt_cycles(hw_verify):<18} ║",
+            f"║ │   └── {sw_verify_pct:.1f}% du temps{' ' * 12}│ │   └── {hw_verify_pct:.1f}% du temps{' ' * 22}║",
+            f"║ └── Update state      : {self._fmt_cycles(sw_update):<18}│ └── Update state      : {self._fmt_cycles(sw_update):<18} ║",
+            "╠════════════════════════════════════════╧═══════════════════════════════════════════════════╣",
+            f"║ ⚠️ Bottleneck: ECDSA software ({self._fmt_cycles(sw_verify)}){' ' * 43}║",
+            f"║ ✅ Gain potentiel PKA : {self._fmt_cycles(sw_verify)} → {self._fmt_cycles(hw_verify)} ({self._fmt_ratio(sw_verify, hw_verify)} plus rapide){' ' * 16}║",
+            "╚════════════════════════════════════════════════════════════════════════════════════════════╝",
+        ]
+        return "\n".join(lines)
+
+    def format_api_breakdown(self, metrics: Dict[str, int], api_name: str, fields: Dict[str, Any]) -> str:
+        total_cycles = metrics.get(fields.get("total_key", ""), 0)
+        if total_cycles == 0:
+            return ""
+
+        output = [f"\n{api_name} - {self._fmt_cycles(total_cycles)} total"]
+        for name, key in fields.get("children", []):
+            cycles = metrics.get(key, 0)
+            if cycles == 0:
+                continue
+            percent = (cycles / total_cycles * 100.0) if total_cycles > 0 else 0.0
+            bottleneck = "  ← bottleneck" if percent > 50.0 else ""
+            output.append(f"├── {name:<18} : {self._fmt_cycles(cycles):<18} [{percent:.1f}%]{bottleneck}")
+        return "\n".join(output)
+
+    def print_cycles_report(self, secure_metrics: Dict[str, int]) -> None:
+        log("\n========== AUTHORIZE PERFORMANCE COMPARISON ==========")
+        log(self.format_authorize_comparison(secure_metrics))
+
+        apis = {
+            "Create": {
+                "total_key": "create_enclave_cycles",
+                "children": [
+                    ("EnclaveInfo recalc", "create_recompute_cycles"),
+                    ("AES decrypt", "aes_decrypt_cycles"),
+                    ("SAU registration", "create_validate_cycles"),
+                ],
+            },
+            "Execute": {
+                "total_key": "inf_complete_cycles",
+                "children": [
+                    ("M_inf verification", "inf_start_cycles"),
+                    ("SAU open/close", "sau_sync_open_cycles"),
+                    ("PoX signing", "inf_complete_cycles"),
+                ],
+            },
+            "Destroy": {
+                "total_key": "destroy_enclave_cycles",
+                "children": [
+                    ("Memory zeroization", "destroy_enclave_cycles"),
+                    ("SAU restore", "sau_sync_close_cycles"),
+                ],
+            },
+        }
+
+        log("\n========== API BREAKDOWN (cycles) ==========")
+        for api_name, fields in apis.items():
+            breakdown = self.format_api_breakdown(secure_metrics, api_name, fields)
+            if breakdown:
+                log(breakdown)
+
     def print_benchmark_table(self) -> None:
         log("\n========== DETAILED BENCHMARK (HOST) ==========")
-        log("action,status,duration_ms,detail")
+        log("action,status,detail")
         for row in self.benchmarks:
             detail = str(row.get("detail", "")).replace("\n", " ").replace(",", ";")
-            log(f"{row.get('action','')},{row.get('status','')},{row.get('duration_ms',0.0)},{detail}")
+            log(f"{row.get('action','')},{row.get('status','')},{detail}")
         log("================================================")
 
     def write_benchmark_json(self, output_path: str) -> None:
@@ -705,14 +802,13 @@ class VecodiCaseStudy:
 
     def write_benchmark_csv(self, output_path: str) -> None:
         with open(output_path, "w", encoding="utf-8", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=["action", "status", "duration_ms", "detail"])
+            writer = csv.DictWriter(handle, fieldnames=["action", "status", "detail"])
             writer.writeheader()
             for row in self.benchmarks:
                 writer.writerow(
                     {
                         "action": row.get("action", ""),
                         "status": row.get("status", ""),
-                        "duration_ms": row.get("duration_ms", 0.0),
                         "detail": row.get("detail", ""),
                     }
                 )
