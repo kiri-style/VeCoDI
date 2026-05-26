@@ -733,12 +733,22 @@ class VecodiCaseStudy:
 
     def format_api_breakdown(self, metrics: Dict[str, int], api_name: str, fields: Dict[str, Any]) -> str:
         total_cycles = metrics.get(fields.get("total_key", ""), 0)
+
+        # Compute child sum when child keys are available. If present and
+        # non-zero, prefer the summed value to ensure the reported 'total'
+        # equals the sum of its breakdown parts (avoids residual attribution).
+        child_keys = [key for (_n, key) in fields.get("children", [])]
+        child_sum = sum(int(metrics.get(k, 0)) for k in child_keys)
+
+        if child_sum > 0:
+            total_cycles = child_sum
+
         if total_cycles == 0:
             return ""
 
         output = [f"\n{api_name} - {self._fmt_cycles(total_cycles)} total"]
         for name, key in fields.get("children", []):
-            cycles = metrics.get(key, 0)
+            cycles = int(metrics.get(key, 0))
             if cycles == 0:
                 continue
             percent = (cycles / total_cycles * 100.0) if total_cycles > 0 else 0.0

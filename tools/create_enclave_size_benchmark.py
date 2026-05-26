@@ -150,7 +150,9 @@ def print_breakdown(size_bytes, secure_metrics):
 
     enclave_recalc_cycles = int(secure_metrics.get('secure_create_recompute', 0))
     aes_decrypt_cycles = int(secure_metrics.get('secure_aes_decrypt', 0))
-    sau_registration_cycles = max(create_total - enclave_recalc_cycles - aes_decrypt_cycles, 0)
+    # Use explicit SAU registration metric when available to avoid residual-based
+    # computations that can cause inconsistencies with other reports.
+    sau_registration_cycles = int(secure_metrics.get('secure_create_validate', 0))
 
     sau_restore_cycles = int(secure_metrics.get('secure_destroy_sau_open', 0))
     if sau_restore_cycles == 0:
