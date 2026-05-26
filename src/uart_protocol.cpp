@@ -375,10 +375,10 @@ static bool is_valid_len_for_cmd(uint8_t cmd, uint32_t len)
         case CMD_GET_AUTHORIZE_DEBUG:
             return len == 0U;
         case CMD_RUN_INFERENCE:
-            /* Verified-only protocol: encrypted M_inf packet nonce(12)+ciphertext(100)+tag(16). */
-            return (len == 128U);
+            /* Verified-only protocol: plaintext M_inf model_id(4)+code_hash(32)+signature(64). */
+            return (len == VERIFIED_MINF_SIZE_BYTES);
         case CMD_RUN_INFERENCE_WITH_IMAGE:
-            /* Photo upload + verified inference: label(1) + image(3072) + encrypted M_inf(128). */
+            /* Photo upload + verified inference: label(1) + image(3072) + plaintext M_inf(100). */
             return len == RUN_WITH_IMAGE_DATA_SIZE;
         case CMD_SET_MAX_INFERENCES:
         case CMD_UPDATE_RATE_LIMIT:
@@ -892,7 +892,6 @@ static void handle_run_inference_common(const uint8_t *minf_data, uint32_t minf_
     } full_execute_scope;
 
     g_benchmark_metrics.inference_requests_total++;
-    uint32_t cmd = CMD_RUN_INFERENCE;
 
     /* Input: plaintext M_inf model_id(4) || code_hash(32) || signature(64) = 100 bytes */
     if (!session_key_established || minf_len != VERIFIED_MINF_SIZE_BYTES) {
@@ -915,6 +914,10 @@ static void handle_run_inference_common(const uint8_t *minf_data, uint32_t minf_
         return;
     }
 
+    /* Open SAU from Secure side first, then execute locally,
+     * then close/commit in Secure. Host still receives only
+     * prediction + expected label (2 bytes).
+     */
     psa_handle_t handle = psa_connect(TFM_DP_SERVICE_SID, 1);
     if (handle <= 0) {
         uint8_t err[8];
@@ -926,28 +929,11 @@ static void handle_run_inference_common(const uint8_t *minf_data, uint32_t minf_
         return;
     }
 
-    uint8_t response[65];
-    psa_invec in_vec[2] = {
-        { &cmd, sizeof(cmd) },
-        { minf_data, minf_len }
-    };
-    psa_outvec out_vec[1] = {
-        { response, sizeof(response) }
-    };
-    uint32_t cycles_start = benchmark_get_cycles();
-    unsigned int irq_key = irq_lock();
-    psa_status_t st = psa_call(handle, PSA_IPC_CALL, in_vec, 2, out_vec, 1);
-
-    uint32_t irq_atomic_elapsed = benchmark_get_cycles() - cycles_start;
-    BENCHMARK_ACCUMULATE(irq_atomic_elapsed,
-                         g_benchmark_metrics.irq_atomic_sum_cycles,
-                         g_benchmark_metrics.irq_atomic_min_cycles,
-                         g_benchmark_metrics.irq_atomic_max_cycles,
-                         g_benchmark_metrics.irq_atomic_count);
-    irq_unlock(irq_key);
-    psa_close(handle);
-
+    uint32_t open_cmd = DP_CMD_INF_START;
+    psa_invec in_open = { &open_cmd, sizeof(open_cmd) };
+    psa_status_t st = psa_call(handle, PSA_IPC_CALL, &in_open, 1, NULL, 0);
     if (st != PSA_SUCCESS) {
+        psa_close(handle);
         uint8_t err[8];
         uint32_t stage = 5U;
         int32_t detail = (int32_t)st;
@@ -957,8 +943,41 @@ static void handle_run_inference_common(const uint8_t *minf_data, uint32_t minf_
         return;
     }
 
+    uint8_t output_class = 0U;
+    int exec_ret = execute_verified_inference(1U, &output_class);
+    if (exec_ret != 0) {
+        uint32_t close_cmd_fail = DP_CMD_INF_COMPLETE;
+        psa_invec in_close_fail = { &close_cmd_fail, sizeof(close_cmd_fail) };
+        (void)psa_call(handle, PSA_IPC_CALL, &in_close_fail, 1, NULL, 0);
+        psa_close(handle);
+        uint8_t err[8];
+        uint32_t stage = 6U;
+        int32_t detail = exec_ret;
+        memcpy(err, &stage, sizeof(stage));
+        memcpy(err + 4U, &detail, sizeof(detail));
+        uart_protocol_send_response(RESP_ERROR, err, sizeof(err));
+        return;
+    }
+
+    uint32_t close_cmd = DP_CMD_INF_COMPLETE;
+    psa_invec in_close = { &close_cmd, sizeof(close_cmd) };
+    st = psa_call(handle, PSA_IPC_CALL, &in_close, 1, NULL, 0);
+    psa_close(handle);
+    if (st != PSA_SUCCESS) {
+        uint8_t err[8];
+        uint32_t stage = 7U;
+        int32_t detail = (int32_t)st;
+        memcpy(err, &stage, sizeof(stage));
+        memcpy(err + 4U, &detail, sizeof(detail));
+        uart_protocol_send_response(RESP_ERROR, err, sizeof(err));
+        return;
+    }
+
     mock_inference_count++;
-    uart_protocol_send_response(RESP_OK, response, sizeof(response));
+    uint8_t resp2[2];
+    resp2[0] = output_class;
+    resp2[1] = get_last_expected_label();
+    uart_protocol_send_response(RESP_OK, resp2, sizeof(resp2));
 }
 
 static void handle_run_inference(void)

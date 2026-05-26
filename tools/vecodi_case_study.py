@@ -80,6 +80,8 @@ CMD_DESTROY_ENCLAVE = 0x12
 CMD_RUN_INFERENCE_WITH_IMAGE = 0x14
 CMD_GET_BENCHMARK = 0x08
 CMD_GET_SECURE_BENCHMARK = 0x09
+CMD_GET_INFERENCE_RESULT = 0x0A
+CMD_GET_INFERENCE_TRACE = 0x1B
 
 RESP_OK = 0x00
 CUSTOM_IMAGE_SIZE = 32 * 32 * 3
@@ -365,6 +367,20 @@ class VecodiCaseStudy:
             raise RuntimeError("CMD_GET_REMAINING_INFERENCES failed")
         return struct.unpack("<I", payload[:4])[0]
 
+    def get_inference_result(self) -> Tuple[int, int]:
+        self.device.send_command(CMD_GET_INFERENCE_RESULT)
+        status, payload = self.device.read_response(timeout=8.0)
+        if status != RESP_OK or len(payload) < 2:
+            raise RuntimeError("CMD_GET_INFERENCE_RESULT failed")
+        return payload[0], payload[1]
+
+    def get_inference_trace(self) -> Tuple[int, int, int, int]:
+        self.device.send_command(CMD_GET_INFERENCE_TRACE)
+        status, payload = self.device.read_response(timeout=8.0)
+        if status != RESP_OK or len(payload) < 16:
+            raise RuntimeError("CMD_GET_INFERENCE_TRACE failed")
+        return struct.unpack("<IIII", payload[:16])
+
     def provider_send_m_update(self, c_limit: int) -> None:
         log("\n[Provider] Step 3 - Send M_update")
         if self.state.enclave_info is None:
@@ -545,10 +561,10 @@ class VecodiCaseStudy:
         if image_payload is not None:
             packet = bytes([image_label & 0xFF]) + image_payload + m_inf_packet
             self.device.send_command(CMD_RUN_INFERENCE_WITH_IMAGE, packet)
-            status, payload = self.device.read_response(timeout=12.0)
+            status, payload = self.device.read_response(timeout=20.0)
         else:
             self.device.send_command(CMD_RUN_INFERENCE, m_inf_packet)
-            status, payload = self.device.read_response(timeout=8.0)
+            status, payload = self.device.read_response(timeout=20.0)
 
         if status != RESP_OK:
             if len(payload) >= 8:
@@ -561,7 +577,7 @@ class VecodiCaseStudy:
                     blank_img = bytes(CUSTOM_IMAGE_SIZE)
                     packet = bytes([0]) + blank_img + m_inf_packet
                     self.device.send_command(CMD_RUN_INFERENCE_WITH_IMAGE, packet)
-                    status, payload = self.device.read_response(timeout=12.0)
+                    status, payload = self.device.read_response(timeout=20.0)
                     used_image_upload = True
                     if status != RESP_OK:
                         if len(payload) >= 8:
@@ -582,9 +598,46 @@ class VecodiCaseStudy:
             log("[WARN] Inference succeeded but response payload is empty")
             return -1
 
-        # PoX response is now plaintext: pred(1) || signature(64)
+        # Best-effort: fetch trace and result (may be optional in simplified flow)
+        try:
+            phase0_count, phase1_count, last_stage, last_tx_id = self.get_inference_trace()
+            log(
+                f"[DBG] Inference trace: phase0={phase0_count}, phase1={phase1_count}, "
+                f"last_stage={last_stage}, last_tx_id={last_tx_id}"
+            )
+        except Exception as exc:
+            log(f"[WARN] Could not fetch inference trace: {exc}")
+
+        try:
+            device_pred, device_expected = self.get_inference_result()
+            log(f"[OK] Inference result: pred={device_pred}, expected={device_expected}")
+        except Exception as exc:
+            log(f"[WARN] Could not fetch inference result: {exc}")
+
+        expected_label = image_label if image_payload is not None else -1
+
+        # Handle simplified direct response: pred(1) || expected(1)
+        if len(payload) == 2:
+            pred = payload[0]
+            expected = payload[1]
+            self.last_inference_meta = {
+                "pred": int(pred),
+                "pox_valid": False,
+                "used_image_upload": bool(used_image_upload),
+                "expected_label": int(expected),
+            }
+            log(f"[OK] Inference result (direct): pred={pred}, expected={expected}")
+            return pred
+
+        # Legacy PoX handling: pred(1) || signature(64)
         if len(payload) < 65:
-            log("[WARN] Inference succeeded but PoX response payload too short")
+            self.last_inference_meta = {
+                "pred": -1,
+                "pox_valid": False,
+                "used_image_upload": bool(used_image_upload),
+                "expected_label": int(expected_label),
+            }
+            log("[WARN] Inference succeeded but PoX response payload too short; inference result unavailable")
             return -1
 
         pred = payload[0]
@@ -594,6 +647,7 @@ class VecodiCaseStudy:
             "pred": int(pred),
             "pox_valid": bool(pox_valid),
             "used_image_upload": bool(used_image_upload),
+            "expected_label": int(expected_label),
         }
         if pox_valid:
             log(f"[OK] PoX verified, pred={pred}")
@@ -909,9 +963,6 @@ def main() -> int:
         return 2
 
     image_payload: Optional[bytes] = None
-    if not args.interactive and not args.image:
-        log("[ERR] Case-study mode requires --image (host Mac image upload is mandatory)")
-        return 2
     if args.image:
         image_payload = load_image_from_mac(args.image)
         log(f"[OK] Loaded image from Mac: {args.image} ({len(image_payload)} bytes)")

@@ -92,6 +92,21 @@ static bool late_hash_computed = false;  /* Flag to track if late hash is ready 
 static uint8_t last_prediction = 255;     /* Store last inference prediction result */
 static uint8_t last_expected_label = 255; /* Store last expected label for comparison */
 static bool atomic_inference_window_open = false;
+static uint8_t device_test_image_index = 0; /* Round-robin over built-in device images */
+
+static const uint8_t *const kDeviceImages[] = {
+    img_0, img_1, img_2, img_3, img_4,
+    img_5, img_6, img_7, img_8, img_9,
+    img_10, img_11, img_12, img_13, img_14,
+    img_15, img_16, img_17, img_18, img_19,
+};
+
+static const uint8_t kDeviceLabels[] = {
+    label_0, label_1, label_2, label_3, label_4,
+    label_5, label_6, label_7, label_8, label_9,
+    label_10, label_11, label_12, label_13, label_14,
+    label_15, label_16, label_17, label_18, label_19,
+};
 
 void set_atomic_inference_window_open(bool open)
 {
@@ -514,10 +529,15 @@ static int select_input_image(const uint8_t **img, int *label)
         return 0;
     }
 
-    /* Device-image fallback for benchmark mode without host upload. */
-    *img = img_0;
-    *label = (int)label_0;
-    printk("[SPLIT] No custom image available; using device test image img_0 (label=%d)\n", *label);
+    /* Device-image fallback: rotate across built-in images to diversify predictions. */
+    const size_t image_count = sizeof(kDeviceImages) / sizeof(kDeviceImages[0]);
+    size_t idx = (size_t)device_test_image_index % image_count;
+    *img = kDeviceImages[idx];
+    *label = (int)kDeviceLabels[idx];
+    printk("[SPLIT] No custom image available; using device image #%u (label=%d)\n",
+           (unsigned int)idx, *label);
+
+    device_test_image_index = (uint8_t)((idx + 1U) % image_count);
     return 0;
 }
 
@@ -654,7 +674,9 @@ uint8_t entry(const uint8_t *input)
     }
 
     /* Execute the split inference (will use either the provided input or pre-loaded image) */
+    set_atomic_inference_window_open(true);
     run_split_inference();
+    set_atomic_inference_window_open(false);
 
     /* Return the prediction result */
     uint8_t pred = get_last_prediction();
