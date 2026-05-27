@@ -137,7 +137,7 @@ def log(msg: str) -> None:
 
 
 def load_image_from_mac(image_path: str) -> bytes:
-    """Load an image from host (Mac) and return 32x32x3 bytes for CMD_RUN_INFERENCE_WITH_IMAGE."""
+    """Load an image from host (Mac) and return 32x32x3 bytes for image preload."""
     path = Path(image_path)
     if not path.exists():
         raise FileNotFoundError(f"Image not found: {image_path}")
@@ -277,26 +277,43 @@ class VecodiCaseStudy:
         if status != RESP_OK:
             raise RuntimeError("CMD_GET_BENCHMARK failed")
         expected = struct.calcsize(DEVICE_BENCHMARK_FMT)
+        # Diagnostic: always log payload length and a hex-dump of trailing bytes
+        log(f"[DBG] CMD_GET_BENCHMARK payload_len={len(payload)}, expected_struct={expected}")
+        if len(payload) > expected:
+            tail_len = len(payload) - expected
+            show = min(64, tail_len)
+            try:
+                tail_hex = payload[-show:].hex()
+            except Exception:
+                tail_hex = "<binary>"
+            log(f"[DBG] CMD_GET_BENCHMARK tail_len={tail_len}, last_{show}_bytes={tail_hex}")
+
         if len(payload) < expected:
             raise RuntimeError(f"NS benchmark payload too short: got {len(payload)}, expected {expected}")
         values = struct.unpack(DEVICE_BENCHMARK_FMT, payload[:expected])
         result = {name: int(value) for name, value in zip(DEVICE_BENCHMARK_NAMES, values)}
 
-        # Optional trailing fields: some firmware builds append
-        # execute_verified metrics after the canonical struct. Parse them
-        # if present to maintain backward compatibility.
-        exec_fmt = "<I Q I I I"  # cycles, sum(Q), min, max, count
-        exec_size = struct.calcsize(exec_fmt)
-        offset = expected
-        if len(payload) >= offset + exec_size:
-            exec_vals = struct.unpack_from(exec_fmt, payload, offset)
-            result.update({
-                "execute_verified_cycles": int(exec_vals[0]),
-                "execute_verified_sum_cycles": int(exec_vals[1]),
-                "execute_verified_min_cycles": int(exec_vals[2]),
-                "execute_verified_max_cycles": int(exec_vals[3]),
-                "execute_verified_count": int(exec_vals[4]),
-            })
+        # Optional trailing fields: NS-side image upload timing trailer.
+        # Current firmware appends this trailer immediately after the
+        # canonical benchmark struct.
+        img_fmt = "<I Q I I I"  # last(uint32), sum(uint64), min(uint32), max(uint32), count(uint32)
+        img_size = struct.calcsize(img_fmt)
+        # Firmware appends the image-upload trailer at the end of the payload.
+        # Parse it from the tail to avoid struct-size/padding mismatches.
+        if len(payload) >= img_size:
+            parse_off = len(payload) - img_size
+            try:
+                img_vals = struct.unpack_from(img_fmt, payload, parse_off)
+                result.update({
+                    "run_inference_with_image_cycles": int(img_vals[0]),
+                    "run_inference_with_image_sum_cycles": int(img_vals[1]),
+                    "run_inference_with_image_min_cycles": int(img_vals[2]),
+                    "run_inference_with_image_max_cycles": int(img_vals[3]),
+                    "run_inference_with_image_count": int(img_vals[4]),
+                })
+            except struct.error:
+                # Ignore malformed tail
+                pass
 
         return result
 
@@ -574,15 +591,17 @@ class VecodiCaseStudy:
         # M_inf is now plaintext (not encrypted): model_id(4) || code_hash(32) || signature(64)
         m_inf_packet = model_id_bytes + code_hash + sig_raw
 
-        # If an image is provided from host, explicitly send it to the board.
+        # If an image is provided from host, preload it right before execution.
         used_image_upload = image_payload is not None
         if image_payload is not None:
-            packet = bytes([image_label & 0xFF]) + image_payload + m_inf_packet
-            self.device.send_command(CMD_RUN_INFERENCE_WITH_IMAGE, packet)
-            status, payload = self.device.read_response(timeout=20.0)
-        else:
-            self.device.send_command(CMD_RUN_INFERENCE, m_inf_packet)
-            status, payload = self.device.read_response(timeout=20.0)
+            preload_packet = bytes([image_label & 0xFF]) + image_payload
+            self.device.send_command(CMD_RUN_INFERENCE_WITH_IMAGE, preload_packet)
+            status, payload = self.device.read_response(timeout=10.0)
+            if status != RESP_OK:
+                raise RuntimeError("Image preload rejected by device")
+
+        self.device.send_command(CMD_RUN_INFERENCE, m_inf_packet)
+        status, payload = self.device.read_response(timeout=20.0)
 
         if status != RESP_OK:
             if len(payload) >= 8:
@@ -590,11 +609,15 @@ class VecodiCaseStudy:
                 detail = struct.unpack("<i", payload[4:8])[0]
                 if stage == 5 and detail == -1:
                     # Device indicates missing/invalid runtime image context.
-                    # Fallback to the photo+verified API with a deterministic blank image.
-                    log("[WARN] Device reported invalid inference context; retrying with explicit image payload")
+                    # Fallback to preload a deterministic blank image, then retry execute.
+                    log("[WARN] Device reported invalid inference context; retrying after image preload")
                     blank_img = bytes(CUSTOM_IMAGE_SIZE)
-                    packet = bytes([0]) + blank_img + m_inf_packet
-                    self.device.send_command(CMD_RUN_INFERENCE_WITH_IMAGE, packet)
+                    preload_packet = bytes([0]) + blank_img
+                    self.device.send_command(CMD_RUN_INFERENCE_WITH_IMAGE, preload_packet)
+                    preload_status, _ = self.device.read_response(timeout=10.0)
+                    if preload_status != RESP_OK:
+                        raise RuntimeError("Image preload fallback rejected by device")
+                    self.device.send_command(CMD_RUN_INFERENCE, m_inf_packet)
                     status, payload = self.device.read_response(timeout=20.0)
                     used_image_upload = True
                     if status != RESP_OK:
@@ -941,6 +964,12 @@ class VecodiCaseStudy:
         ns_total = int(merged_metrics.get("execute_verified_cycles", merged_metrics.get("run_enclave_cycles", 0)))
         early_layers = int(merged_metrics.get("early_layers_cycles", 0))
         late_layers = int(merged_metrics.get("late_layers_cycles", 0))
+        # NS-side image upload metrics (optional trailer)
+        img_last = int(merged_metrics.get("run_inference_with_image_cycles", 0))
+        img_sum = int(merged_metrics.get("run_inference_with_image_sum_cycles", 0))
+        img_min = int(merged_metrics.get("run_inference_with_image_min_cycles", 0))
+        img_max = int(merged_metrics.get("run_inference_with_image_max_cycles", 0))
+        img_count = int(merged_metrics.get("run_inference_with_image_count", 0))
 
         # Phase 1 components (Secure INF_COMPLETE)
         phase1_total = int(merged_metrics.get("inf_complete_cycles", 0))
@@ -987,6 +1016,8 @@ class VecodiCaseStudy:
             self._tree_line("Phase NS - Inférence", ns_total, execute_total, indent="├── ", bottleneck=ns_total > (execute_total / 2 if execute_total else 0)),
             self._tree_line("early_layers (TFLite)", early_layers, ns_total, indent="│   ├── ", bottleneck=early_layers > (ns_total / 2 if ns_total else 0)),
             self._tree_line("late_layers", late_layers, ns_total, indent="│   └── ", bottleneck=late_layers > (ns_total / 2 if ns_total else 0)),
+            # Optional: report device-side image upload timing
+            (self._tree_line("Image upload (device)", img_last, ns_total, indent="│   └── ", bottleneck=False) if img_count > 0 else ""),
             "",
             self._tree_line("Phase 1 - Commit (INF_COMPLETE)", phase1_total, execute_total, indent="└── ", bottleneck=phase1_total > (execute_total / 2 if execute_total else 0)),
             self._tree_line("SAU close", phase1_sau_close, phase1_total, indent="    ├── ", bottleneck=False),
