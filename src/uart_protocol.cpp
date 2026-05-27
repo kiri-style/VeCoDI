@@ -958,7 +958,15 @@ static void handle_run_inference_common(const uint8_t *minf_data, uint32_t minf_
     }
 
     uint8_t output_class = 0U;
+    /* Benchmark the execute_verified_inference call from the UART path */
+    BENCHMARK_START(exec_verified);
     int exec_ret = execute_verified_inference(1U, &output_class);
+    BENCHMARK_END(exec_verified, g_benchmark_metrics.execute_verified_cycles);
+    BENCHMARK_ACCUMULATE(g_benchmark_metrics.execute_verified_cycles,
+                         g_benchmark_metrics.execute_verified_sum_cycles,
+                         g_benchmark_metrics.execute_verified_min_cycles,
+                         g_benchmark_metrics.execute_verified_max_cycles,
+                         g_benchmark_metrics.execute_verified_count);
     if (exec_ret != 0) {
         uint32_t close_cmd_fail = DP_CMD_INF_COMPLETE;
         psa_invec in_close_fail = { &close_cmd_fail, sizeof(close_cmd_fail) };
@@ -1001,10 +1009,10 @@ static void handle_run_inference_common(const uint8_t *minf_data, uint32_t minf_
     }
 
     mock_inference_count++;
-    uint8_t resp2[2];
-    resp2[0] = output_class;
-    resp2[1] = get_last_expected_label();
-    uart_protocol_send_response(RESP_OK, resp2, sizeof(resp2));
+    /* Return PoX response produced by Secure: 65 bytes (pred || signature[64]).
+     * Phase1 response was written into `phase1_resp` by the PSA call above.
+     */
+    uart_protocol_send_response(RESP_OK, phase1_resp, sizeof(phase1_resp));
 }
 
 static void handle_run_inference(void)
