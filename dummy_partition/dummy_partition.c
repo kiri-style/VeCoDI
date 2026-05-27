@@ -1762,12 +1762,30 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
 
                     uint8_t pox_hash[32];
                     size_t pox_hash_len = 0U;
+                    /* Diagnostic: print pox_msg before hashing/signing */
+                    printf("[SECURE-DBG] pox_msg_len=%u\n", (unsigned)pox_msg_len);
+                    printf("[SECURE-DBG] pox_msg: ");
+                    for (size_t _i = 0; _i < pox_msg_len; _i++) {
+                        printf("%02x", pox_msg[_i]);
+                    }
+                    printf("\n");
+
                     psa_status_t st = psa_hash_compute(PSA_ALG_SHA_256,
                                                       pox_msg,
                                                       pox_msg_len,
                                                       pox_hash,
                                                       sizeof(pox_hash),
                                                       &pox_hash_len);
+                    /* Diagnostic: print pox_hash */
+                    if (st == PSA_SUCCESS) {
+                        printf("[SECURE-DBG] pox_hash: ");
+                        for (size_t _i = 0; _i < sizeof(pox_hash); _i++) {
+                            printf("%02x", pox_hash[_i]);
+                        }
+                        printf("\n");
+                    } else {
+                        printf("[SECURE-DBG] pox_hash: hashing failed (%d)\n", (int)st);
+                    }
                     if (st != PSA_SUCCESS || pox_hash_len != sizeof(pox_hash)) {
                         return PSA_ERROR_GENERIC_ERROR;
                     }
