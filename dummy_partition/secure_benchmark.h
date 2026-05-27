@@ -49,6 +49,7 @@ typedef struct {
     uint64_t finalize_create_cycles;
     uint64_t destroy_enclave_cycles;
     uint64_t inf_start_cycles;
+    uint64_t inf_phase0_hash_cycles;
     uint64_t inf_complete_cycles;
 
     /* SAU management operations */

@@ -121,7 +121,7 @@ SECURE_BENCHMARK_NAMES = [
     "authorize_read_cycles", "authorize_import_key_cycles", "authorize_hash_msg_cycles", "authorize_verify_sig_cycles", "authorize_destroy_key_cycles",
     "authorize_verify_message_cycles", "authorize_verify_old_cycles", "create_recompute_cycles",
     "get_max_cycles", "check_allowed_cycles", "increment_cycles", "reset_cycles",
-    "create_enclave_cycles", "finalize_create_cycles", "destroy_enclave_cycles", "inf_start_cycles", "inf_complete_cycles",
+    "create_enclave_cycles", "finalize_create_cycles", "destroy_enclave_cycles", "inf_start_cycles", "inf_phase0_hash_cycles", "inf_complete_cycles",
     "sau_sync_open_cycles", "sau_sync_close_cycles", "sau_flash_close_cycles", "sau_flash_open_cycles", "sau_flash_pulse_cycles",
     "aes_decrypt_count", "late_hash_count", "digest_count", "authorize_count", "authorize_crypto_init_count",
     "authorize_import_key_count", "authorize_verify_sig_count", "authorize_verify_message_count", "create_recompute_count", "counter_operations",
@@ -129,7 +129,7 @@ SECURE_BENCHMARK_NAMES = [
     "sau_sync_open_count", "sau_sync_close_count", "sau_flash_close_count", "sau_flash_open_count", "sau_flash_pulse_count",
     "ram_used_bytes", "ram_total_bytes", "flash_used_bytes", "flash_total_bytes",
 ]
-SECURE_BENCHMARK_FMT = "<" + ("Q" * 32) + ("I" * 24)
+SECURE_BENCHMARK_FMT = "<" + ("Q" * 33) + ("I" * 24)
 
 
 def log(msg: str) -> None:
@@ -706,6 +706,8 @@ class VecodiCaseStudy:
         image_payload: Optional[bytes] = None,
         image_label: int = 0,
     ) -> int:
+        ns_before = self.read_ns_benchmark()
+        secure_before = self.read_secure_benchmark()
         self._timed_call("provider.enclave_info", self.provider_fetch_enclave_info)
         self._timed_call("provider.m_update", self.provider_send_m_update, c_limit)
 
@@ -734,14 +736,28 @@ class VecodiCaseStudy:
         used_before_destroy = self._timed_call("metrics.used_before_destroy", self.get_inference_count)
         rem_before_destroy = self._timed_call("metrics.remaining_before_destroy", self.get_remaining)
 
+        # Benchmark counters are cumulative and may be cleared by destroy, so
+        # capture them before the reset happens (snapshot) and again after
+        # the destroy to compute the destroy-specific delta.
+        ns_snapshot = self._timed_call("metrics.ns_benchmark_before_destroy", self.read_ns_benchmark)
+        secure_snapshot = self._timed_call("metrics.secure_benchmark_before_destroy", self.read_secure_benchmark)
+
         self._timed_call("customer.destroy_enclave", self.customer_destroy_enclave)
+
+        # Capture metrics again after destroy to observe destroy-only increments.
+        ns_after_destroy = self._timed_call("metrics.ns_benchmark_after_destroy", self.read_ns_benchmark)
+        secure_after_destroy = self._timed_call("metrics.secure_benchmark_after_destroy", self.read_secure_benchmark)
 
         max_inf = self._timed_call("metrics.max_after_destroy", self.get_max_inferences)
         used = self._timed_call("metrics.used_after_destroy", self.get_inference_count)
         rem = self._timed_call("metrics.remaining_after_destroy", self.get_remaining)
 
-        ns_metrics = self._timed_call("metrics.ns_benchmark", self.read_ns_benchmark)
-        secure_metrics = self._timed_call("metrics.secure_benchmark", self.read_secure_benchmark)
+        ns_metrics = self._delta_metrics(ns_snapshot, ns_before)
+        secure_metrics = self._delta_metrics(secure_snapshot, secure_before)
+
+        # Destroy-specific deltas (what changed because of destroy)
+        ns_destroy_metrics = self._delta_metrics(ns_after_destroy, ns_snapshot)
+        secure_destroy_metrics = self._delta_metrics(secure_after_destroy, secure_snapshot)
         self._record_extra(
             action="metrics.ns_benchmark.all",
             status="ok",
@@ -767,7 +783,7 @@ class VecodiCaseStudy:
         for key in SECURE_BENCHMARK_NAMES:
             log(f"  {key}={secure_metrics.get(key, 0)}")
         log("========================================")
-        self.print_cycles_report(ns_metrics, secure_metrics)
+        self.print_cycles_report(ns_metrics, secure_metrics, ns_destroy_metrics, secure_destroy_metrics)
         self.print_benchmark_table()
         return 0
 
@@ -846,7 +862,45 @@ class VecodiCaseStudy:
             output.append(f"├── {name:<18} : {self._fmt_cycles(cycles):<18} [{percent:.1f}%]{bottleneck}")
         return "\n".join(output)
 
-    def print_cycles_report(self, ns_metrics: Dict[str, int], secure_metrics: Dict[str, int]) -> None:
+    def _pct(self, cycles: int, total: int) -> float:
+        return (cycles / total * 100.0) if total > 0 else 0.0
+
+    def _tree_line(self, label: str, cycles: int, total: int, *, indent: str = "", bottleneck: bool = False) -> str:
+        marker = "  ← bottleneck" if bottleneck else ""
+        return f"{indent}{label:<36} : {self._fmt_cycles(cycles):<18} [{self._pct(cycles, total):.1f}%]{marker}"
+
+    @staticmethod
+    def _residual(total: int, *parts: int) -> int:
+        return max(total - sum(int(part) for part in parts), 0)
+
+    @staticmethod
+    def _delta_metrics(after: Dict[str, int], before: Dict[str, int]) -> Dict[str, int]:
+        result: Dict[str, int] = {}
+        all_keys = set(after) | set(before)
+        for key in all_keys:
+            if key.endswith("_bytes") or key in {"ram_used_bytes", "ram_total_bytes", "flash_used_bytes", "flash_total_bytes"}:
+                result[key] = int(after.get(key, 0))
+            else:
+                result[key] = int(after.get(key, 0)) - int(before.get(key, 0))
+        return result
+
+    @staticmethod
+    def _avg_metric(metrics: Dict[str, int], total_key: str, count_key: Optional[str] = None) -> int:
+        total = int(metrics.get(total_key, 0))
+        if not count_key:
+            return max(total, 0)
+        count = int(metrics.get(count_key, 0))
+        if count <= 0:
+            return max(total, 0)
+        return max(int(round(total / count)), 0)
+
+    def print_cycles_report(
+        self,
+        ns_metrics: Dict[str, int],
+        secure_metrics: Dict[str, int],
+        ns_destroy_metrics: Optional[Dict[str, int]] = None,
+        secure_destroy_metrics: Optional[Dict[str, int]] = None,
+    ) -> None:
         log("\n========== AUTHORIZE PERFORMANCE COMPARISON ==========")
         log(self.format_authorize_comparison(secure_metrics))
 
@@ -855,41 +909,106 @@ class VecodiCaseStudy:
         merged_metrics = dict(secure_metrics)
         if ns_metrics:
             merged_metrics.update(ns_metrics)
-
-        apis = {
-            "Create": {
-                "total_key": "create_enclave_cycles",
-                "children": [
-                    ("EnclaveInfo recalc", "create_recompute_cycles"),
-                    ("AES decrypt", "aes_decrypt_cycles"),
-                    ("SAU registration", "create_validate_cycles"),
-                ],
-            },
-            "Execute": {
-                "total_key": "inf_complete_cycles",
-                "children": [
-                    ("M_inf verification", "inf_start_cycles"),
-                    ("SAU open/close", "sau_sync_open_cycles"),
-                    ("PoX signing", "inf_complete_cycles"),
-                    ("execute_verified_inference", "execute_verified_cycles"),
-                ],
-            },
-            "Destroy": {
-                "total_key": "destroy_enclave_cycles",
-                "children": [
-                    ("Memory zeroization", "destroy_enclave_cycles"),
-                    ("SAU restore", "sau_sync_close_cycles"),
-                ],
-            },
-        }
-
         log("\n========== API BREAKDOWN (cycles) ==========")
-        for api_name, fields in apis.items():
-            # Use merged metrics so NS-side measurements (execute_verified_*)
-            # are visible alongside Secure metrics in the same breakdown.
-            breakdown = self.format_api_breakdown(merged_metrics, api_name, fields)
-            if breakdown:
-                log(breakdown)
+
+        # Authorize keeps the flat detailed breakdown because its secure-side
+        # instrumentation already exposes all internal components explicitly.
+        authorize_fields = {
+            "total_key": "authorize_cycles",
+            "children": [
+                ("PSA Read (M_update)", "authorize_read_cycles"),
+                ("Parsing M_update", "authorize_parse_cycles"),
+                ("Crypto init", "authorize_crypto_init_cycles"),
+                ("Import public key", "authorize_import_key_cycles"),
+                ("ECDSA VERIFY", "authorize_verify_message_cycles"),
+                ("Update state", "authorize_update_cycles"),
+            ],
+        }
+        breakdown = self.format_api_breakdown(merged_metrics, "Authorize", authorize_fields)
+        if breakdown:
+            log(breakdown)
+
+        execute_total = int(merged_metrics.get("full_execute_cycles", merged_metrics.get("execute_verified_cycles", merged_metrics.get("run_enclave_cycles", 0))))
+        # Phase 0 components (Secure INF_START)
+        phase0_total = int(merged_metrics.get("inf_start_cycles", 0))
+        preconditions = int(merged_metrics.get("get_max_cycles", 0)) + int(merged_metrics.get("check_allowed_cycles", 0))
+        phase0_hash = int(merged_metrics.get("inf_phase0_hash_cycles", 0))
+        import_key = int(merged_metrics.get("authorize_import_key_cycles", 0))
+        ecdsa_verify = int(merged_metrics.get("authorize_verify_message_cycles", merged_metrics.get("authorize_verify_sig_cycles", 0)))
+        phase0_sau_open = int(merged_metrics.get("sau_sync_open_cycles", 0))
+
+        # NS inference
+        ns_total = int(merged_metrics.get("execute_verified_cycles", merged_metrics.get("run_enclave_cycles", 0)))
+        early_layers = int(merged_metrics.get("early_layers_cycles", 0))
+        late_layers = int(merged_metrics.get("late_layers_cycles", 0))
+
+        # Phase 1 components (Secure INF_COMPLETE)
+        phase1_total = int(merged_metrics.get("inf_complete_cycles", 0))
+        phase1_sau_close = int(merged_metrics.get("sau_sync_close_cycles", 0))
+        # PoX hash not always separately measured; attempt best-effort fallback
+        pox_hash = int(merged_metrics.get("inf_phase0_hash_cycles", 0)) if int(merged_metrics.get("inf_phase0_hash_cycles", 0)) else int(merged_metrics.get("digest_compute_cycles", 0))
+        ecdsa_sign = max(phase1_total - phase1_sau_close - pox_hash, 0)
+
+        # Prefer destroy-specific deltas captured after destroy. Fall back to
+        # merged metrics if destroy deltas are not available.
+        ns_destroy_metrics = ns_destroy_metrics or {}
+        secure_destroy_metrics = secure_destroy_metrics or {}
+
+        destroy_total = int(secure_destroy_metrics.get("destroy_enclave_cycles", ns_destroy_metrics.get("enclave_destroy_cycles", merged_metrics.get("destroy_enclave_cycles", 0))))
+        destroy_sau_restore = int(secure_destroy_metrics.get("sau_sync_close_cycles", ns_destroy_metrics.get("sau_sync_close_cycles", merged_metrics.get("sau_sync_close_cycles", 0))))
+        destroy_zeroize = int(secure_destroy_metrics.get("destroy_zeroize_cycles", ns_destroy_metrics.get("destroy_zeroize_cycles", merged_metrics.get("destroy_zeroize_cycles", 0))))
+
+        # Create section: prefer secure-side measurements, fall back to NS names
+        create_total = int(secure_metrics.get("create_enclave_cycles", ns_metrics.get("enclave_create_cycles", 0)))
+        aes_decrypt = int(secure_metrics.get("aes_decrypt_cycles", ns_metrics.get("aes_decrypt_cycles", 0)))
+        create_validate = int(secure_metrics.get("create_validate_cycles", 0))
+        create_recompute = int(secure_metrics.get("create_recompute_cycles", 0))
+
+        # Create section printed earlier
+        create_lines = [
+            f"\nCreate - {self._fmt_cycles(create_total)} total",
+            self._tree_line("AES decrypt", aes_decrypt, create_total, indent="├── ", bottleneck=aes_decrypt > (create_total / 2 if create_total else 0)),
+            self._tree_line("SAU + validation", create_validate, create_total, indent="└── ", bottleneck=False),
+            f"    {self._tree_line('EnclaveInfo recalc', create_recompute, create_validate, indent='    ├── ', bottleneck=False).lstrip()}",
+            f"    {self._tree_line('Validation memcmp', max(create_validate - create_recompute, 0), create_validate, indent='    └── ', bottleneck=False).lstrip()}",
+        ]
+        log("\n".join(create_lines))
+
+        # Execute breakdown with nested phases
+        execute_lines = [
+            f"\nExecute - {self._fmt_cycles(execute_total)} total",
+            self._tree_line("Phase 0 - Vérification (INF_START)", phase0_total, execute_total, indent="├── ", bottleneck=phase0_total > (execute_total / 2 if execute_total else 0)),
+            self._tree_line("Préconditions (Hs_id, state, usage)", preconditions, phase0_total, indent="│   ├── ", bottleneck=False),
+            self._tree_line("Hash M_inf", phase0_hash, phase0_total, indent="│   ├── ", bottleneck=False),
+            self._tree_line("Import clé publique", import_key, phase0_total, indent="│   ├── ", bottleneck=False),
+            self._tree_line("ECDSA verify (M_inf)", ecdsa_verify, phase0_total, indent="│   ├── ", bottleneck=ecdsa_verify > (phase0_total / 2 if phase0_total else 0)),
+            self._tree_line("SAU open", phase0_sau_open, phase0_total, indent="│   └── ", bottleneck=False),
+            "",
+            self._tree_line("Phase NS - Inférence", ns_total, execute_total, indent="├── ", bottleneck=ns_total > (execute_total / 2 if execute_total else 0)),
+            self._tree_line("early_layers (TFLite)", early_layers, ns_total, indent="│   ├── ", bottleneck=early_layers > (ns_total / 2 if ns_total else 0)),
+            self._tree_line("late_layers", late_layers, ns_total, indent="│   └── ", bottleneck=late_layers > (ns_total / 2 if ns_total else 0)),
+            "",
+            self._tree_line("Phase 1 - Commit (INF_COMPLETE)", phase1_total, execute_total, indent="└── ", bottleneck=phase1_total > (execute_total / 2 if execute_total else 0)),
+            self._tree_line("SAU close", phase1_sau_close, phase1_total, indent="    ├── ", bottleneck=False),
+            self._tree_line("Hash PoX", pox_hash, phase1_total, indent="    ├── ", bottleneck=False),
+            self._tree_line("ECDSA sign (PoX)", ecdsa_sign, phase1_total, indent="    └── ", bottleneck=ecdsa_sign > (phase1_total / 2 if phase1_total else 0)),
+        ]
+        log("\n".join(execute_lines))
+
+        destroy_lines = [
+            f"\nDestroy - {self._fmt_cycles(destroy_total)} total",
+            self._tree_line("Memory zeroization", destroy_zeroize, destroy_total, indent="├── ", bottleneck=False),
+            self._tree_line("SAU restore", destroy_sau_restore, destroy_total, indent="└── ", bottleneck=False),
+        ]
+        log("\n".join(destroy_lines))
+        log("\n".join(execute_lines))
+
+        destroy_lines = [
+            f"\nDestroy - {self._fmt_cycles(destroy_total)} total",
+            self._tree_line("Memory zeroization", destroy_zeroize, destroy_total, indent="├── ", bottleneck=False),
+            self._tree_line("SAU restore", destroy_sau_restore, destroy_total, indent="└── ", bottleneck=False),
+        ]
+        log("\n".join(destroy_lines))
 
     def print_benchmark_table(self) -> None:
         log("\n========== DETAILED BENCHMARK (HOST) ==========")

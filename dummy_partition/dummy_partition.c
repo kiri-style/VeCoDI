@@ -1654,12 +1654,14 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
 
                     uint8_t msg_hash[32];
                     size_t hash_len = 0U;
+                    SECURE_BENCHMARK_START(inf_phase0_hash_start);
                     st = psa_hash_compute(PSA_ALG_SHA_256,
                                           m_inf2,
                                           36U,
                                           msg_hash,
                                           sizeof(msg_hash),
                                           &hash_len);
+                    SECURE_BENCHMARK_END(inf_phase0_hash_start, inf_phase0_hash_cycles);
                     if (st != PSA_SUCCESS || hash_len != sizeof(msg_hash)) {
                         secure_memzero(m_inf2, sizeof(m_inf2));
                         return PSA_ERROR_GENERIC_ERROR;

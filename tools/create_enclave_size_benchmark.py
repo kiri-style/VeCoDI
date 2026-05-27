@@ -163,18 +163,34 @@ def print_breakdown(size_bytes, secure_metrics):
     print("")
 
     print(f"Create - {create_total:,} cycles total")
-    pct = (enclave_recalc_cycles / create_total * 100) if create_total else 0.0
-    print(f"├── EnclaveInfo recalc : {enclave_recalc_cycles:,} cycles   [{pct:.1f}%]")
-    pct = (aes_decrypt_cycles / create_total * 100) if create_total else 0.0
+    # Aggregate SAU + validation: `create_validate_cycles` contains both the
+    # recompute (EnclaveInfo recalc) and the memcmp-based validation cost.
+    create_validate_cycles = sau_registration_cycles
+    validation_memcmp = max(create_validate_cycles - enclave_recalc_cycles, 0)
+
+    # Use a stable denominator for percentages: prefer the measured total,
+    # but if components sum to more than the reported total (or total is 0),
+    # use the components sum to avoid >100% artifacts.
+    comp_sum = aes_decrypt_cycles + create_validate_cycles
+    denom_create = max(create_total, comp_sum, 1)
+
+    pct = (aes_decrypt_cycles / denom_create * 100)
     print(f"├── AES decrypt        : {aes_decrypt_cycles:,} cycles   [{pct:.1f}%]  ← bottleneck")
-    pct = (sau_registration_cycles / create_total * 100) if create_total else 0.0
-    print(f"└── SAU registration   : {sau_registration_cycles:,} cycles   [{pct:.1f}%]")
+
+    pct = (create_validate_cycles / denom_create * 100)
+    print(f"└── SAU + validation   : {create_validate_cycles:,} cycles   [{pct:.1f}%]")
+    print(f"    ├── EnclaveInfo recalc : {enclave_recalc_cycles:,} cycles")
+    print(f"    └── Validation memcmp  : {validation_memcmp:,} cycles")
 
     print("")
     print(f"Destroy - {destroy_total:,} cycles total")
-    pct = (memory_zeroization_cycles / destroy_total * 100) if destroy_total else 0.0
+    # If destroy_total is zero but we observed SAU restore cycles, use the
+    # observed component for percentage denominator to avoid divide-by-zero
+    # and to show meaningful percentages instead of misleading zeros.
+    denom_destroy = max(destroy_total, sau_restore_cycles, 1)
+    pct = (memory_zeroization_cycles / denom_destroy * 100)
     print(f"├── Memory zeroization : {memory_zeroization_cycles:,} cycles   [{pct:.1f}%]  ← bottleneck")
-    pct = (sau_restore_cycles / destroy_total * 100) if destroy_total else 0.0
+    pct = (sau_restore_cycles / denom_destroy * 100)
     print(f"└── SAU restore        : {sau_restore_cycles:,} cycles   [{pct:.1f}%]")
 
 
