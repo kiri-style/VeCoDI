@@ -25,7 +25,7 @@
 #define DP_CMD_SIGN_ATTEST_MSG      28U
 #define CIFAR_IMAGE_SIZE_BYTES      3072U
 #define VERIFIED_MINF_SIZE_BYTES    100U
-#define RUN_WITH_IMAGE_DATA_SIZE    (1U + CIFAR_IMAGE_SIZE_BYTES + VERIFIED_MINF_SIZE_BYTES)
+#define RUN_WITH_IMAGE_DATA_SIZE    (1U + CIFAR_IMAGE_SIZE_BYTES)
 #include "benchmark.h"
 #include "secure_benchmark_ns.h"
 #include "split_inference.h"
@@ -58,6 +58,7 @@ static uint32_t rx_received = 0;
 static uint8_t rx_buffer[MAX_COMMAND_DATA_SIZE];
 static uint8_t len_buffer[4];
 static uint32_t rx_data_start_ms = 0;
+static uint32_t ns_img_rx_start_cycles = 0U;
 
 /* Protocol-only mock state (no inference execution) */
 static uint32_t mock_max_inferences = 0;
@@ -77,6 +78,12 @@ static const bool session_key_established = true;
 /* Device public key cache (owned by Secure partition). */
 static uint8_t      device_pk_d[65] = {0};
 static bool         device_key_ready = false;
+/* NS-side image upload aggregates (last, sum, min, max, count) */
+static uint32_t     ns_img_last_cycles = 0U;
+static uint64_t     ns_img_sum_cycles = 0ULL;
+static uint32_t     ns_img_min_cycles = 0U;
+static uint32_t     ns_img_max_cycles = 0U;
+static uint32_t     ns_img_count = 0U;
 
 /* Verifier public key pk_v — extracted from M_update plaintext after Provider authorization */
 static uint8_t stored_pk_v[64] = {0};        /* raw x(32) || y(32), no 0x04 prefix */
@@ -379,7 +386,7 @@ static bool is_valid_len_for_cmd(uint8_t cmd, uint32_t len)
             /* Verified-only protocol: plaintext M_inf model_id(4)+code_hash(32)+signature(64). */
             return (len == VERIFIED_MINF_SIZE_BYTES);
         case CMD_RUN_INFERENCE_WITH_IMAGE:
-            /* Photo upload + verified inference: label(1) + image(3072) + plaintext M_inf(100). */
+            /* Photo preload for the next verified inference: label(1) + image(3072). */
             return len == RUN_WITH_IMAGE_DATA_SIZE;
         case CMD_SET_MAX_INFERENCES:
         case CMD_UPDATE_RATE_LIMIT:
@@ -577,6 +584,9 @@ void uart_protocol_process(void)
                         rx_received = 0;
                         rx_state = RX_DATA;
                         rx_data_start_ms = k_uptime_get_32();
+                        if (rx_cmd == CMD_RUN_INFERENCE_WITH_IMAGE) {
+                            ns_img_rx_start_cycles = benchmark_get_cycles();
+                        }
                     }
                 }
                 break;
@@ -1031,16 +1041,36 @@ static void handle_run_inference_with_image(const uint8_t *data, uint32_t len)
 
     uint8_t label = data[0];
     const uint8_t *image = data + 1U;
-    const uint8_t *minf_data = data + 1U + CIFAR_IMAGE_SIZE_BYTES;
 
+    /* Measure NS-side handling time for the image upload and setup.
+     * The timer starts when RX_DATA begins receiving the image payload.
+     */
+    uint32_t _img_start = ns_img_rx_start_cycles;
     if (set_custom_test_image(image, label) != 0) {
         uart_protocol_send_response(RESP_ERROR, NULL, 0);
         return;
     }
+    uint32_t _img_end = benchmark_get_cycles();
+    uint32_t _img_elapsed = (_img_start != 0U) ? (_img_end - _img_start) : 0U;
+    ns_img_rx_start_cycles = 0U;
 
+    /* Persist sample and simple aggregates in file-scope statics so they
+     * can be appended to the benchmark response without changing the
+     * canonical `benchmark_metrics_t` layout. */
+    ns_img_last_cycles = _img_elapsed;
+    ns_img_sum_cycles += (uint64_t)_img_elapsed;
+    if (ns_img_count == 0 || _img_elapsed < ns_img_min_cycles) ns_img_min_cycles = _img_elapsed;
+    if (ns_img_count == 0 || _img_elapsed > ns_img_max_cycles) ns_img_max_cycles = _img_elapsed;
+    ns_img_count++;
+
+    /* Update public count in metrics struct as well */
     g_benchmark_metrics.run_inference_with_image_count++;
 
-    handle_run_inference_common(minf_data, VERIFIED_MINF_SIZE_BYTES);
+    /* Store last-sample into the canonical struct's run_enclave_cycles field
+     * for quick visibility in tools that do not parse the trailer. */
+    g_benchmark_metrics.run_enclave_cycles = _img_elapsed;
+
+    uart_protocol_send_response(RESP_OK, NULL, 0);
 }
 
 static void handle_get_inference_count(void)
@@ -1155,9 +1185,46 @@ static void handle_get_benchmark(void)
                                &g_benchmark_metrics.flash_used_bytes,
                                &g_benchmark_metrics.flash_total_bytes);
     
-    /* Cast structure to bytes and send */
+    /* Cast structure to bytes and append a small trailer containing
+     * NS-side image upload aggregates (last,sum,min,max,count).
+     * Trailer layout (little-endian): uint32_t last, uint64_t sum,
+     * uint32_t min, uint32_t max, uint32_t count
+     */
     const uint8_t *metrics_bytes = (const uint8_t *)&g_benchmark_metrics;
-    uart_protocol_send_response(RESP_OK, metrics_bytes, sizeof(benchmark_metrics_t));
+    size_t metrics_size = sizeof(benchmark_metrics_t);
+    size_t trailer_size = 4 + 8 + 4 + 4 + 4;
+    size_t total = metrics_size + trailer_size;
+    uint8_t buf[sizeof(benchmark_metrics_t) + 24];
+
+    memcpy(buf, metrics_bytes, metrics_size);
+    size_t off = metrics_size;
+
+    /* last (uint32) */
+    uint32_t v32 = ns_img_last_cycles;
+    for (int i = 0; i < 4; i++) buf[off + i] = (uint8_t)((v32 >> (8 * i)) & 0xFFU);
+    off += 4;
+
+    /* sum (uint64) */
+    uint64_t v64 = ns_img_sum_cycles;
+    for (int i = 0; i < 8; i++) buf[off + i] = (uint8_t)((v64 >> (8 * i)) & 0xFFULL);
+    off += 8;
+
+    /* min (uint32) */
+    v32 = ns_img_min_cycles;
+    for (int i = 0; i < 4; i++) buf[off + i] = (uint8_t)((v32 >> (8 * i)) & 0xFFU);
+    off += 4;
+
+    /* max (uint32) */
+    v32 = ns_img_max_cycles;
+    for (int i = 0; i < 4; i++) buf[off + i] = (uint8_t)((v32 >> (8 * i)) & 0xFFU);
+    off += 4;
+
+    /* count (uint32) */
+    v32 = ns_img_count;
+    for (int i = 0; i < 4; i++) buf[off + i] = (uint8_t)((v32 >> (8 * i)) & 0xFFU);
+    off += 4;
+
+    uart_protocol_send_response(RESP_OK, buf, (uint32_t)total);
 }
 
 static void handle_get_secure_benchmark(void)
