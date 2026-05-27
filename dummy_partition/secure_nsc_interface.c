@@ -14,7 +14,7 @@
 /* =========================================================
  * Adresse réelle issue du zephyr.map + 1 (Thumb bit)
  * ========================================================= */
-#define NS_ENCLAVE_ADDR   (0x0C042599U)
+#define NS_ENCLAVE_ADDR   (0x0C042599U)ns
 
 
 /* Prototype fonction Non-Secure. */

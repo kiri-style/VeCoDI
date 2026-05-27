@@ -1483,6 +1483,10 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
         {
             SECURE_BENCHMARK_START(inf_start_cycles_start);
 
+            if (msg->out_size[0] != 0U && msg->out_size[0] != sizeof(uint32_t)) {
+                return PSA_ERROR_INVALID_ARGUMENT;
+            }
+
             if (!s_auth_valid || !shangri_la_created_secure) {
                 return PSA_ERROR_BAD_STATE;
             }
@@ -1504,6 +1508,12 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
             s_tx_id++;
             if (s_tx_id == 0U) {
                 s_tx_id = 1U;
+            }
+            s_tx_model_id = s_model_id;
+            memset(s_tx_nonce, 0, sizeof(s_tx_nonce));
+
+            if (msg->out_size[0] == sizeof(uint32_t)) {
+                psa_write(msg->handle, 0, &s_tx_id, sizeof(s_tx_id));
             }
 
             SECURE_BENCHMARK_END(inf_start_cycles_start, inf_start_cycles);

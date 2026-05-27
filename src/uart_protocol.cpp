@@ -18,6 +18,7 @@
 #define TFM_DP_SERVICE_SID          0xFFFFF002U
 #define DP_CMD_COMPUTE_ENCLAVE_INFO 10U
 #define DP_CMD_VALIDATE_AUTHORIZE    11U
+#define DP_CMD_RUN_INFERENCE         9U
 #define DP_CMD_INF_START            25U
 #define DP_CMD_INF_COMPLETE         26U
 #define DP_CMD_GET_DEVICE_PUBKEY    27U
@@ -929,14 +930,27 @@ static void handle_run_inference_common(const uint8_t *minf_data, uint32_t minf_
         return;
     }
 
+    uint32_t tx_id = 0U;
     uint32_t open_cmd = DP_CMD_INF_START;
     psa_invec in_open = { &open_cmd, sizeof(open_cmd) };
-    psa_status_t st = psa_call(handle, PSA_IPC_CALL, &in_open, 1, NULL, 0);
+    psa_outvec out_open = { &tx_id, sizeof(tx_id) };
+    psa_status_t st = psa_call(handle, PSA_IPC_CALL, &in_open, 1, &out_open, 1);
     if (st != PSA_SUCCESS) {
         psa_close(handle);
         uint8_t err[8];
         uint32_t stage = 5U;
         int32_t detail = (int32_t)st;
+        memcpy(err, &stage, sizeof(stage));
+        memcpy(err + 4U, &detail, sizeof(detail));
+        uart_protocol_send_response(RESP_ERROR, err, sizeof(err));
+        return;
+    }
+
+    if (tx_id == 0U) {
+        psa_close(handle);
+        uint8_t err[8];
+        uint32_t stage = 5U;
+        int32_t detail = -3;
         memcpy(err, &stage, sizeof(stage));
         memcpy(err + 4U, &detail, sizeof(detail));
         uart_protocol_send_response(RESP_ERROR, err, sizeof(err));
@@ -959,9 +973,22 @@ static void handle_run_inference_common(const uint8_t *minf_data, uint32_t minf_
         return;
     }
 
-    uint32_t close_cmd = DP_CMD_INF_COMPLETE;
-    psa_invec in_close = { &close_cmd, sizeof(close_cmd) };
-    st = psa_call(handle, PSA_IPC_CALL, &in_close, 1, NULL, 0);
+    uint8_t phase = 1U;
+    uint8_t req[5];
+    req[0] = (uint8_t)(tx_id & 0xFFU);
+    req[1] = (uint8_t)((tx_id >> 8) & 0xFFU);
+    req[2] = (uint8_t)((tx_id >> 16) & 0xFFU);
+    req[3] = (uint8_t)((tx_id >> 24) & 0xFFU);
+    req[4] = output_class;
+    uint8_t phase1_resp[65];
+    uint32_t close_cmd = DP_CMD_RUN_INFERENCE;
+    psa_invec in_phase1[3] = {
+        { &close_cmd, sizeof(close_cmd) },
+        { &phase, sizeof(phase) },
+        { req, sizeof(req) },
+    };
+    psa_outvec out_phase1 = { phase1_resp, sizeof(phase1_resp) };
+    st = psa_call(handle, PSA_IPC_CALL, in_phase1, 3, &out_phase1, 1);
     psa_close(handle);
     if (st != PSA_SUCCESS) {
         uint8_t err[8];
