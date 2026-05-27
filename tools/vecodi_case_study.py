@@ -280,7 +280,25 @@ class VecodiCaseStudy:
         if len(payload) < expected:
             raise RuntimeError(f"NS benchmark payload too short: got {len(payload)}, expected {expected}")
         values = struct.unpack(DEVICE_BENCHMARK_FMT, payload[:expected])
-        return {name: int(value) for name, value in zip(DEVICE_BENCHMARK_NAMES, values)}
+        result = {name: int(value) for name, value in zip(DEVICE_BENCHMARK_NAMES, values)}
+
+        # Optional trailing fields: some firmware builds append
+        # execute_verified metrics after the canonical struct. Parse them
+        # if present to maintain backward compatibility.
+        exec_fmt = "<I Q I I I"  # cycles, sum(Q), min, max, count
+        exec_size = struct.calcsize(exec_fmt)
+        offset = expected
+        if len(payload) >= offset + exec_size:
+            exec_vals = struct.unpack_from(exec_fmt, payload, offset)
+            result.update({
+                "execute_verified_cycles": int(exec_vals[0]),
+                "execute_verified_sum_cycles": int(exec_vals[1]),
+                "execute_verified_min_cycles": int(exec_vals[2]),
+                "execute_verified_max_cycles": int(exec_vals[3]),
+                "execute_verified_count": int(exec_vals[4]),
+            })
+
+        return result
 
     def read_secure_benchmark(self) -> Dict[str, int]:
         self.device.send_command(CMD_GET_SECURE_BENCHMARK)
@@ -731,7 +749,7 @@ class VecodiCaseStudy:
         for key in SECURE_BENCHMARK_NAMES:
             log(f"  {key}={secure_metrics.get(key, 0)}")
         log("========================================")
-        self.print_cycles_report(secure_metrics)
+        self.print_cycles_report(ns_metrics, secure_metrics)
         self.print_benchmark_table()
         return 0
 
@@ -810,9 +828,15 @@ class VecodiCaseStudy:
             output.append(f"├── {name:<18} : {self._fmt_cycles(cycles):<18} [{percent:.1f}%]{bottleneck}")
         return "\n".join(output)
 
-    def print_cycles_report(self, secure_metrics: Dict[str, int]) -> None:
+    def print_cycles_report(self, ns_metrics: Dict[str, int], secure_metrics: Dict[str, int]) -> None:
         log("\n========== AUTHORIZE PERFORMANCE COMPARISON ==========")
         log(self.format_authorize_comparison(secure_metrics))
+
+        # Merge NS metrics into secure view so Execute breakdown can include
+        # NS-side measurements such as `execute_verified_cycles` when present.
+        merged_metrics = dict(secure_metrics)
+        if ns_metrics:
+            merged_metrics.update(ns_metrics)
 
         apis = {
             "Create": {
@@ -829,6 +853,7 @@ class VecodiCaseStudy:
                     ("M_inf verification", "inf_start_cycles"),
                     ("SAU open/close", "sau_sync_open_cycles"),
                     ("PoX signing", "inf_complete_cycles"),
+                    ("execute_verified_inference", "execute_verified_cycles"),
                 ],
             },
             "Destroy": {
@@ -842,7 +867,9 @@ class VecodiCaseStudy:
 
         log("\n========== API BREAKDOWN (cycles) ==========")
         for api_name, fields in apis.items():
-            breakdown = self.format_api_breakdown(secure_metrics, api_name, fields)
+            # Use merged metrics so NS-side measurements (execute_verified_*)
+            # are visible alongside Secure metrics in the same breakdown.
+            breakdown = self.format_api_breakdown(merged_metrics, api_name, fields)
             if breakdown:
                 log(breakdown)
 
