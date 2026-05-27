@@ -332,6 +332,12 @@ void benchmark_print_report(const benchmark_metrics_t *metrics)
             safe_avg_u64(metrics->run_enclave_sum_cycles, metrics->run_enclave_count),
             metrics->run_enclave_min_cycles,
             metrics->run_enclave_max_cycles);
+        printk("[BENCHMARK][CSV] execute_verified,%u,%llu,%u,%u,%u\n",
+            metrics->execute_verified_count,
+            (unsigned long long)metrics->execute_verified_sum_cycles,
+            safe_avg_u64(metrics->execute_verified_sum_cycles, metrics->execute_verified_count),
+            metrics->execute_verified_min_cycles,
+            metrics->execute_verified_max_cycles);
         printk("[BENCHMARK][CSV] irq_atomic,%u,%llu,%u,%u,%u\n",
             metrics->irq_atomic_count,
             (unsigned long long)metrics->irq_atomic_sum_cycles,

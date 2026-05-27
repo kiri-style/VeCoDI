@@ -671,6 +671,24 @@ class VecodiCaseStudy:
             log(f"[OK] PoX verified, pred={pred}")
         else:
             log(f"[WARN] pred={pred}, but PoX verification failed")
+            # Diagnostic dump to help debug signature mismatch
+            try:
+                dev_pk = self.state.device_pubkey.hex() if self.state.device_pubkey else "<none>"
+                ch = code_hash.hex() if code_hash is not None else "<none>"
+                sigh = pox_sig.hex()
+                payloadh = payload.hex()
+                log(f"[DBG] device_pubkey={dev_pk}")
+                log(f"[DBG] code_hash={ch}")
+                log(f"[DBG] signature={sigh}")
+                log(f"[DBG] full_payload={payloadh}")
+                # Also print host-computed PoX hashes for both formats
+                import hashlib
+                msg_new = struct.pack("<I", self.model_id) + bytes(16) + bytes(12) + bytes([pred & 0xFF])
+                msg_old = struct.pack("<I", self.model_id) + code_hash + bytes([pred & 0xFF])
+                log(f"[DBG] host_pox_new_hash={hashlib.sha256(msg_new).hexdigest()}")
+                log(f"[DBG] host_pox_old_hash={hashlib.sha256(msg_old).hexdigest()}")
+            except Exception:
+                pass
         return pred
 
     def customer_destroy_enclave(self) -> None:

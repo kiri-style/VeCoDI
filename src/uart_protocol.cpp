@@ -915,10 +915,7 @@ static void handle_run_inference_common(const uint8_t *minf_data, uint32_t minf_
         return;
     }
 
-    /* Open SAU from Secure side first, then execute locally,
-     * then close/commit in Secure. Host still receives only
-     * prediction + expected label (2 bytes).
-     */
+    /* Phase 0: verify M_inf in Secure, open the SAU window, and get tx_id. */
     psa_handle_t handle = psa_connect(TFM_DP_SERVICE_SID, 1);
     if (handle <= 0) {
         uint8_t err[8];
@@ -930,11 +927,16 @@ static void handle_run_inference_common(const uint8_t *minf_data, uint32_t minf_
         return;
     }
 
+    uint8_t phase0 = 0U;
     uint32_t tx_id = 0U;
-    uint32_t open_cmd = DP_CMD_INF_START;
-    psa_invec in_open = { &open_cmd, sizeof(open_cmd) };
-    psa_outvec out_open = { &tx_id, sizeof(tx_id) };
-    psa_status_t st = psa_call(handle, PSA_IPC_CALL, &in_open, 1, &out_open, 1);
+    uint32_t run_cmd = DP_CMD_RUN_INFERENCE;
+    psa_invec in_phase0[3] = {
+        { &run_cmd, sizeof(run_cmd) },
+        { &phase0, sizeof(phase0) },
+        { minf_data, minf_len },
+    };
+    psa_outvec out_phase0 = { &tx_id, sizeof(tx_id) };
+    psa_status_t st = psa_call(handle, PSA_IPC_CALL, in_phase0, 3, &out_phase0, 1);
     if (st != PSA_SUCCESS) {
         psa_close(handle);
         uint8_t err[8];
@@ -960,7 +962,7 @@ static void handle_run_inference_common(const uint8_t *minf_data, uint32_t minf_
     uint8_t output_class = 0U;
     /* Benchmark the execute_verified_inference call from the UART path */
     BENCHMARK_START(exec_verified);
-    int exec_ret = execute_verified_inference(1U, &output_class);
+    int exec_ret = execute_verified_inference(tx_id, &output_class);
     BENCHMARK_END(exec_verified, g_benchmark_metrics.execute_verified_cycles);
     BENCHMARK_ACCUMULATE(g_benchmark_metrics.execute_verified_cycles,
                          g_benchmark_metrics.execute_verified_sum_cycles,

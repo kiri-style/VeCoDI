@@ -170,6 +170,13 @@ typedef struct {
     uint32_t dangerous_read_ram_count;
     uint32_t dangerous_read_rom_count;
 
+    // Measured time for execute_verified_inference() invoked from UART path
+    uint32_t execute_verified_cycles;
+    uint64_t execute_verified_sum_cycles;
+    uint32_t execute_verified_min_cycles;
+    uint32_t execute_verified_max_cycles;
+    uint32_t execute_verified_count;
+
     // NS M_update timing (handle_validate_m_update)
     uint64_t authorize_cycles;
     uint32_t authorize_count;

@@ -23,8 +23,16 @@ void run_enclave(void)
         return;
     }
 
+    printk("[ENCLAVE] >>> ENTRY: about to call run_split_inference()\n");
     set_atomic_inference_window_open(true);
     run_split_inference();
+    /* Read and log the prediction produced by the split inference
+     * before closing the atomic window so the log proves the work
+     * happened while the window was open.
+     */
+    uint8_t _pred = get_last_prediction();
+    printk("[ENCLAVE] run_split_inference produced prediction=%u\n", _pred);
+    printk("[ENCLAVE] <<< EXIT: finished run_split_inference()\n");
     set_atomic_inference_window_open(false);
     
     /* Update metrics */

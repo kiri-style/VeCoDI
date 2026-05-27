@@ -1769,7 +1769,6 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
                         printf("%02x", pox_msg[_i]);
                     }
                     printf("\n");
-                    fflush(stdout);
 
                     psa_status_t st = psa_hash_compute(PSA_ALG_SHA_256,
                                                       pox_msg,
@@ -1784,10 +1783,8 @@ static psa_status_t tfm_dp_secret_digest_ipc(psa_msg_t *msg)
                             printf("%02x", pox_hash[_i]);
                         }
                         printf("\n");
-                        fflush(stdout);
                     } else {
                         printf("[SECURE-DBG] pox_hash: hashing failed (%d)\n", (int)st);
-                        fflush(stdout);
                     }
                     if (st != PSA_SUCCESS || pox_hash_len != sizeof(pox_hash)) {
                         return PSA_ERROR_GENERIC_ERROR;

@@ -614,8 +614,11 @@ void run_split_inference(void)
     int pred = run_late_layers(early_output, early_skip);
 
     /* Store prediction and expected label for UART query */
-    last_prediction = (uint8_t)(pred & 0xFF);
+    uint8_t real_pred = (uint8_t)(pred & 0xFF);
     last_expected_label = (uint8_t)expected_label;
+    /* Store the real prediction and keep a diagnostic log. */
+    last_prediction = real_pred;
+    printk("[SPLIT] (diagnostic) real prediction=%u\n", real_pred);
 
     BENCHMARK_END(total_inf, g_benchmark_metrics.total_inference_cycles);
     BENCHMARK_ACCUMULATE(g_benchmark_metrics.total_inference_cycles,
