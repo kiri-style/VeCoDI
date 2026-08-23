@@ -36,11 +36,28 @@ uint32_t benchmark_get_cycles(void);
 uint32_t benchmark_cycles_to_us(uint32_t cycles);
 
 /**
+ * @brief Convert cycles to seconds as a floating-point value
+ * @param cycles Number of CPU cycles
+ * @return Time in seconds
+ */
+double benchmark_cycles_to_seconds(uint64_t cycles);
+
+/**
  * @brief Convert cycles to milliseconds
  * @param cycles Number of CPU cycles
  * @return Time in milliseconds
  */
 uint32_t benchmark_cycles_to_ms(uint32_t cycles);
+
+/**
+ * @brief Measure the CPU cycles needed to zero a memory region matching the
+ *        NS stack size. This benchmark uses the STM cycle counter, not a soft
+ *        delay, and must be performed on a scratch buffer to avoid corrupting the
+ *        currently running stack.
+ * @param stack_size_bytes Size in bytes to zero. 0 means CONFIG_MAIN_STACK_SIZE.
+ * @return Number of elapsed CPU cycles for the memset operation.
+ */
+uint32_t benchmark_measure_ns_stack_zero_time_cycles(uint32_t stack_size_bytes);
 
 // ============================================================================
 // Memory Usage API

@@ -351,7 +351,8 @@ static bool is_valid_cmd(uint8_t cmd)
             cmd == CMD_GET_TCB_BENCHMARK ||
             cmd == CMD_READ_PROTECTED_MEM ||
             cmd == CMD_READ_PROTECTED_ROM ||
-            cmd == CMD_GET_AUTHORIZE_DEBUG);
+            cmd == CMD_GET_AUTHORIZE_DEBUG ||
+            cmd == CMD_GET_STACK_ZERO_BENCHMARK);
 }
 
 static bool is_valid_len_for_cmd(uint8_t cmd, uint32_t len)
@@ -381,6 +382,7 @@ static bool is_valid_len_for_cmd(uint8_t cmd, uint32_t len)
         case CMD_READ_PROTECTED_ROM:
             return len == 0U;
         case CMD_GET_AUTHORIZE_DEBUG:
+        case CMD_GET_STACK_ZERO_BENCHMARK:
             return len == 0U;
         case CMD_RUN_INFERENCE:
             /* Verified-only protocol: plaintext M_inf model_id(4)+code_hash(32)+signature(64). */
@@ -419,6 +421,7 @@ static void handle_create_enclave(const uint8_t *data, uint32_t len);
 static void handle_destroy_enclave(void);
 static void handle_update_rate_limit(const uint8_t *data, uint32_t len);
 static void handle_get_authorize_debug(void);
+static void handle_get_stack_zero_benchmark(void);
 
 int uart_protocol_init(void)
 {
@@ -643,6 +646,10 @@ static void process_command(void)
 
         case CMD_GET_AUTHORIZE_DEBUG:
             handle_get_authorize_debug();
+            break;
+
+        case CMD_GET_STACK_ZERO_BENCHMARK:
+            handle_get_stack_zero_benchmark();
             break;
         
         case CMD_GET_INFERENCE_RESULT:
@@ -1166,6 +1173,16 @@ static void handle_read_protected_rom(void)
 
     /* Reaching here means read did not fault (unexpected in strict isolation). */
     uart_protocol_send_response(RESP_OK, &v, 1);
+}
+
+static void handle_get_stack_zero_benchmark(void)
+{
+    uint32_t cycles = benchmark_measure_ns_stack_zero_time_cycles(CONFIG_MAIN_STACK_SIZE);
+    uint8_t raw[sizeof(cycles)];
+    for (size_t i = 0U; i < sizeof(raw); ++i) {
+        raw[i] = (uint8_t)((cycles >> (8U * i)) & 0xFFU);
+    }
+    uart_protocol_send_response(RESP_OK, raw, sizeof(raw));
 }
 
 static void handle_get_benchmark(void)

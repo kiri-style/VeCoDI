@@ -65,10 +65,39 @@ uint32_t benchmark_cycles_to_us(uint32_t cycles)
     return (uint32_t)((uint64_t)cycles * 1000000ULL / CPU_FREQ_HZ);
 }
 
+double benchmark_cycles_to_seconds(uint64_t cycles)
+{
+    return ((double)cycles) / (double)CPU_FREQ_HZ;
+}
+
 uint32_t benchmark_cycles_to_ms(uint32_t cycles)
 {
     // Convert cycles to milliseconds
     return (uint32_t)((uint64_t)cycles * 1000ULL / CPU_FREQ_HZ);
+}
+
+uint32_t benchmark_measure_ns_stack_zero_time_cycles(uint32_t stack_size_bytes)
+{
+    const uint32_t target_size = (stack_size_bytes == 0U) ? CONFIG_MAIN_STACK_SIZE : stack_size_bytes;
+    volatile uint8_t scratch[CONFIG_MAIN_STACK_SIZE] __attribute__((aligned(8))) = {0};
+    const uint32_t bytes_to_zero = (target_size < sizeof(scratch)) ? target_size : (uint32_t)sizeof(scratch);
+
+    /* Prime the buffer so memset cannot be optimized away during analysis. */
+    for (size_t i = 0U; i < sizeof(scratch); ++i) {
+        scratch[i] = 0xA5U;
+    }
+
+    const uint32_t start_cycles = benchmark_get_cycles();
+    memset((void *)scratch, 0, bytes_to_zero);
+    const uint32_t end_cycles = benchmark_get_cycles();
+
+    volatile uint32_t checksum = 0U;
+    for (size_t i = 0U; i < bytes_to_zero; ++i) {
+        checksum += scratch[i];
+    }
+    (void)checksum;
+
+    return end_cycles - start_cycles;
 }
 
 // ============================================================================

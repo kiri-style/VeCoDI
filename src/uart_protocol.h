@@ -35,6 +35,7 @@ extern "C" {
 #define CMD_READ_PROTECTED_ROM      0x18  /* DANGEROUS TEST: direct read from protected model ROM */
 /* Debug: return NS-side m_update metrics (uint64 cycles + uint32 count) */
 #define CMD_GET_AUTHORIZE_DEBUG     0x1A
+#define CMD_GET_STACK_ZERO_BENCHMARK 0x1C  /* Measure zeroing time for the full NS stack */
 /* Response Codes (Device → Mac) */
 #define RESP_OK                     0x00
 #define RESP_ERROR                  0xFF
