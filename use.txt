@@ -1,0 +1,17 @@
+Intended use and limitations
+============================
+
+This artifact is intended for research reproduction of VeCoDI's embedded
+confidential-inference protocol and performance measurements. It is not a
+production secure-boot or key-management deployment: the firmware uses the
+project's dummy TF-M provisioning configuration and test keys.
+
+The primary evaluation requires physical access to a NUCLEO-L552ZE-Q board,
+an ST-LINK connection, and a USB serial connection. Host-only execution can
+inspect the supplied CSV/JSON results and run the protocol-script syntax
+checks, but it cannot reproduce device cycle counts or hardware isolation.
+
+Measurements can vary with board revision, firmware/toolchain versions,
+compiler options, reset state, and serial-device timing. The expected output
+in claims/claim1 describes the behavioral checks; exact cycle counts should be
+reported with the generated result files rather than treated as invariants.

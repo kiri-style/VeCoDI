@@ -1,0 +1,19 @@
+VeCoDI artifact manifest
+=======================
+
+Software
+--------
+Firmware sources: src/, dummy_partition/, split_inference/, boards/,
+CMSIS_NN/, CMakeLists.txt, prj.conf, and tfm_config_overlay.conf.
+Host drivers and benchmarks: tools/.
+
+Data and outputs
+---------------
+The repository includes the test image inputs and representative CSV/JSON
+benchmark outputs used by the paper evaluation. New outputs are written to
+build/ by the claim runner.
+
+Reproduction entry points
+-------------------------
+claims/claim1/run.sh reproduces the verified-inference case study on the
+supported board. BUILD_FLASH.md documents direct build and flash commands.

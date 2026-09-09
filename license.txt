@@ -1,0 +1,12 @@
+Apache License 2.0
+==================
+
+The artifact-specific scripts and documentation are released under the
+Apache License, Version 2.0:
+
+https://www.apache.org/licenses/LICENSE-2.0
+
+Source files originating from Zephyr, TensorFlow Lite Micro, CMSIS-NN,
+Trusted Firmware-M, or other upstream projects retain their original
+copyright and license terms. Review the corresponding upstream files before
+redistribution.

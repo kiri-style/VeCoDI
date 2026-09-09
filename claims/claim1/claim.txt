@@ -1,0 +1,16 @@
+Claim 1: Verified confidential inference on the STM32L552ZE
+============================================================
+
+The VeCoDI protocol performs provider attestation, accepts a monotonically
+increasing M_update quota, creates an enclave, executes a verified inference,
+and destroys the enclave. The claim is reproduced when the run reports:
+
+* EnclaveInfo attestation verified
+* M_update accepted
+* Enclave created
+* Inference result with pred equal to expected
+* PoX verified
+* Enclave destroyed
+
+This claim covers the case-study workflow and its device-side cycle counters,
+not a claim of production provisioning or absolute cycle-count identity.
