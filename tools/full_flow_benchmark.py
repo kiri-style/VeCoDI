@@ -29,39 +29,40 @@ CPU_MHZ = 110.0
 DEVICE_BENCHMARK_NAMES = [
     "enclave_create_cycles", "enclave_destroy_cycles", "aes_decrypt_cycles",
     "early_layers_cycles", "late_layers_cycles", "total_inference_cycles", "run_enclave_cycles", "full_execute_cycles",
-    "create_enclave_cycles", "destroy_enclave_cycles",
+    "heap_used_bytes", "heap_free_bytes", "stack_used_bytes",
     "ram_used_bytes", "ram_total_bytes", "flash_used_bytes", "flash_total_bytes",
     "inference_count", "enclave_recreations", "inference_requests_total", "enclave_info_validation_failures",
     "enclave_create_sum_cycles", "enclave_destroy_sum_cycles", "aes_decrypt_sum_cycles",
     "early_layers_sum_cycles", "late_layers_sum_cycles", "total_inference_sum_cycles", "run_enclave_sum_cycles", "irq_atomic_sum_cycles",
-    "counter_operations", "create_enclave_count",
+    "enclave_create_min_cycles", "enclave_create_max_cycles", "enclave_destroy_min_cycles", "enclave_destroy_max_cycles",
     "aes_decrypt_min_cycles", "aes_decrypt_max_cycles", "early_layers_min_cycles", "early_layers_max_cycles",
     "late_layers_min_cycles", "late_layers_max_cycles", "total_inference_min_cycles", "total_inference_max_cycles",
     "run_enclave_min_cycles", "run_enclave_max_cycles", "irq_atomic_min_cycles", "irq_atomic_max_cycles",
-    "enclave_create_count", "enclave_destroy_count", "aes_decrypt_count", "early_layers_count", "late_layers_count", "total_inference_count", "run_enclave_count", "irq_atomic_count",
-SECURE_BENCHMARK_FMT = "<" + ("Q" * 17) + ("I" * 18)
+    "enclave_create_count", "enclave_destroy_count", "aes_decrypt_count", "early_layers_count", "late_layers_count",
+    "total_inference_count", "run_enclave_count", "irq_atomic_count",
+    "full_execute_count", "full_execute_sum_cycles", "full_execute_min_cycles", "full_execute_max_cycles",
     "create_atomic_sum_cycles", "destroy_atomic_sum_cycles",
     "create_atomic_min_cycles", "create_atomic_max_cycles", "destroy_atomic_min_cycles", "destroy_atomic_max_cycles", "create_atomic_count", "destroy_atomic_count",
     "run_inference_with_image_count", "dangerous_inference_no_sau_count", "dangerous_read_ram_count", "dangerous_read_rom_count",
-    "m_update_cycles", "m_update_count",
+    "authorize_cycles", "authorize_count",
 ]
 DEVICE_BENCHMARK_FMT = "<" + "I" * 19 + "xxxx" + "Q" * 8 + "I" * 16 + "I" * 8 + "I" + "xxxx" + "Q" + "I" * 2 + "Q" * 2 + "I" * 6 + "I" * 4 + "xxxxQI"
 
 SECURE_BENCHMARK_NAMES = [
-    "aes_decrypt_cycles", "late_hash_cycles", "digest_compute_cycles", "m_update_cycles",
+    "aes_decrypt_cycles", "late_hash_cycles", "digest_compute_cycles", "authorize_cycles", "global_crypto_init_cycles",
+    "create_validate_cycles", "authorize_parse_cycles", "authorize_verify_cycles", "authorize_update_cycles", "authorize_crypto_init_cycles",
+    "authorize_read_cycles", "authorize_import_key_cycles", "authorize_hash_msg_cycles", "authorize_verify_sig_cycles", "authorize_destroy_key_cycles",
+    "authorize_verify_message_cycles", "authorize_verify_old_cycles", "create_recompute_cycles",
     "get_max_cycles", "check_allowed_cycles", "increment_cycles", "reset_cycles",
-    "create_enclave_cycles", "destroy_enclave_cycles",
-    "inf_start_cycles", "inf_complete_cycles",
-    "sau_sync_open_cycles", "sau_sync_close_cycles", "sau_flash_close_cycles",
-    "sau_flash_open_cycles", "sau_flash_pulse_cycles",
-    "aes_decrypt_count", "late_hash_count", "digest_count", "m_update_count",
-    "counter_operations", "create_enclave_count",
-    "destroy_enclave_count", "inf_start_count", "inf_complete_count",
-    "sau_sync_open_count", "sau_sync_close_count", "sau_flash_close_count",
-    "sau_flash_open_count", "sau_flash_pulse_count",
+    "create_enclave_cycles", "finalize_create_cycles", "destroy_enclave_cycles", "inf_start_cycles", "inf_phase0_hash_cycles", "inf_complete_cycles",
+    "sau_sync_open_cycles", "sau_sync_close_cycles", "sau_flash_close_cycles", "sau_flash_open_cycles", "sau_flash_pulse_cycles",
+    "aes_decrypt_count", "late_hash_count", "digest_count", "authorize_count", "authorize_crypto_init_count",
+    "authorize_import_key_count", "authorize_verify_sig_count", "authorize_verify_message_count", "create_recompute_count", "counter_operations",
+    "create_enclave_count", "finalize_create_count", "destroy_enclave_count", "inf_start_count", "inf_complete_count",
+    "sau_sync_open_count", "sau_sync_close_count", "sau_flash_close_count", "sau_flash_open_count", "sau_flash_pulse_count",
     "ram_used_bytes", "ram_total_bytes", "flash_used_bytes", "flash_total_bytes",
 ]
-SECURE_BENCHMARK_FMT = "<" + ("Q" * 17) + ("I" * 18)
+SECURE_BENCHMARK_FMT = "<" + ("Q" * 33) + ("I" * 24)
 
 
 def read_device_benchmark(device: UartDevice) -> Dict[str, int]:
@@ -278,11 +279,11 @@ def main() -> int:
                 "m_update_cycles": per_op_cycles(
                     after_m_update_secure,
                     before_secure,
-                    "m_update_cycles",
-                    "m_update_count",
-                    "m_update_cycles",
+                    "authorize_cycles",
+                    "authorize_count",
+                    "authorize_cycles",
                 ),
-                "m_update_count": delta(after_m_update_secure, before_secure, "m_update_count"),
+                "m_update_count": delta(after_m_update_secure, before_secure, "authorize_count"),
                 # Use explicit NS debug command for reliable NS-side m_update counters
                 "ns_m_update_cycles": int((after_ns_cycles - before_ns_cycles) // (after_ns_count - before_ns_count)) if (after_ns_count - before_ns_count) > 0 else 0,
                 "ns_m_update_count": int(after_ns_count - before_ns_count),
@@ -358,7 +359,7 @@ def main() -> int:
                 "pox_count": delta(after_inference_secure, before_inference_secure, "inf_complete_count"),
                 "baseline_create_count": int(before_device["enclave_create_count"]),
                 "baseline_destroy_count": int(before_device["enclave_destroy_count"]),
-                "baseline_m_update_count": int(before_secure["m_update_count"]),
+                "baseline_m_update_count": int(before_secure["authorize_count"]),
                 "baseline_inference_count": int(before_inference_device["inference_count"]),
             }
             samples.append(sample)

@@ -112,13 +112,38 @@ Or read a cycle count from a JSON file:
        python3 tools/ns_stack_zero_time.py --json build/ns_stack_zero.json \
            --json-key stack_zero_cycles --stack-bytes 3072
 
-Known limitation
-----------------
+Full-flow benchmark
+-------------------
 
-tools/full_flow_benchmark.py is retained as historical work but is not part
-of the runnable workflow: the current file has a Python syntax error in its
-benchmark format declarations. Use tools/vecodi_case_study.py for the full
-M_update -> create -> inference -> destroy flow.
+Run the detailed benchmark for M_update, enclave creation, verified
+inference, PoX completion, and enclave destruction:
+
+          python3 tools/full_flow_benchmark.py /dev/cu.usbmodemXXXX \
+                 --runs 1 --c-limit 10 \
+                 --output build/full_flow_benchmark.json
+
+The secure counter for c_limit persists across sessions on the board. If
+M_update rejects the selected value, rerun with a larger strictly increasing
+value, for example `--c-limit 11`. The successful run writes the detailed
+per-stage measurements to the JSON output path.
+
+Case study versus full-flow benchmark
+-------------------------------------
+
+Both tools execute the same main protocol:
+
+       M_update -> create enclave -> verified inference -> PoX -> destroy enclave
+
+Use `tools/vecodi_case_study.py` as the functional artifact runner. It checks
+attestation and PoX verification, confirms the prediction, reports the device
+state, and writes JSON/CSV results. This is the recommended command for the
+ACSAC reproducibility claim and for a quick end-to-end validation.
+
+Use `tools/full_flow_benchmark.py` for detailed performance measurements. It
+records host-side duration and separates NS/Secure cycle counters for
+M_update, enclave creation, inference, PoX completion, and destruction. With
+multiple runs it also reports averages and standard deviations. Its output is
+a detailed JSON benchmark rather than the claim-oriented CSV/JSON pair.
 
 Repository map
 --------------
