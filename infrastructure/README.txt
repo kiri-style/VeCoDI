@@ -19,13 +19,18 @@ Required local or remote resources
 * Python 3.10 or newer, West 1.5.0 or newer
 * Zephyr SDK 0.17.4 and STM32CubeProgrammer 2.21.0
 
-Remote evaluation
------------------
+Access and evaluator requirements
+---------------------------------
 
-For remote review, authors should provide a time-limited SSH/desktop session
-to a host with the board attached, or a live serial endpoint plus access to
-STM32CubeProgrammer. The reviewer then runs install.sh, sets
-VECODI_SERIAL_PORT to the forwarded serial device, and executes
-claims/claim1/run.sh. No credentials or private keys are part of this
-artifact; access credentials must be exchanged through the conference's
-approved channel.
+No remote SSH, desktop session, live serial endpoint, or shared physical board
+is provided with this artifact. The complete experience must be reproduced by
+the evaluator with their own NUCLEO-L552ZE-Q board, ST-LINK connection, and USB
+serial link. This physical-hardware requirement is necessary for TF-M secure /
+non-secure execution, flash programming, UART protocol exchange, and the
+device-side cycle counters reported by the benchmarks.
+
+Without the board, evaluators can still run install.sh, Python syntax checks,
+inspect the supplied CSV/JSON outputs, and review the source code, but they
+cannot reproduce the firmware execution, hardware isolation, or measured cycle
+counts. No credentials, private keys, or remote-access tokens are included in
+the artifact.
