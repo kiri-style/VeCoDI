@@ -18,6 +18,18 @@ Quick start
 
 3. Connect a NUCLEO-L552ZE-Q board and identify its serial device.
 
+Pre-build firmware preparation
+------------------------------
+
+Before building and flashing, perform these two operations in the Zephyr and
+TF-M environment:
+
+1. Update the Zephyr memory configuration required by the firmware.
+2. Disable TF-M automatic SAU configuration.
+
+The exact commands and file changes for these two operations are intentionally
+left to be documented here.
+
 4. Build and flash:
 
        . /path/to/zephyr/zephyr-env.sh
@@ -29,7 +41,7 @@ Quick start
        VECODI_SERIAL_PORT=/dev/cu.usbmodemXXXX claims/claim1/run.sh
 
 The script runs one verified inference by default and writes JSON/CSV results
-under build/. Set VECODI_RUNS for repeated measurements. See use.txt for the
+under claims/claim1/results/. Set VECODI_RUNS for repeated measurements. See use.txt for the
 intended use and limitations, and infrastructure/README.txt for the hardware
 access rationale.
 
@@ -44,15 +56,15 @@ Run the case study directly and save benchmark results:
 
        python3 tools/vecodi_case_study.py /dev/cu.usbmodemXXXX \
            --c-limit 10 --runs 1 \
-           --benchmark-json build/case_study.json \
-           --benchmark-csv build/case_study.csv
+           --benchmark-json claims/claim1/results/case_study.json \
+           --benchmark-csv claims/claim1/results/case_study.csv
 
 Run repeated verified inferences:
 
        python3 tools/vecodi_case_study.py /dev/cu.usbmodemXXXX \
            --c-limit 10 --runs 10 \
-           --benchmark-json build/case_study_10runs.json \
-           --benchmark-csv build/case_study_10runs.csv
+           --benchmark-json claims/claim1/results/case_study_10runs.json \
+           --benchmark-csv claims/claim1/results/case_study_10runs.csv
 
 Run the interactive provider/customer workflow:
 
@@ -72,20 +84,20 @@ M_update:
 
           python3 tools/vecodi_case_study.py /dev/cu.usbmodemXXXX \
                  --c-limit 10 --runs 1 \
-                 --benchmark-json build/benchmark_setup.json \
-                 --benchmark-csv build/benchmark_setup.csv
+                 --benchmark-json claims/claim1/results/benchmark_setup.json \
+                 --benchmark-csv claims/claim1/results/benchmark_setup.csv
 
 Then measure CREATE_ENCLAVE for the full encrypted model size:
 
           python3 tools/create_enclave_size_benchmark.py \
                  /dev/cu.usbmodemXXXX --size 39552 \
-                 --runs 10 --output build/create_enclave_size.json
+                 --runs 10 --output claims/claim1/results/create_enclave_size.json
 
 Additional sizes can be supplied when supported by the firmware:
 
        python3 tools/create_enclave_size_benchmark.py \
            /dev/cu.usbmodemXXXX --size 1024 4096 16384 39552 \
-           --runs 10 --output build/create_enclave_size.json
+           --runs 10 --output claims/claim1/results/create_enclave_size.json
 
 The value 39552 is the full late-weight blob size used by this artifact.
 
@@ -120,7 +132,7 @@ inference, PoX completion, and enclave destruction:
 
           python3 tools/full_flow_benchmark.py /dev/cu.usbmodemXXXX \
                  --runs 1 --c-limit 10 \
-                 --output build/full_flow_benchmark.json
+                 --output claims/claim1/results/full_flow_benchmark.json
 
 The secure counter for c_limit persists across sessions on the board. If
 M_update rejects the selected value, rerun with a larger strictly increasing

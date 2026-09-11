@@ -1,0 +1,47 @@
+{
+  "port": "/dev/cu.usbmodem21103",
+  "baud": 115200,
+  "cpu_mhz": 110.0,
+  "results": [
+    {
+      "requested_decrypt_size_bytes": 39552,
+      "runs": 1,
+      "samples": [
+        {
+          "attempt": 1,
+          "host_create_ms": 96.915,
+          "host_destroy_ms": 6.48,
+          "secure_create_total": 8420938,
+          "secure_create_validate": 1131545,
+          "secure_aes_decrypt": 7274707,
+          "secure_create_recompute": 1128062,
+          "secure_destroy_total": 290208,
+          "secure_destroy_sau_open": 0,
+          "secure_destroy_sau_close": 5724,
+          "secure_metrics": {
+            "secure_create_total": 8420938,
+            "secure_create_validate": 1131545,
+            "secure_aes_decrypt": 7274707,
+            "secure_create_recompute": 1128062,
+            "secure_destroy_total": 290208,
+            "secure_destroy_sau_open": 0,
+            "secure_destroy_sau_close": 5724
+          }
+        }
+      ],
+      "secure_metrics_avg": {
+        "secure_create_total": 8420938,
+        "secure_create_validate": 1131545,
+        "secure_aes_decrypt": 7274707,
+        "secure_create_recompute": 1128062,
+        "secure_destroy_total": 290208,
+        "secure_destroy_sau_open": 0,
+        "secure_destroy_sau_close": 5724
+      },
+      "host_create_ms_mean": 96.915,
+      "host_create_ms_stddev": 0.0,
+      "host_destroy_ms_mean": 6.48,
+      "host_destroy_ms_stddev": 0.0
+    }
+  ]
+}

@@ -18,10 +18,10 @@ else
     PYTHON="${PYTHON_BIN:-python3}"
 fi
 
-mkdir -p "$ROOT_DIR/build"
+mkdir -p "$ROOT_DIR/claims/claim1/results"
 exec "$PYTHON" "$ROOT_DIR/tools/vecodi_case_study.py" "$PORT" \
     --c-limit "$C_LIMIT" \
     --runs "$RUNS" \
     --model-id "$MODEL_ID" \
-    --benchmark-json "$ROOT_DIR/build/case_study_claim1.json" \
-    --benchmark-csv "$ROOT_DIR/build/case_study_claim1.csv"
+    --benchmark-json "$ROOT_DIR/claims/claim1/results/case_study_claim1.json" \
+    --benchmark-csv "$ROOT_DIR/claims/claim1/results/case_study_claim1.csv"

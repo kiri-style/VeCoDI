@@ -1,0 +1,123 @@
+{
+  "port": "/dev/cu.usbmodem21103",
+  "baud": 115200,
+  "runs": 1,
+  "model_id": 1,
+  "c_limit_start": 11,
+  "image_used": false,
+  "image_source": "device",
+  "samples": [
+    {
+      "attempt": 1,
+      "c_limit": 11,
+      "host_m_update_ms": 478.159,
+      "host_create_ms": 96.049,
+      "host_inference_ms": 9183.258,
+      "host_destroy_ms": 6.965,
+      "m_update_cycles": 50338383,
+      "m_update_count": 1,
+      "ns_m_update_cycles": 50383530,
+      "ns_m_update_count": 1,
+      "create_enclave_cycles": 10414245,
+      "create_enclave_count": 2,
+      "secure_create_enclave_cycles": 8418555,
+      "secure_create_enclave_count": 1,
+      "inference_cycles": 51029928,
+      "early_layers_cycles": 42502624,
+      "late_layers_cycles": 7885356,
+      "inference_count": 0,
+      "destroy_enclave_cycles": 557248,
+      "destroy_enclave_count": 2,
+      "secure_destroy_enclave_cycles": 290322,
+      "secure_destroy_enclave_count": 1,
+      "full_execute_cycles": 127312776,
+      "full_execute_count": 1,
+      "pox_cycles": 25317844,
+      "pox_count": 1,
+      "baseline_create_count": 2,
+      "baseline_destroy_count": 2,
+      "baseline_m_update_count": 1,
+      "baseline_inference_count": 0
+    }
+  ],
+  "summary": {
+    "host_m_update_ms": {
+      "min": 478.159,
+      "max": 478.159,
+      "avg": 478.159,
+      "stddev": 0.0
+    },
+    "host_create_ms": {
+      "min": 96.049,
+      "max": 96.049,
+      "avg": 96.049,
+      "stddev": 0.0
+    },
+    "host_inference_ms": {
+      "min": 9183.258,
+      "max": 9183.258,
+      "avg": 9183.258,
+      "stddev": 0.0
+    },
+    "host_destroy_ms": {
+      "min": 6.965,
+      "max": 6.965,
+      "avg": 6.965,
+      "stddev": 0.0
+    },
+    "m_update_cycles": {
+      "min": 50338383.0,
+      "max": 50338383.0,
+      "avg": 50338383.0,
+      "stddev": 0.0
+    },
+    "ns_m_update_cycles": {
+      "min": 50383530.0,
+      "max": 50383530.0,
+      "avg": 50383530.0,
+      "stddev": 0.0
+    },
+    "create_enclave_cycles": {
+      "min": 10414245.0,
+      "max": 10414245.0,
+      "avg": 10414245.0,
+      "stddev": 0.0
+    },
+    "secure_create_enclave_cycles": {
+      "min": 8418555.0,
+      "max": 8418555.0,
+      "avg": 8418555.0,
+      "stddev": 0.0
+    },
+    "inference_cycles": {
+      "min": 51029928.0,
+      "max": 51029928.0,
+      "avg": 51029928.0,
+      "stddev": 0.0
+    },
+    "full_execute_cycles": {
+      "min": 127312776.0,
+      "max": 127312776.0,
+      "avg": 127312776.0,
+      "stddev": 0.0
+    },
+    "pox_cycles": {
+      "min": 25317844.0,
+      "max": 25317844.0,
+      "avg": 25317844.0,
+      "stddev": 0.0
+    },
+    "destroy_enclave_cycles": {
+      "min": 557248.0,
+      "max": 557248.0,
+      "avg": 557248.0,
+      "stddev": 0.0
+    },
+    "secure_destroy_enclave_cycles": {
+      "min": 290322.0,
+      "max": 290322.0,
+      "avg": 290322.0,
+      "stddev": 0.0
+    }
+  }
+}
