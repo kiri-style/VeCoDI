@@ -10,7 +10,8 @@ Host drivers and benchmarks: tools/.
 Data and outputs
 ---------------
 The repository includes the test image inputs and representative CSV/JSON
-benchmark outputs used by the paper evaluation. Benchmark outputs belong under
+benchmark outputs used by the paper evaluation. Reference outputs are stored
+under claims/claim1/expected/. Reviewer-generated outputs belong under
 claims/claim1/results/; build/ remains reserved for generated build files.
 
 Reproduction entry points
