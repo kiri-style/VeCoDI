@@ -24,19 +24,27 @@ Pre-build firmware preparation
 Before building and flashing, perform these two operations in the Zephyr and
 TF-M environment:
 
-1. Update the Zephyr memory configuration required by the firmware.
-2. Disable TF-M automatic SAU configuration.
+1. Increase the non-secure flash region required by the firmware. Modify the
+   following files:
 
-The exact commands and file changes for these two operations are intentionally
-left to be documented here.
+       vim ../modules/tee/tf-m/trusted-firmware-m/platform/ext/target/stm/nucleo_l552ze_q/partition/flash_layout.h
+       vim ./boards/st/nucleo_l552ze_q/nucleo_l552ze_q_stm32l552xx_ns.dts
 
-4. Build and flash:
+2. Disable TF-M automatic SAU configuration by commenting out the code around
+   line 168 in `target_cfg.c`. Modify the following file:
+
+       /Users/user/zephyrproject/modules/tee/tf-m/trusted-firmware-m/platform/ext/target/stm/common/stm32l5xx/secure/target_cfg.c
+
+   Reference file:
+   https://github.com/TrustedFirmware-M/trusted-firmware-m/blob/e2812b6e4e5b00f71839828b4569f1c46a4f6dad/platform/ext/target/stm/common/stm32l5xx/secure/target_cfg.c#L168
+
+3. Build and flash:
 
        . /path/to/zephyr/zephyr-env.sh
        west build -b nucleo_l552ze_q/stm32l552xx/ns --pristine=always
        west flash
 
-5. Reproduce the main case-study claim:
+4. Reproduce the main case-study claim:
 
        VECODI_SERIAL_PORT=/dev/cu.usbmodemXXXX claims/claim1/run.sh
 
@@ -82,16 +90,16 @@ The CREATE_ENCLAVE size benchmark requires an authorized VECODI session. After
 each firmware flash, run one case study first to fetch EnclaveInfo and send
 M_update:
 
-          python3 tools/vecodi_case_study.py /dev/cu.usbmodemXXXX \
-                 --c-limit 10 --runs 1 \
-                 --benchmark-json claims/claim1/results/benchmark_setup.json \
-                 --benchmark-csv claims/claim1/results/benchmark_setup.csv
+       python3 tools/vecodi_case_study.py /dev/cu.usbmodemXXXX \
+           --c-limit 10 --runs 1 \
+           --benchmark-json claims/claim1/results/benchmark_setup.json \
+           --benchmark-csv claims/claim1/results/benchmark_setup.csv
 
 Then measure CREATE_ENCLAVE for the full encrypted model size:
 
-          python3 tools/create_enclave_size_benchmark.py \
-                 /dev/cu.usbmodemXXXX --size 39552 \
-                 --runs 10 --output claims/claim1/results/create_enclave_size.json
+       python3 tools/create_enclave_size_benchmark.py \
+           /dev/cu.usbmodemXXXX --size 39552 \
+           --runs 10 --output claims/claim1/results/create_enclave_size.json
 
 Additional sizes can be supplied when supported by the firmware:
 
@@ -130,9 +138,9 @@ Full-flow benchmark
 Run the detailed benchmark for M_update, enclave creation, verified
 inference, PoX completion, and enclave destruction:
 
-          python3 tools/full_flow_benchmark.py /dev/cu.usbmodemXXXX \
-                 --runs 1 --c-limit 10 \
-                 --output claims/claim1/results/full_flow_benchmark.json
+       python3 tools/full_flow_benchmark.py /dev/cu.usbmodemXXXX \
+           --runs 1 --c-limit 10 \
+           --output claims/claim1/results/full_flow_benchmark.json
 
 The secure counter for c_limit persists across sessions on the board. If
 M_update rejects the selected value, rerun with a larger strictly increasing
@@ -166,3 +174,17 @@ infrastructure/ Hardware requirements and remote-access guidance
 src/, dummy_partition/, split_inference/, tools/
                 Firmware and host-side implementation
 BUILD_FLASH.md  Detailed Zephyr build and flash instructions
+
+secure-inference-nucleo reference
+---------------------------------
+
+This project uses the public
+`https://github.com/norrathep/secure-inference-nucleo` repository as a
+reference for secure execution on the NUCLEO-L552ZE-Q board.
+
+For the non-secure flash configuration, see the file paths documented in the
+pre-build firmware preparation section above.
+
+Repository reference:
+
+       https://github.com/norrathep/secure-inference-nucleo
