@@ -15,6 +15,8 @@ Quick start
 
 2. Install Zephyr and the Zephyr SDK as described in BUILD_FLASH.md. The
    artifact was tested with Zephyr SDK 0.17.4, West 1.5.0, and Zephyr 4.3.99.
+       don't forget to isntall the requirements of zephyr
+   pip install -r /zephyrproject/zephyr/scripts/requirements.txt
 
 3. Connect a NUCLEO-L552ZE-Q board and identify its serial device.
 
