@@ -15,3 +15,16 @@ Measurements can vary with board revision, firmware/toolchain versions,
 compiler options, reset state, and serial-device timing. The expected output
 in claims/claim1 describes the behavioral checks; exact cycle counts should be
 reported with the generated result files rather than treated as invariants.
+
+Architectural Adaptations & Secure APIs
+=======================================
+
+The secure API invocation model in this artifact reflects an architectural adaptation:
+
+- Intended deployment flow: The Secure (S) partition serves as the primary entry 
+  point to handle initial input validation before routing execution.
+- Evaluated artifact flow: Execution is initiated from the Non-Secure (NS) partition, 
+  which then calls into the Secure APIs via TF-M Non-Secure Callable (NSC) veneers.
+
+This adaptation was made due to hardware-specific SRAM partition limits on the physical 
+NUCLEO-L552ZE-Q board (to avoid RAM region overflow during linking).
