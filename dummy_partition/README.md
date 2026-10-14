@@ -9,11 +9,8 @@ Updated:    5 March 2026
 Platform:   STM32L552ZE-Q with ARM Cortex-M33 TrustZone
 ```
 
-## ✅ VERIFICATION STATUS: **ALL FEATURES VERIFIED ON HARDWARE**
-
-**Date**: 27 February 2026  
-**Platform**: STM32L552ZE-Q  
-**See**: [../md/VERIFICATION_REPORT.md](../md/VERIFICATION_REPORT.md) for complete test results
+## Verification
+The current source implements the authorization and inference message handling described below. A hardware verification report is not included in this repository.
 
 ---
 
@@ -22,15 +19,15 @@ This TF-M secure partition provides cryptographic services for the Non-Secure (N
 - **Encrypted weight decryption** (AES-CTR)
 - **Secure counter management** (inference authorization)
 - **EnclaveInfo computation** (SHA-256) ✅ Verified
-- **M_update validation** (AES-256-GCM decrypt + verify) ✅ Verified
+- **M_update authorization** (plaintext ECDSA-signed request verification)
 - **Benchmark services** (DWT cycle counting)
 - **Boot-time EnclaveInfo sealing** and **current-vs-boot integrity validation** before enclave creation
 
 ## Key Paths (Secure World)
-- `dummy_partition/dummy_partition.c`: command dispatcher + AES-CTR decryption implementation
-- `dummy_partition/secure_nsc_interface.c`: Secure→Non-Secure bridge for debugging enclave transitions (CMSE NSC entry point)
-- `dummy_partition/tfm_dummy_partition.yaml`: TF-M service manifest (SID, IPC model)
-- `dummy_partition/tfm_manifest_list.yaml.in`: manifest list included by build system
+- `dummy_partition.c`: command dispatcher, authorization checks, and AES-CTR weight decryption
+- `secure_nsc_interface.c`: Secure→Non-Secure bridge for enclave transitions (CMSE NSC entry point)
+- `tfm_dummy_partition.yaml`: TF-M service manifest (SID, IPC model)
+- `tfm_manifest_list.yaml.in`: manifest list included by build system
 
 ## Service Identity
 Defined in [tfm_dummy_partition.yaml](tfm_dummy_partition.yaml):
@@ -52,19 +49,19 @@ Defined in [dummy_partition.c](dummy_partition.c):
 - `DP_CMD_CHECK_INFERENCE_ALLOWED = 5` (legacy endpoint, currently NOT_SUPPORTED)
 - `DP_CMD_INCREMENT_COUNTER = 6` (legacy endpoint, currently NOT_SUPPORTED)
 - `DP_CMD_RESET_COUNTER = 7` (legacy endpoint, currently NOT_SUPPORTED)
-- `DP_CMD_RUN_INFERENCE = 9` (legacy two-phase gate)
+- `DP_CMD_RUN_INFERENCE = 9` (active two-phase verified inference request and commit)
 - `DP_CMD_CREATE_ENCLAVE = 22` (single-shot create: decrypt/register/reset/close setup windows)
 - `DP_CMD_DESTROY_ENCLAVE = 23` (reset secure state, RAM window reopened for NS zeroization)
 
 **Verified Inference Transaction (Current):**
-- `DP_CMD_INF_START = 25` (decrypt encrypted M_inf, verify ECDSA request, open enclave RAM, create tx)
-- `DP_CMD_INF_COMPLETE = 26` (commit tx, close enclave RAM, sign PoX)
+- `DP_CMD_RUN_INFERENCE = 9` (two phases: verify plaintext M_inf and open the SAU window; then commit output and return PoX)
+- `DP_CMD_INF_START = 25` and `DP_CMD_INF_COMPLETE = 26` are separate lifecycle helpers; they do not decrypt or verify M_inf and are not used for successful UART inference transactions. The UART path calls `DP_CMD_INF_COMPLETE` after execution failure to close the transaction, but that handler also increments the secure inference counter, so this failure path currently consumes quota.
 - `DP_CMD_GET_DEVICE_PUBKEY = 27` (return secure-owned `pk_d`)
 - `DP_CMD_SIGN_ATTEST_MSG = 28` (sign SHA256(nonce||enclave_info) in Secure)
 
-**Enclave Authorization Protocol (Verified 27 Feb 2026):**
-- `DP_CMD_COMPUTE_ENCLAVE_INFO = 10` ✅ (SHA-256 hash of Model_pub || Model_secret || code || model_ID)
-- `DP_CMD_VALIDATE_M_UPDATE = 11` ✅ (AES-256-GCM decrypt, EnclaveInfo verify, anti-replay, atomic policy update)
+**Enclave Authorization Protocol:**
+- `DP_CMD_COMPUTE_ENCLAVE_INFO = 10` (SHA-256 hash of Model_pub || Model_secret || code || model_ID)
+- `DP_CMD_VALIDATE_AUTHORIZE = 11` (validate plaintext M_update signature, enforce increasing quota, update secure policy)
 - `DP_CMD_VALIDATE_BOOT_ENCLAVE_INFO = 17` ✅ (recompute current EnclaveInfo from registered artifacts and compare with boot-time sealed value)
 - `DP_CMD_SAU_REGISTER_ROM = 18` ✅ (register early-model ROM window used for `model_pub` hashing)
 - `DP_CMD_SAU_REGISTER_CODE = 19` ✅ (register inference code window used for `code_hash` hashing)
@@ -76,7 +73,7 @@ Defined in [dummy_partition.c](dummy_partition.c):
 **Security Policy:**
 - `max_inferences_per_enclave` is **dynamic** (starts at 0, updated on valid M_update)
 - `inference_counter_secure = 0` (protected counter in Secure world)
-- Counter incremented only during `RUN_INFERENCE` commit phase (after successful inference execution)
+- On successful M_inf processing, `RUN_INFERENCE` phase 1 increments the Secure counter before PoX generation finishes. The UART error-cleanup call to `INF_COMPLETE` also increments it after an execution failure. In either case, Secure may consume quota without incrementing the NS shadow count, so the UART count/remaining responses can disagree with Secure policy state.
 
 ## Benchmark System (Dual-World DWT Monitoring)
 
@@ -97,14 +94,14 @@ Both NS and Secure worlds use ARM's Data Watchpoint and Trace (DWT) cycle counte
 ```
 
 ### Secure-Side Implementation Details
-- **File**: `dummy_partition/secure_benchmark.c/h`
+- **Files**: `secure_benchmark.c` and `secure_benchmark.h`
 - **Memory Calculation**: Hardcoded from linker output (linker symbols unavailable in TF-M)
   - Secure RAM: 52,732 bytes (from build log analysis)
   - Secure Flash: 119,532 bytes (from TFM partition layout)
 - **Start/Stop Pattern**: Save DWT_CYCCNT at operation start, read at end, compute difference
 - **All Timing**: Includes PSA call overhead (minimal in Secure world)
 
-## Current Flow (Late Weights + Counter + Benchmark)
+## Current Flow (Late Weights + Authorization + Verified Inference)
 
 ### 0. Boot-time EnclaveInfo sealing
 NS bootstrap registers the relevant flash windows and sends the encrypted late-weight blob to Secure.
@@ -135,7 +132,21 @@ The secure partition:
 4. Writes plaintext into the NS output buffer
 5. Closes the enclave setup windows before returning
 
-### 2. Policy + verified run transaction (cmd=25,26)
+### 2. Authorization and verified inference
+
+The UART host sends both authorization and inference requests as plaintext binary payloads. ECDSA signatures provide message authenticity; these requests do not use an AES-GCM nonce, ciphertext, or tag.
+
+**Authorize (UART command `0x02`, Secure command `DP_CMD_VALIDATE_AUTHORIZE = 11`):**
+
+`M_update = pk_u[64] | c_limit[4, little-endian] | EnclaveInfo[32] | T_o[64]`
+
+`T_o` is an ECDSA P-256 signature over the preceding 100 bytes. Secure verifies it, rejects a quota that is not greater than the previously accepted limit, and stores the authorization key and limit. The NS UART layer requires an exact 164-byte request.
+
+**Run inference (UART command `0x04`, Secure command `DP_CMD_RUN_INFERENCE = 9`):**
+
+`M_inf = model_id[4, little-endian] | code_hash[32] | signature[64]`
+
+The 100-byte plaintext M_inf signature covers `model_id || code_hash`. In phase 0, Secure checks authorization, quota, model/code identity, and the signature, then opens the SAU window and returns a transaction ID. NS executes the inference. In phase 1, NS submits `tx_id[4] | output_class[1]`; Secure closes the window and increments the Secure counter before building and signing the PoX. The UART response contains `output_class[1] | PoX_signature[64]` only if PoX generation succeeds. A later PoX failure therefore leaves Secure's counter incremented.
 
 **Get Policy (cmd=4):**
 ```
@@ -143,31 +154,10 @@ in_vec[0] = cmd (DP_CMD_GET_MAX_INFERENCES)
 out_vec[0] = max_inferences (uint32_t, returns dynamic value)
 ```
 
-**START (cmd=25):**
-```
-in_vec[0] = cmd (DP_CMD_INF_START)
-in_vec[1] = encrypted M_inf packet (128B)
-out_vec[0] = tx_id (uint32_t)
-```
-Secure logic:
-- decrypts M_inf with secure session key
-- verifies verifier signature using secure `pk_v`
-- validates policy/quota and opens enclave RAM window
-- creates transaction state (`tx_id`, nonce, model_id)
-
-**COMPLETE (cmd=26):**
-```
-in_vec[0] = cmd (DP_CMD_INF_COMPLETE)
-in_vec[1] = tx_id(4) || output(1)
-out_vec[0] = pox_sig (64B)
-```
-Secure logic:
-- validates active transaction and tx_id
-- signs PoX with secure-only device signing key
-- increments secure counter and closes enclave RAM window
+The active verified UART flow uses `DP_CMD_RUN_INFERENCE` (9) for both phases. `DP_CMD_INF_START` (25) does not accept or verify M_inf and is not used by this UART flow. On NS execution failure, the UART handler calls `DP_CMD_INF_COMPLETE` (26) to close the transaction; that helper also increments the Secure counter.
 
 **Security Properties:**
-- Request decrypt/verify and PoX signing happen in Secure world
+- Request signature verification and PoX signing happen in Secure world
 - Counter state protected in Secure world
 - Verified inference request path cannot use legacy unverified mode
 - Explicit enclave lifecycle via create/finalize/destroy commands
@@ -216,29 +206,17 @@ commands through `tfm_dp_secret_digest_ipc()`.
 #### `DP_CMD_GET_MAX_INFERENCES` (4)
 - **Purpose**: Get maximum inferences per enclave policy
 - **Input**: `in_vec[0]` = cmd (4)
-- **Output**: `out_vec[0]` = max_inferences (`uint32_t`, returns 3)
-- **Notes**: Policy is immutable, defined as `MAX_INFERENCES_PER_ENCLAVE = 3`
+- **Output**: `out_vec[0]` = current `max_inferences_per_enclave_secure` (`uint32_t`)
+- **Notes**: Starts at 0 and changes after successful authorization; it is not a fixed value of 3.
 
 #### `DP_CMD_CHECK_INFERENCE_ALLOWED` (5)
-- **Purpose**: Check if current counter allows inference
-- **Input**: `in_vec[0]` = cmd (5)
-- **Output**: `out_vec[0]` = allowed (`uint32_t`, 1=allowed, 0=denied)
-- **Logic**: Returns 1 if `counter < max`, else 0
-- **Logging**: "[SECURE] Check inference allowed: counter=X, max=3, allowed=Y"
+- **Current behavior**: Returns `PSA_ERROR_NOT_SUPPORTED`.
 
 #### `DP_CMD_INCREMENT_COUNTER` (6)
-- **Purpose**: Increment counter after successful inference
-- **Input**: `in_vec[0]` = cmd (6)
-- **Output**: None (void operation)
-- **Logic**: `inference_counter_secure++`
-- **Logging**: "[SECURE] Inference counter incremented: X"
+- **Current behavior**: Returns `PSA_ERROR_NOT_SUPPORTED`. The active inference path commits the counter in the `DP_CMD_RUN_INFERENCE` phase-1 handler.
 
 #### `DP_CMD_RESET_COUNTER` (7)
-- **Purpose**: Reset counter to 0 during enclave creation
-- **Input**: `in_vec[0]` = cmd (7)
-- **Output**: None (void operation)
-- **Logic**: `inference_counter_secure = 0`
-- **Logging**: "[SECURE] Inference counter reset to 0"
+- **Current behavior**: Returns `PSA_ERROR_NOT_SUPPORTED`. Counter reset is handled by enclave creation and destruction.
 
 ### `DP_CMD_SECRET_DIGEST`
 - **Purpose**: SHA-256 digest of a fixed secret.
@@ -251,8 +229,8 @@ commands through `tfm_dp_secret_digest_ipc()`.
 	- The partition temporarily reconfigures SAU to allow NS access to SRAM1.
 	- The first digest byte is overwritten with `0x75` before returning.
 
-### `DP_CMD_DECRYPT_LATE_WEIGHTS` (current flow)
-- **Purpose**: AES-128-CTR decrypt encrypted late weights into NS RAM.
+### `DP_CMD_DECRYPT_LATE_WEIGHTS` (internal helper)
+- **Purpose**: AES-128-CTR decrypt encrypted late weights into NS RAM during enclave creation; the command endpoint is not exposed.
 - **Input**:
 	- `in_vec[0]`: `cmd` (`DP_CMD_DECRYPT_LATE_WEIGHTS`)
 	- `in_vec[1]`: ciphertext (late weights)
@@ -264,7 +242,7 @@ commands through `tfm_dp_secret_digest_ipc()`.
 - **Purpose**: legacy full-model decrypt.
 - **Current behavior**: always returns `PSA_ERROR_NOT_SUPPORTED`.
 
-## Crypto Details
+## Weight-Decryption Crypto Details
 - **Algorithm**: AES-128-CTR
 - **Key**: static 16-byte key in `dummy_partition.c` (demo-only)
 - **IV**: provided by NS via `late_wt_iv[]`
@@ -272,8 +250,8 @@ commands through `tfm_dp_secret_digest_ipc()`.
 > For production: move keys to secure storage (ITS/PS), add integrity (AEAD/HMAC), and rotate keys.
 
 ## Files
-- [dummy_partition.c](dummy_partition.c): command routing + AES-CTR decrypt
-- [secure_nsc_interface.c](secure_nsc_interface.c): Secure→NS bridge using CMSE (debug/bring-up helper)
+- [dummy_partition.c](dummy_partition.c): command routing, authorization/inference verification, and AES-CTR weight decryption
+- [secure_nsc_interface.c](secure_nsc_interface.c): Secure→NS bridge using CMSE
 - [tfm_dummy_partition.yaml](tfm_dummy_partition.yaml): TF-M service manifest
 - [tfm_manifest_list.yaml.in](tfm_manifest_list.yaml.in): manifest list for build
 
