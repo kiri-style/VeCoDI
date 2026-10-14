@@ -50,7 +50,8 @@ Defined in [dummy_partition.c](dummy_partition.c):
 - `DP_CMD_INCREMENT_COUNTER = 6` (legacy endpoint, currently NOT_SUPPORTED)
 - `DP_CMD_RESET_COUNTER = 7` (legacy endpoint, currently NOT_SUPPORTED)
 - `DP_CMD_RUN_INFERENCE = 9` (active two-phase verified inference request and commit)
-- `DP_CMD_CREATE_ENCLAVE = 22` (single-shot create: decrypt/register/reset/close setup windows)
+- `DP_CMD_CREATE_ENCLAVE = 22` (decrypt/register/reset; leaves the enclave RAM window open)
+- `DP_CMD_FINALIZE_CREATE_ENCLAVE = 24` (closes the enclave RAM window after NS setup)
 - `DP_CMD_DESTROY_ENCLAVE = 23` (reset secure state, RAM window reopened for NS zeroization)
 
 **Verified Inference Transaction (Current):**
@@ -130,7 +131,7 @@ The secure partition:
 2. Applies the IV from `in_vec[2]`
 3. Decrypts in chunks using `psa_cipher_update()`
 4. Writes plaintext into the NS output buffer
-5. Closes the enclave setup windows before returning
+5. Registers the enclave RAM window and leaves it open until `DP_CMD_FINALIZE_CREATE_ENCLAVE` (24) is called after NS setup
 
 ### 2. Authorization and verified inference
 
