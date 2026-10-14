@@ -6,6 +6,27 @@ drivers, benchmark scripts, and result files used by the VeCoDI evaluation.
 The artifact is intended to reproduce the paper's embedded confidential
 inference case study on an STM32L552ZE NUCLEO-L552ZE-Q board.
 
+Prototype scope (Algorithm 1)
+----------------------------
+
+This artifact is a prototype and does not implement every API or trust
+relationship from Algorithm 1 of the paper. In particular:
+
+* Provision is not implemented. There is no Secure-World installation API
+  that accepts an owner's public key and an instance description (code, entry
+  point, data, and optional decryption key) and creates a provisioned persistent
+  context. The current firmware uses model artifacts and identity material
+  built into or registered by the firmware.
+
+* Owner-key authorization is not implemented. The firmware has no provisioned
+  owner public key pko and does not verify an owner-signed authorization token.
+  Instead, DP_CMD_VALIDATE_AUTHORIZE accepts plaintext M_update:
+  pk_u(64) | c_limit(4) | EnclaveInfo(32) | T_o(64). Secure verifies T_o using
+  the pk_u included in that same message. This proves possession of the supplied
+  user's private key, but does not prove that an owner approved that user or
+  limit. The Secure authorization state is held in runtime globals, not in a
+  persistent per-instance provisioning store.
+
 Quick start
 -----------
 
@@ -166,6 +187,38 @@ records host-side duration and separates NS/Secure cycle counters for
 M_update, enclave creation, inference, PoX completion, and destruction. With
 multiple runs it also reports averages and standard deviations. Its output is
 a detailed JSON benchmark rather than the claim-oriented CSV/JSON pair.
+
+Evaluation data and offline reproduction
+-----------------------------------------
+
+The checked-in artifact does not currently support reproducing every table and
+figure offline. In particular, the Non-Secure baseline reported for Table 3 is
+not implemented in this repository, so its measurements cannot be regenerated
+from the supplied firmware and scripts.
+
+Figure 4's enclave-size measurements are produced by
+`tools/create_enclave_size_benchmark.py` on a connected board; they are not an
+offline calculation. The script accepts one or more decrypt sizes with
+`--size` and a repetition count with `--runs`. Each repetition performs one
+CREATE_ENCLAVE followed by one DESTROY_ENCLAVE. The JSON output stores each
+individual sample and the mean metrics (plus host-time standard deviations).
+The committed `claims/claim1/expected/create_enclave_size.json` contains only
+the 39,552-byte size with one run; data for other sizes and a 100-run series are
+not included.
+
+The repository also does not include a 100-inference log for the current
+protocol. The committed `claims/claim1/expected/full_flow_benchmark.json`
+contains one full-flow run. To generate a 100-inference case-study log, use a
+board and a quota of at least 100 that is strictly greater than the device's
+previously accepted limit, then run:
+
+       python3 tools/vecodi_case_study.py /dev/cu.usbmodemXXXX \
+           --c-limit 100 --runs 100 \
+           --benchmark-json claims/claim1/results/current_protocol_100.json \
+           --benchmark-csv claims/claim1/results/current_protocol_100.csv
+
+This writes per-operation benchmark records for the repeated inference flow;
+it requires the supported hardware and is not generated offline.
 
 Repository map
 --------------
