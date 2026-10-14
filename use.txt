@@ -19,11 +19,12 @@ reported with the generated result files rather than treated as invariants.
 Negative security tests
 =======================
 
-The interactive negative-test suite from earlier development versions was
-omitted from this streamlined artifact, and this omission was not previously
-documented. Earlier tests covered cases such as replaying an M_update and
-rejecting an M_inf with an invalid signature. They do not demonstrate rejection
-of a replayed, previously accepted, valid M_inf.
+An earlier development version included a broader negative-test suite and
+associated experimental protocol-attack implementation. Both were removed when
+the artifact was streamlined, and this scope change was not previously
+documented. The earlier suite covered protocol attacks including replay and
+invalid inference requests; those tests and the associated implementation can
+be restored if needed. The current checked-in artifact does not include them.
 
 The current M_inf contains a model ID, code hash, and signature, but no
 per-request counter or freshness value. Secure enforces the total inference
@@ -31,8 +32,8 @@ quota and binds the commit phase to a transaction ID; it does not remember
 previously accepted M_inf messages. Consequently, an identical valid M_inf can
 be accepted again while quota remains. Restoring the old tests alone would not
 add replay protection; that claim requires a freshness mechanism and a matching
-test. The Section 7.4 replay claim should therefore not be attributed to the
-current artifact.
+test. The Section 7.4 replay claim refers to the earlier development version;
+it does not describe the current streamlined artifact.
 
 Architectural Adaptations & Secure APIs
 =======================================
