@@ -1,11 +1,10 @@
-[OK] Loaded image from Mac: cifar_input.raw (3072 bytes)
-[OK] Connected to /dev/cu.usbmodem11203 @ 115200
+[OK] Connected to /dev/cu.usbmodem21103 @ 115200
 
 [Provider] Step 2 - Fetch/verify EnclaveInfo
 [OK] EnclaveInfo attestation verified
 
 [Provider] Step 3 - Send M_update
-[OK] M_update accepted with c_limit=10
+[OK] M_update accepted with c_limit=11
 
 [Model Customer] Step 4 - Create enclave
 [OK] Enclave created
@@ -13,5 +12,15 @@
 [Run 1/1]
 
 [Model Customer] Step 5 - Verified inference
-[ERR] Verified inference rejected by device (stage=7, detail=-135)
+[WARN] Could not fetch inference trace: Timeout reading status byte
+[OK] Inference result: pred=0, expected=0
+[OK] PoX verified, pred=0
+
+[Model Customer] Step 6 - Destroy enclave
+[OK] Enclave destroyed
+
+========== CASE STUDY SUMMARY ==========
+Image from Mac uploaded   : NO (device/default path)
+Before destroy -> max/used/rem : 11/1/10
+Decoded PoX responses     : 1/1
 [OK] Serial disconnected
